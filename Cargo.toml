@@ -1,18 +1,18 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/boardwalk-core",
-    "crates/boardwalk-siren",
-    "crates/boardwalk-caql",
-    "crates/boardwalk-events",
-    "crates/boardwalk-registry",
-    "crates/boardwalk-http",
-    "crates/boardwalk-peer",
-    "crates/boardwalk-tunnel",
-    "crates/boardwalk-macros",
-    "crates/boardwalk-server",
-    "crates/boardwalk",
-    "drivers/boardwalk-mock-led",
+    "crates/zetta-core",
+    "crates/zetta-siren",
+    "crates/zetta-caql",
+    "crates/zetta-events",
+    "crates/zetta-registry",
+    "crates/zetta-http",
+    "crates/zetta-peer",
+    "crates/zetta-tunnel",
+    "crates/zetta-macros",
+    "crates/zetta-server",
+    "crates/zetta",
+    "drivers/zetta-mock-led",
     "examples/tunnel-poc",
     "examples/hello-led",
 ]
@@ -22,7 +22,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 authors = ["Kevin Swiber <kevin@swiber.dev>"]
-repository = "https://github.com/kevinswiber/boardwalk"
+repository = "https://github.com/kevinswiber/zetta-rs"
 # Until we cut a real release, nothing is published. Flip on the
 # specific crates that ship when v0.1 lands.
 publish = false

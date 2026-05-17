@@ -1,4 +1,4 @@
-# boardwalk-rs — Design Overview
+# zetta-rs — Design Overview
 
 ## What we're porting
 
@@ -42,17 +42,17 @@ can model itself as a state machine + telemetry streams works.
 
 ## Goals (v0)
 
-- `boardwalk_core` library with a typed `Device` trait and `DeviceBuilder`,
+- `zetta_core` library with a typed `Device` trait and `DeviceBuilder`,
   a `Scout` trait, and an `App` trait.
-- `boardwalk_http` axum-based HTTP server emitting Siren JSON.
-- `boardwalk_ws` multiplexed WebSocket event protocol (sub-protocol from
+- `zetta_http` axum-based HTTP server emitting Siren JSON.
+- `zetta_ws` multiplexed WebSocket event protocol (sub-protocol from
   the wiki's "Multiplexed-WebSocket-Streams").
-- `boardwalk_peer` peer linking: outbound (initiator) and accept (acceptor)
+- `zetta_peer` peer linking: outbound (initiator) and accept (acceptor)
   with HTTP/2 role reversal over an upgraded WebSocket tunnel.
-- `boardwalk_caql` parser + evaluator for CaQL (subset sufficient for
+- `zetta_caql` parser + evaluator for CaQL (subset sufficient for
   device/stream filtering).
-- `boardwalk_registry` persistent device + peer metadata via `redb`.
-- One mock driver (`boardwalk-mock-led`) to validate end-to-end.
+- `zetta_registry` persistent device + peer metadata via `redb`.
+- One mock driver (`zetta-mock-led`) to validate end-to-end.
 
 ## Non-goals (v0)
 

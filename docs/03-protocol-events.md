@@ -11,10 +11,10 @@ mechanism (long-lived HTTP/2 response bodies).
 Client API root advertises:
 
 ```json
-{ "rel": ["https://rels.boardwalk.dev/events"], "href": "ws://example.com/events" }
+{ "rel": ["http://rels.zettajs.io/events"], "href": "ws://example.com/events" }
 ```
 
-Sub-protocol token: `boardwalk-events/1` (advertised via
+Sub-protocol token: `zetta-events/1` (advertised via
 `Sec-WebSocket-Protocol`).
 
 `?filterMultiple=true` query parameter changes the event message shape:
@@ -127,7 +127,7 @@ Codes from the original spec:
 - `405` Method Not Supported — unknown `type` value
 - `500` Server Error
 
-## Implementation notes (boardwalk-events)
+## Implementation notes (zetta-events)
 
 ```rust
 pub struct EventBus {

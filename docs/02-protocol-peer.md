@@ -32,7 +32,7 @@ Connection: Upgrade
 Upgrade: websocket
 Sec-WebSocket-Key: …
 Sec-WebSocket-Version: 13
-Sec-WebSocket-Protocol: boardwalk-peer/2
+Sec-WebSocket-Protocol: zetta-peer/2
 ```
 
 The acceptor responds:
@@ -42,7 +42,7 @@ HTTP/1.1 101 Switching Protocols
 Connection: Upgrade
 Upgrade: websocket
 Sec-WebSocket-Accept: …
-Sec-WebSocket-Protocol: boardwalk-peer/2
+Sec-WebSocket-Protocol: zetta-peer/2
 ```
 
 > ⚠ **Crucial detail (preserved from original protocol):** after the 101
@@ -51,9 +51,9 @@ Sec-WebSocket-Protocol: boardwalk-peer/2
 > negotiation that gets past HTTP-aware middleboxes. Both sides treat
 > the underlying socket as a plain byte stream from here on.
 
-The sub-protocol token `boardwalk-peer/2` distinguishes this from the
+The sub-protocol token `zetta-peer/2` distinguishes this from the
 original SPDY-based Z2Z. The acceptor MAY also accept the legacy
-`boardwalk-peer/1` token to interop with the Node implementation — see
+`zetta-peer/1` token to interop with the Node implementation — see
 [09-questions.md](09-questions.md) Q5.
 
 ## Phase 2 — HTTP/2 prior knowledge handshake
@@ -78,7 +78,7 @@ The acceptor sends a single HTTP/2 request:
 :method GET
 :scheme http
 :path   /_initiate_peer/{connectionId}
-:authority {initiator-name}.peer.boardwalk.invalid
+:authority {initiator-name}.unreachable.zettajs.io
 ```
 
 The initiator's router has a route for `/_initiate_peer/{id}` that:
@@ -90,9 +90,9 @@ The initiator's router has a route for `/_initiate_peer/{id}` that:
 Once the acceptor sees `200`, the connection is considered established.
 A timeout (default 10 s, from the original) bounds this phase.
 
-The synthetic authority `{name}.peer.boardwalk.invalid` is preserved
+The synthetic authority `{name}.unreachable.zettajs.io` is preserved
 from the original protocol so existing tooling that inspects logs can
-recognize peer traffic. We may also accept just `{name}.peers.boardwalk`
+recognize peer traffic. We may also accept just `{name}.peers.zetta`
 as a less-marketing-coded alternative.
 
 ## Phase 4 — Steady state
@@ -178,11 +178,11 @@ for v0; we leave a `peer_authenticator` hook.
 
 ## Differences from original Z2Z
 
-| Aspect          | Original (SPDY)            | boardwalk-rs (HTTP/2)          |
+| Aspect          | Original (SPDY)            | zetta-rs (HTTP/2)          |
 |-----------------|----------------------------|----------------------------|
 | Multiplex frame | SPDY/3.1                   | HTTP/2 (RFC 9113)          |
 | Server push     | Yes (SPDY push)            | No — use long body         |
 | Keepalive       | SPDY PING                  | HTTP/2 PING                |
 | Handshake       | WS → SPDY                  | WS → HTTP/2 prior knowledge|
-| Sub-protocol    | (none)                     | `boardwalk-peer/2`             |
+| Sub-protocol    | (none)                     | `zetta-peer/2`             |
 | Auth            | None built in              | Hook reserved              |

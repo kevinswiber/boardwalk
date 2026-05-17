@@ -82,7 +82,7 @@ did. The wire format inside the body is the same either way.
 
 **Default:** (a). Will the original Node Zetta talk to us if we do (a)?
 No — but we have a separate `Sec-WebSocket-Protocol` token
-(`boardwalk-peer/2`) to negotiate this. If interop with old Zetta is
+(`zetta-peer/2`) to negotiate this. If interop with old Zetta is
 required, we keep the door open for (b) too.
 
 Is interop with the old Node implementation a goal? My assumption: no,
@@ -111,12 +111,12 @@ to also ship arithmetic and functions in v0?
 
 ---
 
-### Q5. Sub-protocol token: `boardwalk-peer/2` and interop
+### Q5. Sub-protocol token: `zetta-peer/2` and interop
 
-I propose negotiating `Sec-WebSocket-Protocol: boardwalk-peer/2` on the
+I propose negotiating `Sec-WebSocket-Protocol: zetta-peer/2` on the
 peer handshake. This is purely an interop marker. Options:
 
-- (a) Emit `boardwalk-peer/2`. Reject (or just ignore) `boardwalk-peer/1`
+- (a) Emit `zetta-peer/2`. Reject (or just ignore) `zetta-peer/1`
   (old SPDY-based). Clean break.
 - (b) Accept both, dispatch SPDY for v1 and HTTP/2 for v2. Heavy.
 - (c) Don't emit a token at all; assume both ends are v2.
@@ -141,14 +141,14 @@ This is the recommendation already encoded in
 
 The original ships LevelDB with a directory location of `./.devices`
 and `./.peers`. We'll use `redb` (single file each). Default paths
-under `./.boardwalk/devices.redb` and `./.boardwalk/peers.redb` (one parent
+under `./.zetta/devices.redb` and `./.zetta/peers.redb` (one parent
 directory; easier to gitignore).
 
 Acceptable?
 
 ---
 
-### Q8. Should `boardwalk-server` start an embedded admin UI?
+### Q8. Should `zetta-server` start an embedded admin UI?
 
 The original Node version had no built-in UI; it pointed at
 `browser.zettajs.io` (hosted). We are not porting that browser.
@@ -163,12 +163,13 @@ The original Node version had no built-in UI; it pointed at
 
 ### Q9. Crate name / publishing
 
-- Top-level crate: `boardwalk` (façade). Verified available on crates.io.
-- Sub-crates: `boardwalk-core`, `boardwalk-http`, etc.
-- Project name pivoted from "zetta" (taken on crates.io, plus
-  trademark/legal risk from the original JS project's Apigee/Google
-  lineage) to "boardwalk" — Santa Cruz beach boardwalk, pairs with the
-  `shore` project.
+- Top-level crate: `zetta` (façade).
+- Sub-crates: `zetta-core`, `zetta-http`, etc.
+- Existing crates.io name "zetta" — is it taken? Need to check before
+  publishing. If taken, fallback names: `zetta-rs`, `zettajs`,
+  `zetta-server`.
+
+Will check before any publish, but worth noting.
 
 ---
 

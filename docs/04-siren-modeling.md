@@ -1,7 +1,7 @@
 # Siren Modeling
 
 We are not depending on a third-party Siren crate (none is maintained
-in 2026). `boardwalk-siren` ships a small in-house representation.
+in 2026). `zetta-siren` ships a small in-house representation.
 
 ## Types
 
@@ -52,19 +52,19 @@ back to `application/json` for clients that don't ask for Siren.
 | `up`                                      | child → parent                   |
 | `monitor`                                 | resource → its WS feed           |
 | `edit`                                    | resource that supports PUT/DELETE|
-| `https://rels.boardwalk.dev/server`           | root → server, device → server   |
-| `https://rels.boardwalk.dev/device`           | server → device sub-entity       |
-| `https://rels.boardwalk.dev/peer`             | server → peer server             |
-| `https://rels.boardwalk.dev/peer-management`  | root → peer-management           |
-| `https://rels.boardwalk.dev/events`           | root → multiplex WS              |
-| `https://rels.boardwalk.dev/type`             | device → its metadata            |
-| `https://rels.boardwalk.dev/object-stream`    | device → its monitored stream    |
-| `https://rels.boardwalk.dev/query`            | search results → live WS         |
-| `https://rels.boardwalk.dev/root`             | peer entry → its root            |
-| `https://rels.boardwalk.dev/instances`        | meta/type → instances query      |
-| `https://rels.boardwalk.dev/metadata`         | type → metadata collection       |
+| `http://rels.zettajs.io/server`           | root → server, device → server   |
+| `http://rels.zettajs.io/device`           | server → device sub-entity       |
+| `http://rels.zettajs.io/peer`             | server → peer server             |
+| `http://rels.zettajs.io/peer-management`  | root → peer-management           |
+| `http://rels.zettajs.io/events`           | root → multiplex WS              |
+| `http://rels.zettajs.io/type`             | device → its metadata            |
+| `http://rels.zettajs.io/object-stream`    | device → its monitored stream    |
+| `http://rels.zettajs.io/query`            | search results → live WS         |
+| `http://rels.zettajs.io/root`             | peer entry → its root            |
+| `http://rels.zettajs.io/instances`        | meta/type → instances query      |
+| `http://rels.zettajs.io/metadata`         | type → metadata collection       |
 
-A constants module `boardwalk_http::rels` exposes these as `&'static str`s.
+A constants module `zetta_http::rels` exposes these as `&'static str`s.
 
 ## Resource map
 
@@ -90,7 +90,7 @@ GET /?ql=where%20type%3D%22led%22
 
 The response is a search-results entity (`class: ["server",
 "search-results"]`) with matching devices as sub-entities and a
-`https://rels.boardwalk.dev/query` link pointing at a live WS subscription
+`http://rels.zettajs.io/query` link pointing at a live WS subscription
 for the same query.
 
 ## Device transitions → Siren actions
@@ -131,7 +131,7 @@ A device with a `state` stream (from `config.monitor("state")`) emits:
 ```json
 {
   "title": "state",
-  "rel": ["monitor", "https://rels.boardwalk.dev/object-stream"],
+  "rel": ["monitor", "http://rels.zettajs.io/object-stream"],
   "href": "ws://host/servers/{server}/events?topic={type}%2F{id}%2Fstate"
 }
 ```

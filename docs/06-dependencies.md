@@ -14,7 +14,7 @@ ranges in actual Cargo.toml. Rationale and alternatives kept brief here
 | Tunnel adapter  | `hyper::upgrade::on`               | (hyper) | Yields `Upgraded: AsyncRead + AsyncWrite`.                   |
 | JSON            | `serde` + `serde_json`             | 1.x     | Obvious.                                                     |
 | MIME            | `mime`                             | 0.3     | Content-type matching for Siren / NDJSON.                    |
-| Siren           | `boardwalk-siren` (in-repo)            | —       | No maintained external crate.                                |
+| Siren           | `zetta-siren` (in-repo)            | —       | No maintained external crate.                                |
 | KV store        | `redb`                             | 4.x     | Pure Rust, ACID, single-file, typed tables.                  |
 | UUID            | `uuid`                             | 1.x     | Features: `v4`, `v7`, `serde`.                               |
 | Tracing         | `tracing`                          | 0.1     | Plus `tracing-subscriber` 0.3, `tracing-appender`.           |

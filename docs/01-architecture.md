@@ -3,21 +3,21 @@
 ## Crate layout (cargo workspace)
 
 ```
-boardwalk-rs/
+zetta-rs/
 ├── Cargo.toml               # workspace
 ├── crates/
-│   ├── boardwalk-core/          # Device, Scout, App traits; runtime types
-│   ├── boardwalk-siren/         # Siren types (Entity/Link/Action/Field) + serde
-│   ├── boardwalk-caql/          # CaQL parser + evaluator
-│   ├── boardwalk-events/        # Pub/sub bus + multiplexed WS sub-protocol
-│   ├── boardwalk-registry/      # Device + peer registries (redb-backed)
-│   ├── boardwalk-http/          # Axum router emitting Siren over HTTP/1.1 & HTTP/2
-│   ├── boardwalk-peer/          # Outbound peer client + inbound peer socket
-│   ├── boardwalk-tunnel/        # WS-upgrade → role-reversed h2 tunnel primitive
-│   ├── boardwalk-server/        # Top-level builder (`Boardwalk::new().use_(...).listen()`)
-│   └── boardwalk/               # Re-export façade crate
+│   ├── zetta-core/          # Device, Scout, App traits; runtime types
+│   ├── zetta-siren/         # Siren types (Entity/Link/Action/Field) + serde
+│   ├── zetta-caql/          # CaQL parser + evaluator
+│   ├── zetta-events/        # Pub/sub bus + multiplexed WS sub-protocol
+│   ├── zetta-registry/      # Device + peer registries (redb-backed)
+│   ├── zetta-http/          # Axum router emitting Siren over HTTP/1.1 & HTTP/2
+│   ├── zetta-peer/          # Outbound peer client + inbound peer socket
+│   ├── zetta-tunnel/        # WS-upgrade → role-reversed h2 tunnel primitive
+│   ├── zetta-server/        # Top-level builder (`Zetta::new().use_(...).listen()`)
+│   └── zetta/               # Re-export façade crate
 ├── drivers/
-│   └── boardwalk-mock-led/      # Sample driver for end-to-end testing
+│   └── zetta-mock-led/      # Sample driver for end-to-end testing
 ├── examples/
 │   ├── hello-led/           # Mock LED server
 │   └── peer-link/           # Two processes linking
@@ -26,35 +26,35 @@ boardwalk-rs/
 
 The split into many small crates is deliberate: it keeps cyclic
 dependencies impossible, makes individual pieces testable in isolation,
-and lets users depend on `boardwalk-core` to write a driver without pulling
+and lets users depend on `zetta-core` to write a driver without pulling
 in axum or h2.
 
 ## Dependency direction
 
 ```
-boardwalk            (façade)
-  └─ boardwalk-server
-       ├─ boardwalk-http     ──┐
-       │    └─ boardwalk-siren │   ┌─ boardwalk-events
-       ├─ boardwalk-peer    ──┼───┤
-       │    └─ boardwalk-tunnel  │   ┌─ boardwalk-registry
-       ├─ boardwalk-events   ───┘   │
-       ├─ boardwalk-registry  ──────┘
-       └─ boardwalk-core   (used by everything above and by drivers)
+zetta            (façade)
+  └─ zetta-server
+       ├─ zetta-http     ──┐
+       │    └─ zetta-siren │   ┌─ zetta-events
+       ├─ zetta-peer    ──┼───┤
+       │    └─ zetta-tunnel  │   ┌─ zetta-registry
+       ├─ zetta-events   ───┘   │
+       ├─ zetta-registry  ──────┘
+       └─ zetta-core   (used by everything above and by drivers)
 
-boardwalk-caql is leaf, used by boardwalk-events (topic filters) and boardwalk-http
+zetta-caql is leaf, used by zetta-events (topic filters) and zetta-http
   (`?ql=` query string parsing).
-boardwalk-siren is leaf, used by boardwalk-http only.
+zetta-siren is leaf, used by zetta-http only.
 ```
 
-No cycles. `boardwalk-core` deliberately has zero dependencies on transport
+No cycles. `zetta-core` deliberately has zero dependencies on transport
 or storage — it defines `Device`, `Scout`, `App`, `Transition`,
 `StreamHandle`, and a small runtime trait so drivers can compile without
 the rest of the world.
 
 ## Key types (sketch)
 
-### `boardwalk-core`
+### `zetta-core`
 
 ```rust
 pub trait Device: Send + Sync + 'static {
@@ -86,7 +86,7 @@ Open question: do we make `Device` a trait or a builder-only construct
 (value type with attached transition closures)? See
 [09-questions.md](09-questions.md) Q1.
 
-### `boardwalk-events`
+### `zetta-events`
 
 A single `EventBus` per server instance. Topics are strings parsed into
 `StreamTopic { server, device_type, device_id, stream }`. Subscriptions
@@ -94,7 +94,7 @@ hold `tokio::sync::mpsc::Sender<Event>`. Topic matching supports
 wildcards (`*`, `**`), regex (`{...}`), and trailing `?ql=...` CaQL
 filters as in the original.
 
-### `boardwalk-tunnel`
+### `zetta-tunnel`
 
 The piece that replaces node-spdy's role swap:
 
@@ -121,7 +121,7 @@ server-to-server protocol no longer uses WebSocket protocol framing".
 We use WS as a tunnel-establishment fiction so HTTP-aware proxies and
 firewalls let the connection through.
 
-### `boardwalk-peer`
+### `zetta-peer`
 
 ```rust
 pub struct PeerClient { /* outbound; backoff, reconnect */ }
@@ -148,20 +148,20 @@ we control both sides. We have a design choice here, recorded in
 Recommendation: (b). It is what most modern reverse-tunnel projects do
 and the `h2` library makes it ergonomic.
 
-### `boardwalk-server`
+### `zetta-server`
 
 ```rust
-pub struct Boardwalk { /* fields private */ }
+pub struct Zetta { /* fields private */ }
 
-impl Boardwalk {
+impl Zetta {
     pub fn new() -> Self;
     pub fn name(self, name: impl Into<String>) -> Self;
-    pub fn use_<P: BoardwalkPlugin>(self, p: P) -> Self;
+    pub fn use_<P: ZettaPlugin>(self, p: P) -> Self;
     pub fn link(self, url: impl Into<String>) -> Self;
     pub async fn listen(self, addr: SocketAddr) -> Result<()>;
 }
 
-pub trait BoardwalkPlugin {
+pub trait ZettaPlugin {
     fn install(self, b: &mut Builder);
 }
 

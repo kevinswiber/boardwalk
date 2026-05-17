@@ -72,7 +72,7 @@ jobs:
             echo "Example valid headers:"
             echo ""
             echo "- \`fix: correct event topic parsing\`"
-            echo "- \`feat(boardwalk-peer): support graceful disconnect\`"
+            echo "- \`feat(zetta-peer): support graceful disconnect\`"
             echo ""
             echo "Cocogitto output:"
             echo ""

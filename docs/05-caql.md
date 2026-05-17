@@ -2,7 +2,7 @@
 
 Source: https://github.com/kevinswiber/caql
 
-No Rust port exists. We will implement a subset in `boardwalk-caql` using
+No Rust port exists. We will implement a subset in `zetta-caql` using
 `chumsky` 1.x.
 
 ## Surface syntax (subset supported in v0)

@@ -22,28 +22,28 @@ that can be demoed end-to-end at its level.
 
 This milestone proves the riskiest assumption. Estimated ~1-2 days.
 
-## M1 — `boardwalk-core` types
+## M1 — `zetta-core` types
 
 - [ ] `Device` trait, `DeviceConfig` builder, `Transition`.
 - [ ] `StreamHandle<T>` and the `monitor` / `stream` config methods.
 - [ ] In-process tests: register a device, drive a transition, observe
       state change, send to a stream.
 
-## M2 — `boardwalk-siren`
+## M2 — `zetta-siren`
 
 - [ ] Types + serde derives.
 - [ ] `rels` constants.
 - [ ] Helpers: `Entity::self_link(href)`, `Entity::add_action(...)`.
 - [ ] Round-trip tests against captured JSON from the Node version.
 
-## M3 — `boardwalk-events`
+## M3 — `zetta-events`
 
 - [ ] `EventBus` with subscription registry.
 - [ ] `TopicPattern` parser (literal/`*`/`**`/regex segments).
 - [ ] `?ql=` filter parse (placeholder until M4).
 - [ ] Publish/match unit tests.
 
-## M4 — `boardwalk-caql`
+## M4 — `zetta-caql`
 
 - [ ] Lexer + grammar in chumsky.
 - [ ] AST.
@@ -51,30 +51,30 @@ This milestone proves the riskiest assumption. Estimated ~1-2 days.
 - [ ] Fuzzy tests against examples from the wiki.
 
 Once M4 lands we can finalize the `?ql=` filter integration in
-`boardwalk-events`.
+`zetta-events`.
 
-## M5 — `boardwalk-registry`
+## M5 — `zetta-registry`
 
 - [ ] Redb-backed device + peer tables.
 - [ ] CRUD + watch (notify on changes).
 - [ ] Migration story for v1 schema bump (probably "wipe and re-scout"
       for v0).
 
-## M6 — `boardwalk-http`
+## M6 — `zetta-http`
 
 - [ ] Routes per [04-siren-modeling.md](04-siren-modeling.md).
 - [ ] Content-negotiation: `vnd.siren+json` ↔ `application/json`.
 - [ ] WS upgrade for `/events` (multiplex protocol) and per-stream WS.
 - [ ] Tests against a mock `ServerCore`.
 
-## M7 — `boardwalk-tunnel` + `boardwalk-peer`
+## M7 — `zetta-tunnel` + `zetta-peer`
 
-- [ ] `boardwalk-tunnel` lifts M0 PoC into a reusable primitive.
+- [ ] `zetta-tunnel` lifts M0 PoC into a reusable primitive.
 - [ ] `PeerClient`: dial out, WS upgrade, h2 server, plug into router.
 - [ ] `PeerSocket`: accept WS, drop framing, h2 client, subscribe.
 - [ ] Reconnect/backoff, h2 PING keepalive.
 
-## M8 — `boardwalk-server` + `boardwalk` façade
+## M8 — `zetta-server` + `zetta` façade
 
 - [ ] Builder API.
 - [ ] `use_(...)` blanket impls for device/scout/app.
