@@ -2,18 +2,19 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use bytes::Bytes;
 use http::Request;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::BodyExt;
+use hyper::client::conn::http2::SendRequest;
 use hyper_util::rt::TokioExecutor;
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
-use zetta_http::{Core, PeerInitState};
+use zetta_http::{Core, PeerInitState, PeerSenders};
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -36,6 +37,7 @@ pub struct PeerClient {
     pub router: Router,
     pub peer_init: PeerInitState,
     pub _core: Arc<Core>,
+    pub shutdown: Arc<tokio::sync::Notify>,
 }
 
 impl PeerClient {
@@ -46,34 +48,59 @@ impl PeerClient {
         peer_init: PeerInitState,
         core: Arc<Core>,
     ) -> Self {
-        Self { remote_url, local_name, router, peer_init, _core: core }
+        Self {
+            remote_url,
+            local_name,
+            router,
+            peer_init,
+            _core: core,
+            shutdown: Arc::new(tokio::sync::Notify::new()),
+        }
     }
 
-    /// Run the client with infinite reconnect. Drop the returned
-    /// `JoinHandle` to cancel.
+    /// Get a shutdown handle that can be signaled to stop the reconnect loop.
+    pub fn shutdown_handle(&self) -> Arc<tokio::sync::Notify> {
+        self.shutdown.clone()
+    }
+
+    /// Run the client with infinite reconnect. Returns when shutdown
+    /// is signaled (via the shutdown handle).
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut attempt = 0u32;
             loop {
                 let connection_id = Uuid::new_v4();
-                match self.attempt_once(connection_id).await {
-                    Ok(_) => {
-                        tracing::info!(peer = %self.remote_url, "peer link closed");
-                        attempt = 0;
+                let shutdown = self.shutdown.clone();
+                tokio::select! {
+                    biased;
+                    _ = shutdown.notified() => {
+                        tracing::info!(peer = %self.remote_url, "peer client shutting down");
+                        return;
                     }
-                    Err(e) => {
-                        tracing::warn!(peer = %self.remote_url, error = %e, attempt, "peer link failed");
+                    res = self.attempt_once(connection_id) => {
+                        match res {
+                            Ok(()) => {
+                                tracing::info!(peer = %self.remote_url, "peer link closed");
+                                attempt = 0;
+                            }
+                            Err(e) => {
+                                tracing::warn!(peer = %self.remote_url, error = %e, attempt, "peer link failed");
+                            }
+                        }
                     }
                 }
                 attempt = attempt.saturating_add(1);
                 let backoff = backoff_ms(attempt);
-                tokio::time::sleep(Duration::from_millis(backoff)).await;
+                tokio::select! {
+                    biased;
+                    _ = self.shutdown.notified() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(backoff)) => {}
+                }
             }
         })
     }
 
     async fn attempt_once(&self, connection_id: Uuid) -> Result<(), PeerError> {
-        // Register so the acceptor's `/_initiate_peer/{id}` succeeds.
         self.peer_init.register(connection_id);
         let ready = zetta_tunnel::dial_initiator(
             self.remote_url.as_str(),
@@ -87,22 +114,26 @@ impl PeerClient {
             .serve_connection(ready.upgraded, svc)
             .await
             .map_err(|e| zetta_tunnel::TunnelError::Upgrade(format!("h2 serve: {e}")));
-        // Clean up the in-flight state if the acceptor never confirmed.
         self.peer_init.consume(&connection_id);
         result?;
         Ok(())
     }
 }
 
-/// Acceptor-side state used to track in-flight peer upgrades.
+/// Acceptor-side state used to track in-flight peer upgrades and to
+/// hold the live HTTP/2 `SendRequest` for forwarding queries from the
+/// cloud's HTTP router to the hub.
 #[derive(Clone, Default)]
 pub struct PeerAcceptors {
-    inner: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>>,
+    inner: Arc<tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    senders: Arc<tokio::sync::Mutex<HashMap<String, SendRequest<axum::body::Body>>>>,
     confirmations: Arc<std::sync::atomic::AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
 }
 
 impl PeerAcceptors {
+    pub fn new() -> Self { Self::default() }
+
     pub fn confirmation_count(&self) -> u64 {
         self.confirmations.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -110,9 +141,7 @@ impl PeerAcceptors {
     /// Wait until at least one peer confirmation has happened, or
     /// timeout. Returns true on success.
     pub async fn wait_for_first(&self, timeout: std::time::Duration) -> bool {
-        if self.confirmation_count() > 0 {
-            return true;
-        }
+        if self.confirmation_count() > 0 { return true; }
         let notified = self.notify.notified();
         tokio::pin!(notified);
         match tokio::time::timeout(timeout, notified.as_mut()).await {
@@ -120,14 +149,9 @@ impl PeerAcceptors {
             Err(_) => false,
         }
     }
-}
-
-impl PeerAcceptors {
-    pub fn new() -> Self { Self::default() }
 
     /// Called by the HTTP layer once a peer's WS upgrade has produced
-    /// an `Upgraded` stream. We become the HTTP/2 client driving the
-    /// initiator and send a confirmation `GET /_initiate_peer/{id}`.
+    /// an `Upgraded` stream.
     pub async fn on_upgraded(
         &self,
         peer_name: String,
@@ -137,11 +161,14 @@ impl PeerAcceptors {
         let acceptors = self.clone();
         let peer_name_for_task = peer_name.clone();
         let task = tokio::spawn(async move {
-            match drive_acceptor(peer_name_for_task.clone(), connection_id, upgraded).await {
+            match drive_acceptor(
+                peer_name_for_task.clone(),
+                connection_id,
+                upgraded,
+                acceptors.senders.clone(),
+            ).await {
                 Ok(()) => {
-                    acceptors
-                        .confirmations
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    acceptors.confirmations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     acceptors.notify.notify_waiters();
                 }
                 Err(e) => {
@@ -160,20 +187,42 @@ impl PeerAcceptors {
     }
 }
 
+/// Cloud-side query forwarder. Implements `zetta_http::PeerSenders` so
+/// the router can forward requests for `/servers/{peer-name}/...`
+/// through the established H2 tunnel.
+#[async_trait::async_trait]
+impl PeerSenders for PeerAcceptors {
+    async fn sender(&self, name: &str) -> Option<SendRequest<axum::body::Body>> {
+        let map = self.senders.lock().await;
+        map.get(name).cloned()
+    }
+
+    async fn names(&self) -> Vec<String> {
+        let map = self.senders.lock().await;
+        map.keys().cloned().collect()
+    }
+}
+
 async fn drive_acceptor(
     peer_name: String,
     connection_id: Uuid,
     upgraded: hyper::upgrade::Upgraded,
+    senders: Arc<tokio::sync::Mutex<HashMap<String, SendRequest<axum::body::Body>>>>,
 ) -> Result<(), PeerError> {
     let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
-        .handshake::<_, Empty<Bytes>>(upgraded)
+        .handshake::<_, axum::body::Body>(upgraded)
         .await?;
-    let conn_task = tokio::spawn(async move {
+    let peer_name_for_cleanup = peer_name.clone();
+    let senders_for_cleanup = senders.clone();
+    let _conn_task = tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::debug!(%e, "acceptor h2 connection ended");
         }
+        let mut s = senders_for_cleanup.lock().await;
+        s.remove(&peer_name_for_cleanup);
     });
 
+    // Send confirmation.
     let req = Request::builder()
         .method("GET")
         .uri(format!(
@@ -181,7 +230,7 @@ async fn drive_acceptor(
             urlencoding::encode(&peer_name),
             connection_id
         ))
-        .body(Empty::<Bytes>::new())
+        .body(axum::body::Body::empty())
         .expect("request");
     let resp = sender.send_request(req).await?;
     if resp.status() != http::StatusCode::OK {
@@ -192,11 +241,14 @@ async fn drive_acceptor(
     let _body = resp.collect().await?.to_bytes();
     tracing::info!(peer = %peer_name, %connection_id, "peer confirmed");
 
-    // Return promptly so the caller can record the confirmation; the
-    // connection task continues in the background until the connection
-    // drops.
-    drop(sender);
-    drop(conn_task);
+    // Register the sender so the cloud's router can forward through it.
+    // The clone keeps the connection alive; when the entry is removed
+    // (by the conn cleanup task or by a reconnect overwriting) and the
+    // last clone is dropped, the connection closes.
+    {
+        let mut s = senders.lock().await;
+        s.insert(peer_name.clone(), sender);
+    }
     Ok(())
 }
 

@@ -9,4 +9,4 @@ mod routes;
 mod ws;
 
 pub use core::{Core, CoreBuilder, DeviceHandle};
-pub use routes::{router, router_with, AppState, PeerHandler, PeerInitState};
+pub use routes::{router, router_with, AppState, PeerHandler, PeerInitState, PeerSenders};

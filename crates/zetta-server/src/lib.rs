@@ -73,10 +73,12 @@ impl Zetta {
             })
         };
 
+        let peer_senders: Arc<dyn zetta_http::PeerSenders> = Arc::new(acceptors.clone());
         let state = AppState {
             core: core.clone(),
             peer_handler: Some(handler),
             peer_init: peer_init.clone(),
+            peer_senders: Some(peer_senders),
         };
         let router = router_with(state);
 

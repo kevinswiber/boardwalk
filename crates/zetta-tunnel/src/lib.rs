@@ -8,6 +8,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::pin::Pin;
+use std::sync::Arc;
+
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Empty;
@@ -16,6 +19,7 @@ use hyper::Request;
 use hyper_util::rt::TokioIo;
 use sha1::{Digest, Sha1};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 #[allow(unused_imports)]
 use uuid::Uuid;
@@ -75,16 +79,25 @@ pub async fn dial_initiator(
 ) -> Result<InitiatorReady, TunnelError> {
     let url = url::Url::parse(remote_url)
         .map_err(|e| TunnelError::Url(format!("{e}")))?;
-    if url.scheme() != "http" && url.scheme() != "ws" {
-        return Err(TunnelError::Url(format!(
-            "scheme `{}` not supported in v0 (TLS wiring is next milestone)",
-            url.scheme()
-        )));
-    }
+    let scheme = url.scheme();
     let host = url.host_str().ok_or_else(|| TunnelError::Url("no host".into()))?;
-    let port = url.port_or_known_default().unwrap_or(80);
+    let port = url.port_or_known_default().unwrap_or(match scheme {
+        "https" | "wss" => 443,
+        _ => 80,
+    });
 
-    let stream = TcpStream::connect((host, port)).await?;
+    let tcp = TcpStream::connect((host, port)).await?;
+
+    // Stream is boxed so we can hold either a plain TCP or a TLS
+    // wrapper without spreading generics through the rest of the
+    // function.
+    let stream: Pin<Box<dyn AsyncReadWrite + Send>> = match scheme {
+        "http" | "ws" => Box::pin(tcp),
+        "https" | "wss" => Box::pin(tls_connect(host, tcp).await?),
+        other => {
+            return Err(TunnelError::Url(format!("scheme `{other}` not supported")));
+        }
+    };
 
     let path = format!(
         "/peers/{}?connectionId={}",
@@ -104,8 +117,6 @@ pub async fn dial_initiator(
         .handshake::<_, Empty<Bytes>>(io)
         .await?;
     let conn = conn.with_upgrades();
-    // Drive the HTTP/1 connection on a background task so it makes
-    // progress while we read the upgrade.
     let conn_task = tokio::spawn(async move { let _ = conn.await; });
 
     let req = Request::builder()
@@ -150,8 +161,8 @@ pub async fn dial_initiator(
 }
 
 /// Build a 101 Switching Protocols response for a peer WS upgrade
-/// request. Returns the assembled response and the validated subprotocol
-/// (if any).
+/// request. Validates Sec-WebSocket-Key, Sec-WebSocket-Version, and
+/// requires the `zetta-peer/2` subprotocol token.
 pub fn build_upgrade_response(
     headers: &http::HeaderMap,
 ) -> Result<http::Response<()>, TunnelError> {
@@ -166,21 +177,24 @@ pub fn build_upgrade_response(
         return Err(TunnelError::Upgrade("missing or wrong Sec-WebSocket-Version".into()));
     }
 
+    let offered = headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !offered.split(',').any(|tok| tok.trim() == SUBPROTOCOL) {
+        return Err(TunnelError::Upgrade(format!(
+            "client did not offer `{SUBPROTOCOL}` subprotocol; got `{offered}`"
+        )));
+    }
+
     let accept = ws_accept_key(key);
 
-    let mut builder = http::Response::builder()
+    let builder = http::Response::builder()
         .status(http::StatusCode::SWITCHING_PROTOCOLS)
         .header("connection", "upgrade")
         .header("upgrade", "websocket")
-        .header("sec-websocket-accept", accept);
-
-    if headers
-        .get("sec-websocket-protocol")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|p| p.split(',').any(|tok| tok.trim() == SUBPROTOCOL))
-    {
-        builder = builder.header("sec-websocket-protocol", SUBPROTOCOL);
-    }
+        .header("sec-websocket-accept", accept)
+        .header("sec-websocket-protocol", SUBPROTOCOL);
 
     builder
         .body(())
@@ -189,6 +203,40 @@ pub fn build_upgrade_response(
 
 /// Helper re-export of the hyper-util executor used for serving H2.
 pub use hyper_util::rt::TokioExecutor as H2Executor;
+
+/// Helper trait alias for boxed I/O.
+pub trait AsyncReadWrite: AsyncRead + AsyncWrite {}
+impl<T: AsyncRead + AsyncWrite + ?Sized> AsyncReadWrite for T {}
+
+/// Establish a TLS connection over `tcp` for `host`. Uses webpki-roots
+/// for the trust anchors and the workspace-default rustls crypto
+/// provider (aws-lc-rs).
+async fn tls_connect(
+    host: &str,
+    tcp: TcpStream,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, TunnelError> {
+    static PROVIDER_INSTALLED: std::sync::Once = std::sync::Once::new();
+    PROVIDER_INSTALLED.call_once(|| {
+        // Best-effort install. If something else installed first, fine.
+        let _ = rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        );
+    });
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
+        .map_err(|e| TunnelError::Url(format!("invalid TLS server name: {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(TunnelError::Io)?;
+    Ok(tls)
+}
 
 #[cfg(test)]
 mod tests {

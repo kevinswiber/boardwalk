@@ -26,3 +26,7 @@ base64 = "0.22"
 sha1 = "0.10"
 rand = "0.9"
 urlencoding = "2"
+rustls = { workspace = true, default-features = false, features = ["std", "tls12"] }
+tokio-rustls = { workspace = true, default-features = false }
+webpki-roots = "1"
+rustls-pki-types = "1"

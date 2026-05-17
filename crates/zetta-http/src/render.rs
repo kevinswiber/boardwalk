@@ -45,14 +45,22 @@ impl Hrefs {
     }
 }
 
-pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs) -> Entity {
-    Entity::new()
+pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs, peers: &[String]) -> Entity {
+    let mut e = Entity::new()
         .with_class("root")
         .with_link(Link::new(rels::SELF, h.root()))
         .with_link(
             Link::new(rels::SERVER, h.server_url())
                 .with_title(h.server.clone()),
-        )
+        );
+    for peer in peers {
+        let url = h.http.join(&format!("servers/{}", urlencoding::encode(peer))).unwrap();
+        e = e.with_link(
+            Link::rels([rels::PEER, rels::SERVER], url)
+                .with_title(peer.clone()),
+        );
+    }
+    e
         .with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()))
         .with_link(Link::new(rels::EVENTS, h.events_url()))
         .with_action(

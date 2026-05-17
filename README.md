@@ -6,14 +6,16 @@ over Siren HTTP, multiplexes telemetry over WebSockets, and tunnels
 HTTP requests back through outbound connections so devices behind NATs
 can be reached from anywhere.
 
-**Status: v0 working.** A single-process Zetta server runs end-to-end:
-typed device state machines, Siren HTTP API, multiplex WebSocket event
-streams, and CaQL filtering. Peering (the original's reverse HTTP
-tunnel over a WebSocket upgrade) is implemented at the handshake level
-— a hub can dial a cloud, both sides flip into HTTP/2 with reversed
-roles, and the cloud confirms the connection. Forwarding the cloud's
-HTTP requests through the tunnel to query the hub's devices is the
-next milestone (see `docs/10-questions-v2.md`).
+**Status: v0 working with peering.** A single-process Zetta server runs
+end-to-end: typed device state machines, Siren HTTP API, multiplex
+WebSocket event streams, CaQL filtering. The full reverse-tunnel
+peering protocol works: a hub dials a cloud, both flip into HTTP/2
+with reversed roles, the cloud confirms the connection, and then the
+cloud's HTTP and WebSocket APIs proxy through the tunnel — a curl to
+the cloud's `/servers/hub/devices/{id}` returns the hub's LED, a POST
+transitions it, and a cloud-side WS subscription to `hub/...` topics
+receives events streamed back from the hub. TLS for peer dials is
+supported via rustls + aws-lc-rs.
 
 ## Read first
 
@@ -102,15 +104,19 @@ examples/
   verifies the full handshake round-trip.
 - **Builder**: `Zetta::new().name("hub").use_device(Led).link("...").listen(addr)`.
 
-## What's not yet (see docs/10-questions-v2.md)
+## What's not yet (see docs/11-questions-v3.md)
 
-- Forwarding cloud → hub HTTP queries through the open peer tunnel.
+- TLS integration test (codepath is in; manual verification needed).
 - Scouts (dynamic device discovery).
 - Apps (`server.observe([q], |dev| ...)`).
-- Persistent device registry (the redb tables exist, they're just not
-  wired into the runtime yet).
-- `POST /servers/{name}/devices` to register hubless devices.
-- TLS for peer dials.
+- Persistent device registry (the redb tables exist, just not wired
+  into the runtime yet).
+- `POST /servers/{name}/devices` to register hubless devices (currently
+  returns 501).
+- Subscription deduplication on cloud (n cloud subscribers to the same
+  hub topic currently opens n HTTP/2 streams).
+- Per-stream backpressure bounds.
+- `#[device]` proc-macro sugar.
 
 ## License
 
