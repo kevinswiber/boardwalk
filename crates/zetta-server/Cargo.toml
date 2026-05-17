@@ -15,7 +15,11 @@ zetta-http = { path = "../zetta-http" }
 zetta-peer = { path = "../zetta-peer" }
 zetta-registry = { path = "../zetta-registry" }
 
+axum.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 url.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+futures.workspace = true

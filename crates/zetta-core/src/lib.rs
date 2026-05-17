@@ -7,9 +7,12 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 /// Identifier assigned by the runtime to each device instance.
@@ -27,26 +30,96 @@ pub enum DeviceError {
     Invalid(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("not allowed in current state: {0}")]
+    NotAllowed(String),
     #[error("internal: {0}")]
     Internal(String),
 }
 
-/// Marker trait every driver implements. Real wiring happens via the
-/// `DeviceConfig` builder passed to `config`.
+/// Inputs to a transition, parsed from the form-encoded HTTP body.
+#[derive(Debug, Default, Clone)]
+pub struct TransitionInput {
+    pub fields: BTreeMap<String, Value>,
+}
+
+impl TransitionInput {
+    pub fn get(&self, name: &str) -> Option<&Value> { self.fields.get(name) }
+    pub fn get_str(&self, name: &str) -> Option<&str> {
+        self.fields.get(name).and_then(Value::as_str)
+    }
+}
+
+/// What a driver implements. Real wiring happens via `DeviceConfig`.
 pub trait Device: Send + Sync + 'static {
+    /// Called once at registration. Sets type, initial state, allowed
+    /// transitions per state, and stream metadata.
     fn config(&self, cfg: &mut DeviceConfig);
+
+    /// Current state name. Called by the runtime whenever a Siren
+    /// representation is produced.
+    fn state(&self) -> &str;
+
+    /// Optional extra properties beyond `id`, `type`, `name`, `state`.
+    /// Default: none.
+    fn properties(&self) -> Map<String, Value> { Map::new() }
+
+    /// Dispatch a transition by name. The runtime guards against
+    /// transitions not allowed in the current state before calling.
+    fn transition<'a>(
+        &'a mut self,
+        name: &'a str,
+        input: TransitionInput,
+    ) -> BoxFuture<'a, Result<(), DeviceError>>;
+
+    /// Optional long-running task — typically pushes telemetry to
+    /// declared streams. Default: do nothing.
+    fn run<'a>(&'a mut self, _ctx: DeviceCtx) -> BoxFuture<'a, Result<(), DeviceError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Stream kind hint, surfaced in metadata for clients.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StreamKind {
+    /// JSON-serializable structured data.
+    #[default]
+    Object,
+    /// Opaque binary frames.
+    Binary,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct StreamSpec {
+    pub name: String,
+    pub kind: StreamKind,
+}
+
+/// Field descriptor for a transition input (becomes a Siren field).
+#[derive(Debug, Clone)]
+pub struct FieldSpec {
+    pub name: String,
+    pub type_: String,
+    pub title: Option<String>,
+    pub value: Option<Value>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TransitionSpec {
+    pub name: TransitionName,
+    /// Fields beyond the mandatory hidden `action` field.
+    pub fields: Vec<FieldSpec>,
 }
 
 /// Builder accepted by `Device::config`.
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct DeviceConfig {
-    pub(crate) type_: Option<String>,
-    pub(crate) name: Option<String>,
-    pub(crate) initial_state: Option<StateName>,
-    pub(crate) state_transitions: BTreeMap<StateName, Vec<TransitionName>>,
-    // Transition handlers + stream registrations are filled in by the
-    // server-facing crates; this crate keeps the schema minimal so it
-    // stays dependency-free.
+    pub type_: Option<String>,
+    pub name: Option<String>,
+    pub initial_state: Option<StateName>,
+    pub state_transitions: BTreeMap<StateName, Vec<TransitionName>>,
+    pub transitions: BTreeMap<TransitionName, TransitionSpec>,
+    pub streams: Vec<StreamSpec>,
+    pub monitored: Vec<String>,
 }
 
 impl DeviceConfig {
@@ -70,42 +143,72 @@ impl DeviceConfig {
         state: impl Into<StateName>,
         allow: &[&str],
     ) -> &mut Self {
-        self.state_transitions
-            .insert(state.into(), allow.iter().map(|s| s.to_string()).collect());
+        let s = state.into();
+        let names: Vec<String> = allow.iter().map(|s| s.to_string()).collect();
+        // Ensure transitions are also recorded as known.
+        for t in &names {
+            self.transitions
+                .entry(t.clone())
+                .or_insert_with(|| TransitionSpec { name: t.clone(), fields: vec![] });
+        }
+        self.state_transitions.insert(s, names);
         self
+    }
+
+    /// Declare a transition that takes additional fields (beyond the
+    /// mandatory hidden `action` field). Without this call, transitions
+    /// referenced from `.when` exist with no extra fields.
+    pub fn transition(
+        &mut self,
+        name: impl Into<TransitionName>,
+        fields: Vec<FieldSpec>,
+    ) -> &mut Self {
+        let n: TransitionName = name.into();
+        self.transitions
+            .insert(n.clone(), TransitionSpec { name: n, fields });
+        self
+    }
+
+    /// Declare a stream the device will publish to. Use `Stream::Object` or `Binary`.
+    pub fn stream(&mut self, name: impl Into<String>, kind: StreamKind) -> &mut Self {
+        self.streams.push(StreamSpec { name: name.into(), kind });
+        self
+    }
+
+    /// Auto-stream a property on the device — equivalent to the original's
+    /// `config.monitor('color')`. The runtime publishes events whenever the
+    /// property changes between transitions.
+    pub fn monitor(&mut self, name: impl Into<String>) -> &mut Self {
+        let n = name.into();
+        self.streams.push(StreamSpec { name: n.clone(), kind: StreamKind::Object });
+        self.monitored.push(n);
+        self
+    }
+
+    /// Allowed transitions in a given state. Empty if state is unknown.
+    pub fn allowed_in(&self, state: &str) -> &[TransitionName] {
+        self.state_transitions
+            .get(state)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
-/// A scout discovers devices over a protocol or out-of-process source.
-#[async_trait::async_trait]
-pub trait Scout: Send + Sync + 'static {
-    async fn run(self: Arc<Self>, ctx: ScoutCtx) -> Result<(), DeviceError>;
+/// Context handed to a device's `run` task. Lets the device publish to
+/// its declared streams.
+pub struct DeviceCtx {
+    pub id: DeviceId,
+    pub type_: String,
+    pub publish: Arc<dyn StreamSink>,
 }
 
-/// Context handed to scouts by the runtime.
-#[derive(Clone)]
-pub struct ScoutCtx {
-    // Filled in once the server crate is wired up.
-    _placeholder: (),
+/// Erased sink used by `DeviceCtx::publish` so `zetta-core` doesn't have
+/// to know what the event bus is. The runtime crate provides the impl.
+pub trait StreamSink: Send + Sync {
+    fn publish(&self, stream: &str, data: Value);
 }
 
-/// Boxed error returned from user-defined apps. Keeps zetta-core
-/// dependency-light; downstream consumers can map their preferred
-/// error library (anyhow, eyre, ...) into this.
-pub type AppError = Box<dyn std::error::Error + Send + Sync>;
-
-/// An App is user code that reacts to queries and orchestrates devices.
-#[async_trait::async_trait]
-pub trait App: Send + Sync + 'static {
-    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError>;
-}
-
-/// Handle into the running server, given to apps.
-#[derive(Clone)]
-pub struct ServerHandle {
-    _placeholder: (),
-}
-
+/// Stable wire identity for a device — what gets serialized in Siren.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProperties {
     pub id: DeviceId,
@@ -114,26 +217,86 @@ pub struct DeviceProperties {
     pub name: Option<String>,
     pub state: StateName,
     #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_json::Value>,
+    pub extra: Map<String, Value>,
 }
+
+// -- Scout / App -----------------------------------------------------------
+
+#[async_trait::async_trait]
+pub trait Scout: Send + Sync + 'static {
+    async fn run(self: Arc<Self>, ctx: ScoutCtx) -> Result<(), DeviceError>;
+}
+
+#[derive(Clone)]
+pub struct ScoutCtx { _placeholder: () }
+
+pub type AppError = Box<dyn std::error::Error + Send + Sync>;
+
+#[async_trait::async_trait]
+pub trait App: Send + Sync + 'static {
+    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError>;
+}
+
+#[derive(Clone)]
+pub struct ServerHandle { _placeholder: () }
+
+// -- Future-pin helper -----------------------------------------------------
+
+/// `BoxFuture` re-export so drivers don't need a futures dependency.
+pub type DynFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn device_config_builder_collects_states() {
-        let mut cfg = DeviceConfig::default();
-        cfg.type_("led")
-           .name("LED")
-           .state("off")
-           .when("off", &["turn-on"])
-           .when("on", &["turn-off"]);
+    struct Led { on: bool }
 
+    impl Device for Led {
+        fn config(&self, cfg: &mut DeviceConfig) {
+            cfg.type_("led")
+                .name("LED")
+                .state(if self.on { "on" } else { "off" })
+                .when("off", &["turn-on"])
+                .when("on", &["turn-off"])
+                .monitor("state");
+        }
+        fn state(&self) -> &str { if self.on { "on" } else { "off" } }
+        fn transition<'a>(
+            &'a mut self,
+            name: &'a str,
+            _input: TransitionInput,
+        ) -> BoxFuture<'a, Result<(), DeviceError>> {
+            Box::pin(async move {
+                match name {
+                    "turn-on" => { self.on = true; Ok(()) }
+                    "turn-off" => { self.on = false; Ok(()) }
+                    other => Err(DeviceError::Invalid(format!("unknown transition {other}"))),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn led_transitions() {
+        let mut led = Led { on: false };
+        let mut cfg = DeviceConfig::default();
+        led.config(&mut cfg);
         assert_eq!(cfg.type_.as_deref(), Some("led"));
-        assert_eq!(cfg.name.as_deref(), Some("LED"));
         assert_eq!(cfg.initial_state.as_deref(), Some("off"));
-        assert_eq!(cfg.state_transitions["off"], vec!["turn-on".to_string()]);
-        assert_eq!(cfg.state_transitions["on"], vec!["turn-off".to_string()]);
+        assert_eq!(cfg.allowed_in("off"), &["turn-on".to_string()]);
+        assert!(cfg.streams.iter().any(|s| s.name == "state"));
+        assert!(cfg.monitored.contains(&"state".to_string()));
+
+        led.transition("turn-on", TransitionInput::default()).await.unwrap();
+        assert_eq!(led.state(), "on");
+
+        let err = led.transition("nope", TransitionInput::default()).await.unwrap_err();
+        assert!(matches!(err, DeviceError::Invalid(_)));
+    }
+
+    #[test]
+    fn unknown_state_yields_empty_allowed() {
+        let cfg = DeviceConfig::default();
+        assert!(cfg.allowed_in("anything").is_empty());
     }
 }

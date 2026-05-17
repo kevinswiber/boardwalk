@@ -129,14 +129,126 @@ impl Entity {
         self
     }
 
+    pub fn with_title(mut self, t: impl Into<String>) -> Self {
+        self.title = Some(t.into());
+        self
+    }
+
+    pub fn with_property(mut self, key: impl Into<String>, val: impl Into<Value>) -> Self {
+        self.properties.insert(key.into(), val.into());
+        self
+    }
+
+    pub fn with_link(mut self, l: Link) -> Self {
+        self.links.push(l);
+        self
+    }
+
+    pub fn with_action(mut self, a: Action) -> Self {
+        self.actions.push(a);
+        self
+    }
+
+    pub fn with_sub_entity(mut self, e: SubEntity) -> Self {
+        self.entities.push(e);
+        self
+    }
+
     pub fn with_self_link(mut self, href: Url) -> Self {
-        self.links.push(Link {
-            rel: vec![rels::SELF.into()],
+        self.links.push(Link::new(rels::SELF, href));
+        self
+    }
+}
+
+impl Link {
+    pub fn new(rel: impl Into<String>, href: Url) -> Self {
+        Self { rel: vec![rel.into()], href, class: vec![], title: None, type_: None }
+    }
+
+    pub fn rels(rels: impl IntoIterator<Item = impl Into<String>>, href: Url) -> Self {
+        Self {
+            rel: rels.into_iter().map(Into::into).collect(),
             href,
             class: vec![],
             title: None,
             type_: None,
-        });
+        }
+    }
+
+    pub fn with_title(mut self, t: impl Into<String>) -> Self {
+        self.title = Some(t.into());
+        self
+    }
+}
+
+impl Action {
+    pub fn new(name: impl Into<String>, method: impl Into<String>, href: Url) -> Self {
+        Self {
+            name: name.into(),
+            class: vec![],
+            method: method.into(),
+            href,
+            title: None,
+            type_: None,
+            fields: vec![],
+        }
+    }
+
+    pub fn with_class(mut self, c: impl Into<String>) -> Self {
+        self.class.push(c.into());
+        self
+    }
+
+    pub fn with_field(mut self, f: Field) -> Self {
+        self.fields.push(f);
+        self
+    }
+
+    pub fn form_urlencoded(mut self) -> Self {
+        self.type_ = Some("application/x-www-form-urlencoded".into());
+        self
+    }
+}
+
+impl Field {
+    pub fn hidden(name: impl Into<String>, value: impl Into<Value>) -> Self {
+        Self {
+            name: name.into(),
+            type_: "hidden".into(),
+            class: vec![],
+            value: Some(value.into()),
+            title: None,
+        }
+    }
+
+    pub fn typed(name: impl Into<String>, ty: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            type_: ty.into(),
+            class: vec![],
+            value: None,
+            title: None,
+        }
+    }
+}
+
+impl EmbeddedEntity {
+    pub fn new(rel: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self { rel: rel.into_iter().map(Into::into).collect(), ..Default::default() }
+    }
+
+    pub fn with_class(mut self, c: impl Into<String>) -> Self {
+        self.class.push(c.into());
+        self
+    }
+
+    pub fn with_property(mut self, k: impl Into<String>, v: impl Into<Value>) -> Self {
+        self.properties.insert(k.into(), v.into());
+        self
+    }
+
+    pub fn with_link(mut self, l: Link) -> Self {
+        self.links.push(l);
         self
     }
 }

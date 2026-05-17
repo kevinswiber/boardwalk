@@ -1,26 +1,12 @@
-//! HTTP layer for Zetta.
-//!
-//! Full router lands in M6. This file declares the public entry point.
+//! HTTP layer for Zetta. Hosts the runtime (`Core`) and exposes it as
+//! an axum Router that emits Siren over HTTP.
 
 #![forbid(unsafe_code)]
 
-use std::sync::Arc;
+mod core;
+mod render;
+mod routes;
+mod ws;
 
-use axum::Router;
-
-#[derive(Clone)]
-pub struct Core {
-    // Wiring lives here once M1/M3/M5 are in.
-    _placeholder: (),
-}
-
-impl Default for Core {
-    fn default() -> Self { Self { _placeholder: () } }
-}
-
-/// Build the axum router used for both the public listener and the
-/// reverse peer tunnel.
-pub fn router(_core: Arc<Core>) -> Router {
-    Router::new()
-        .route("/", axum::routing::get(|| async { "zetta-rs" }))
-}
+pub use core::{Core, CoreBuilder, DeviceHandle};
+pub use routes::{router, router_with, AppState, PeerHandler, PeerInitState};

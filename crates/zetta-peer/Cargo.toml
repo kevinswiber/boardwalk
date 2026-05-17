@@ -14,12 +14,19 @@ zetta-registry = { path = "../zetta-registry" }
 zetta-events = { path = "../zetta-events" }
 zetta-http = { path = "../zetta-http" }
 
+axum.workspace = true
 tokio.workspace = true
 h2.workspace = true
-hyper.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http2", "server"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http2", "tokio"] }
 tower.workspace = true
 url.workspace = true
 backon.workspace = true
+bytes.workspace = true
+futures.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+urlencoding = "2"
