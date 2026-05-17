@@ -1,4 +1,4 @@
-//! CaQL — Calypso Query Language. v0 subset.
+//! CaQL — Calypso Query Language.
 //!
 //! Grammar (informal):
 //!

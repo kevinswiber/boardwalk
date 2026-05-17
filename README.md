@@ -17,7 +17,7 @@ and is evolving independently from there.
 
 ```toml
 [dependencies]
-boardwalk = "0.0.1"
+boardwalk = "0.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -134,14 +134,12 @@ can pick what they need:
 
 ## Docs
 
-- [Design overview](docs/00-overview.md) — what we're porting and what
-  we're skipping from upstream Zetta.
-- [Architecture](docs/01-architecture.md) — crate layout and how the
-  pieces talk.
-- [Peer protocol](docs/02-protocol-peer.md) — WebSocket-upgrade then
-  HTTP/2-prior-knowledge tunnel.
-- [API ergonomics](docs/07-api-ergonomics.md) — builder + driver shape.
-- [v1 roadmap](docs/V1-ROADMAP.md) — what's still open.
+- [Getting started](docs/getting-started.md) — install, write a
+  driver, run the server, talk to it.
+- [Devices](docs/devices.md) — `Device` trait, properties, streams,
+  scouts, persistence.
+- [Peers](docs/peers.md) — reverse-tunnel hub ↔ cloud setup.
+- [CaQL](docs/caql.md) — query DSL reference.
 
 ## License
 

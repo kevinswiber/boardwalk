@@ -6,9 +6,9 @@
 //! that *would* have accepted the WebSocket — calls
 //! `h2::client::handshake` and drives a GET at task A.
 //!
-//! If this passes, the entire peer protocol from docs/02-protocol-peer.md
-//! is feasible: in production we just swap the duplex pair for a real
-//! TCP socket whose WebSocket handshake has completed.
+//! If this passes, the peer protocol is feasible: in production we
+//! just swap the duplex pair for a real TCP socket whose WebSocket
+//! handshake has completed.
 
 use std::convert::Infallible;
 
@@ -77,7 +77,8 @@ async fn run_acceptor(io: tokio::io::DuplexStream) -> Result<()> {
         }
     });
 
-    // Build a peer-confirmation request, mirroring docs/02-protocol-peer.md.
+    // Build a peer-confirmation request — the same shape the real
+    // acceptor sends to the initiator across the tunnel.
     let request = Request::builder()
         .method("GET")
         .uri("http://alice.peer.boardwalk.invalid/_initiate_peer/635712d6-03e7-4147-b33d-f80e14e4f74d")
