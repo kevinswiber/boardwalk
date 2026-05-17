@@ -80,7 +80,7 @@ async fn run_acceptor(io: tokio::io::DuplexStream) -> Result<()> {
     // Build a peer-confirmation request, mirroring docs/02-protocol-peer.md.
     let request = Request::builder()
         .method("GET")
-        .uri("http://alice.unreachable.zettajs.io/_initiate_peer/635712d6-03e7-4147-b33d-f80e14e4f74d")
+        .uri("http://alice.peer.boardwalk.invalid/_initiate_peer/635712d6-03e7-4147-b33d-f80e14e4f74d")
         .body(())?;
 
     let (response_fut, _send_stream) = send_request.send_request(request, true)?;

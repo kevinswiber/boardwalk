@@ -9,7 +9,7 @@ items from the v2 doc plus new issues that surfaced during impl.
 
 ### Q21. TLS integration test
 
-`zetta-tunnel::dial_initiator` now supports `https://` and `wss://`
+`boardwalk-tunnel::dial_initiator` now supports `https://` and `wss://`
 schemes via rustls + webpki-roots + aws-lc-rs. The codepath compiles
 clean. But there's no integration test exercising it because the test
 harness would need to (a) generate a self-signed cert at runtime, (b)
@@ -18,7 +18,7 @@ client side.
 
 **Default:** add a TLS integration test in v0.1 once we have the
 self-signed cert helper. Manual verification (linking to a real
-https-fronted Zetta) is the v0 acceptance bar.
+https-fronted Boardwalk) is the v0 acceptance bar.
 
 ---
 
@@ -64,7 +64,7 @@ For v0 the n²-stream behavior is acceptable.
 
 The cloud's WS upgrade for `/events` doesn't currently negotiate a
 subprotocol. Both the original Zetta JS spec and modern clients prefer
-explicit negotiation (e.g. `zetta-events/1`).
+explicit negotiation (e.g. `boardwalk-events/1`).
 
 **Default:** add it in M10 polish. Not urgent — clients that don't send
 the token still get served.
@@ -73,7 +73,7 @@ the token still get served.
 
 ### Q26. Apps support (carries over from v2 Q14)
 
-`zetta_core::App` trait still placeholder. The `dusk_to_dawn` example
+`boardwalk_core::App` trait still placeholder. The `dusk_to_dawn` example
 in `docs/07-api-ergonomics.md` requires real `server.observe([q1,q2],
 |d1,d2| ...)` plumbing. Worth a half-day of work.
 
@@ -89,7 +89,7 @@ Punt. Drivers register statically via `.use_device()`.
 
 ### Q28. Registry persistence (carries over from v2 Q15)
 
-`zetta_registry` exists and is tested but not wired into the running
+`boardwalk_registry` exists and is tested but not wired into the running
 server. Persist devices on add, restore on boot.
 
 **Default:** v0.1.
@@ -103,7 +103,7 @@ needs:
 - A way to instantiate a typed `Device` from form input (type=led, id, name).
 - A device factory registry keyed by type string.
 
-**Default:** v0.1. A reasonable shape would be `Zetta::register_factory(type_name, |args| -> Box<dyn Device>)`.
+**Default:** v0.1. A reasonable shape would be `Boardwalk::register_factory(type_name, |args| -> Box<dyn Device>)`.
 
 ---
 

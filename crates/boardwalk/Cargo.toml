@@ -1,0 +1,16 @@
+[package]
+name = "boardwalk"
+version = "0.0.1"
+description = "Boardwalk — hypermedia server framework with reverse-tunnel federation"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+boardwalk-core = { path = "../boardwalk-core" }
+boardwalk-http = { path = "../boardwalk-http" }
+boardwalk-macros = { path = "../boardwalk-macros" }
+boardwalk-server = { path = "../boardwalk-server" }

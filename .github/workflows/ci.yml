@@ -22,13 +22,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: taiki-e/install-action@just
+      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test
-        run: cargo test --workspace --all-targets
+      - name: just lint
+        run: just lint
+      - name: just test-ci
+        run: just test-ci
 
   deny:
     name: cargo deny
