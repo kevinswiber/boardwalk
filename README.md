@@ -17,7 +17,7 @@ and is evolving independently from there.
 
 ```toml
 [dependencies]
-boardwalk = "0.1"
+boardwalk = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -100,37 +100,32 @@ HTTP/2 over an arbitrary duplex stream:
 cargo run --bin tunnel-poc
 ```
 
-## Crate layout
+## Module layout
 
-The published API surface is the `boardwalk` facade. Everything else
-is split across narrowly-scoped crates so driver authors and embedders
-can pick what they need:
+The whole library lives in the single [`boardwalk`] crate. The most
+commonly used types — `Boardwalk`, `Device`, `DeviceConfig`,
+`DeviceError`, `TransitionInput`, `App`, `Scout`, `ServerHandle`,
+`device`/`transition` macros — are re-exported at the crate root.
+Submodules expose lower-level surface for embedders:
 
-| Crate                  | What it does                                                       |
-| ---------------------- | ------------------------------------------------------------------ |
-| [`boardwalk`]          | Re-export facade — start here                                      |
-| [`boardwalk-core`]     | `Device`, `Scout`, `App` traits + runtime types                    |
-| [`boardwalk-siren`]    | Siren entity / action / link / field types and serde               |
-| [`boardwalk-caql`]     | Calypso Query Language — parser + evaluator                        |
-| [`boardwalk-events`]   | Event bus, topic matching, multiplex WebSocket protocol            |
-| [`boardwalk-registry`] | redb-backed persistent device + peer registries                    |
-| [`boardwalk-http`]     | axum router emitting Siren; WS endpoint; peer upgrade route        |
-| [`boardwalk-tunnel`]   | WebSocket upgrade + HTTP/2-prior-knowledge tunnel primitives       |
-| [`boardwalk-peer`]     | Outbound peer client and inbound peer acceptor                     |
-| [`boardwalk-macros`]   | `#[device]` / `#[transition]` proc macros                          |
-| [`boardwalk-server`]   | `Boardwalk::new()…listen()` builder                                |
+| Module                 | What's in it                                                        |
+| ---------------------- | ------------------------------------------------------------------- |
+| `boardwalk::core`      | `Device`, `Scout`, `App` traits, transitions, streams               |
+| `boardwalk::siren`     | Siren entity / action / link / field types + serde                  |
+| `boardwalk::caql`      | Calypso Query Language — parser + evaluator                         |
+| `boardwalk::events`    | Event bus, topic matching, multiplex WebSocket protocol             |
+| `boardwalk::registry`  | redb-backed persistent device + peer registries                     |
+| `boardwalk::http`      | axum router emitting Siren; WS endpoint; peer upgrade route         |
+| `boardwalk::tunnel`    | WebSocket-upgrade + HTTP/2-prior-knowledge tunnel primitives        |
+| `boardwalk::peer`      | Outbound peer client and inbound peer acceptor                      |
+| `boardwalk::server`    | `Boardwalk::new()…listen()` builder                                 |
+
+The `#[device]` and `#[transition]` proc macros ship in the separate
+[`boardwalk-macros`] crate (a Rust requirement — proc-macro crates can't
+live alongside non-macro code) and are re-exported by `boardwalk`.
 
 [`boardwalk`]: https://crates.io/crates/boardwalk
-[`boardwalk-core`]: https://crates.io/crates/boardwalk-core
-[`boardwalk-siren`]: https://crates.io/crates/boardwalk-siren
-[`boardwalk-caql`]: https://crates.io/crates/boardwalk-caql
-[`boardwalk-events`]: https://crates.io/crates/boardwalk-events
-[`boardwalk-registry`]: https://crates.io/crates/boardwalk-registry
-[`boardwalk-http`]: https://crates.io/crates/boardwalk-http
-[`boardwalk-tunnel`]: https://crates.io/crates/boardwalk-tunnel
-[`boardwalk-peer`]: https://crates.io/crates/boardwalk-peer
 [`boardwalk-macros`]: https://crates.io/crates/boardwalk-macros
-[`boardwalk-server`]: https://crates.io/crates/boardwalk-server
 
 ## Docs
 

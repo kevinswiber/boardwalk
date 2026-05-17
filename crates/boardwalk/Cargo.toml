@@ -19,8 +19,71 @@ categories = [
 ]
 publish = true
 
+[features]
+# When enabled, peer TLS dials accept any server cert. Test-only —
+# never enable in production. Lets integration tests use self-signed
+# certs without poking the OS trust store.
+dangerous-test-tls = []
+
 [dependencies]
-boardwalk-core.workspace = true
-boardwalk-http.workspace = true
 boardwalk-macros.workspace = true
-boardwalk-server.workspace = true
+
+# Async runtime
+tokio = { workspace = true }
+futures.workspace = true
+async-trait.workspace = true
+async-stream = "0.3"
+
+# HTTP / HTTP2 / WS
+axum.workspace = true
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["client-legacy", "http2", "tokio"] }
+h2.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+bytes.workspace = true
+mime.workspace = true
+
+# TLS
+rustls = { workspace = true, default-features = false, features = ["std", "tls12"] }
+tokio-rustls = { workspace = true, default-features = false }
+rustls-platform-verifier = "0.7"
+rustls-pki-types = "1"
+
+# Serde
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7"
+
+# Persistence
+redb.workspace = true
+
+# Utilities
+uuid.workspace = true
+url.workspace = true
+time.workspace = true
+regex.workspace = true
+backon.workspace = true
+urlencoding = "2"
+base64 = "0.22"
+sha1 = "0.10"
+rand = "0.9"
+
+# Errors
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite.workspace = true
+rustls = { workspace = true, default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+tokio-rustls = { workspace = true, default-features = false, features = ["aws-lc-rs", "tls12"] }
+rcgen = "0.13"
+tempfile = "3"
+tracing-subscriber.workspace = true

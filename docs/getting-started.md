@@ -7,7 +7,7 @@ hitting it with curl and a WebSocket client. Five minutes end-to-end.
 
 ```toml
 [dependencies]
-boardwalk = "0.1"
+boardwalk = "0.2"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

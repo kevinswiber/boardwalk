@@ -1,8 +1,23 @@
-//! `boardwalk` is the façade crate. Most users start here.
+//! Boardwalk — hypermedia server framework with reverse-tunnel federation.
+//!
+//! See [the README](https://github.com/kevinswiber/boardwalk) for an
+//! introduction.
 
 #![forbid(unsafe_code)]
 
-pub use boardwalk_core::{Device, DeviceConfig, DeviceError, TransitionInput};
-pub use boardwalk_http::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
+pub mod caql;
+pub mod core;
+pub mod events;
+pub mod http;
+pub mod peer;
+pub mod registry;
+pub mod server;
+pub mod siren;
+pub mod tunnel;
+
 pub use boardwalk_macros::{device, transition};
-pub use boardwalk_server::Boardwalk;
+
+// Curated re-exports — the surface most users want at the crate root.
+pub use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+pub use crate::http::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
+pub use crate::server::Boardwalk;

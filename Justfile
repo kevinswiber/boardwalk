@@ -2,13 +2,14 @@
 default:
     @just --list
 
-# Run all tests.
+# Run all tests. Enables `dangerous-test-tls` so the TLS integration
+# test runs against a self-signed cert — fine locally, never in prod.
 test *args:
-    cargo +stable nextest run --no-tests pass {{ args }}
+    cargo +stable nextest run --workspace --no-tests pass --features dangerous-test-tls {{ args }}
 
 # Run all tests (CI mode: no fail-fast, verbose).
 test-ci *args:
-    cargo +stable nextest run --profile ci --no-tests pass {{ args }}
+    cargo +stable nextest run --workspace --profile ci --no-tests pass --features dangerous-test-tls {{ args }}
 
 # Run a specific test file (e.g. just test-file peer).
 test-file name *args:

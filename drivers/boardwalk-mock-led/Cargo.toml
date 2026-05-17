@@ -10,5 +10,5 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-boardwalk-core.workspace = true
+boardwalk.workspace = true
 futures.workspace = true

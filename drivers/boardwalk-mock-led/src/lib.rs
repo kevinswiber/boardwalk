@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use boardwalk_core::{Device, DeviceConfig, DeviceError};
+use boardwalk::{Device, DeviceConfig, DeviceError};
 
 #[derive(Default)]
 pub struct Led {
@@ -34,7 +34,7 @@ impl Device for Led {
         if self.on { "on" } else { "off" }
     }
 
-    boardwalk_core::transitions! {
+    boardwalk::transitions! {
         "turn-on" => turn_on,
         "turn-off" => turn_off,
     }

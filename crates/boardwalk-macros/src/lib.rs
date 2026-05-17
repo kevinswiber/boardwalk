@@ -84,8 +84,8 @@ pub fn device(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #impl_block
 
-        impl #impl_generics ::boardwalk_core::Device for #self_ty #where_clause {
-            fn config(&self, cfg: &mut ::boardwalk_core::DeviceConfig) {
+        impl #impl_generics ::boardwalk::Device for #self_ty #where_clause {
+            fn config(&self, cfg: &mut ::boardwalk::DeviceConfig) {
                 <#self_ty>::config(self, cfg)
             }
             fn state(&self) -> &str {
@@ -94,16 +94,16 @@ pub fn device(_attr: TokenStream, input: TokenStream) -> TokenStream {
             fn transition<'__a>(
                 &'__a mut self,
                 name: &'__a str,
-                _input: ::boardwalk_core::TransitionInput,
+                _input: ::boardwalk::TransitionInput,
             ) -> ::futures::future::BoxFuture<
                 '__a,
-                ::std::result::Result<(), ::boardwalk_core::DeviceError>,
+                ::std::result::Result<(), ::boardwalk::DeviceError>,
             > {
                 ::std::boxed::Box::pin(async move {
                     match name {
                         #(#arms)*
                         other => ::std::result::Result::Err(
-                            ::boardwalk_core::DeviceError::Invalid(
+                            ::boardwalk::DeviceError::Invalid(
                                 ::std::format!("unknown transition `{}`", other),
                             ),
                         ),

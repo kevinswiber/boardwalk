@@ -20,6 +20,6 @@ quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
-boardwalk-core.workspace = true
-tokio = { workspace = true }
-futures.workspace = true
+# The macro generates code referencing `::boardwalk::Device` etc., so
+# any test that actually instantiates the generated impl lives in the
+# `boardwalk` crate's own `tests/` directory to avoid a dev-dep cycle.
