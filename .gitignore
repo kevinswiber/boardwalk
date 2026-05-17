@@ -1,4 +1,7 @@
 target/
-.zetta/
+.boardwalk/
 *.redb
 *.redb-lock
+/.gumbo
+CLAUDE.local.md
+AGENTS.local.md

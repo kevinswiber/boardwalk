@@ -1,13 +1,15 @@
 [package]
 name = "boardwalk-macros"
-version = "0.0.1"
 description = "Proc macros for ergonomic Boardwalk drivers"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 
 [lib]
 proc-macro = true
@@ -18,6 +20,6 @@ quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
-boardwalk-core = { path = "../boardwalk-core" }
+boardwalk-core.workspace = true
 tokio = { workspace = true }
 futures.workspace = true

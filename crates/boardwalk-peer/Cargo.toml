@@ -1,19 +1,21 @@
 [package]
 name = "boardwalk-peer"
-version = "0.0.1"
 description = "Outbound peer client and inbound peer socket for Boardwalk"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 
 [dependencies]
-boardwalk-tunnel = { path = "../boardwalk-tunnel" }
-boardwalk-registry = { path = "../boardwalk-registry" }
-boardwalk-events = { path = "../boardwalk-events" }
-boardwalk-http = { path = "../boardwalk-http" }
+boardwalk-tunnel.workspace = true
+boardwalk-registry.workspace = true
+boardwalk-events.workspace = true
+boardwalk-http.workspace = true
 
 axum.workspace = true
 async-trait.workspace = true

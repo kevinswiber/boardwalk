@@ -1,20 +1,22 @@
 [package]
 name = "boardwalk-http"
-version = "0.0.1"
 description = "HTTP/1.1 + HTTP/2 server emitting Siren JSON for Boardwalk"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 
 [dependencies]
-boardwalk-core = { path = "../boardwalk-core" }
-boardwalk-siren = { path = "../boardwalk-siren" }
-boardwalk-events = { path = "../boardwalk-events" }
-boardwalk-caql = { path = "../boardwalk-caql" }
-boardwalk-tunnel = { path = "../boardwalk-tunnel" }
+boardwalk-core.workspace = true
+boardwalk-siren.workspace = true
+boardwalk-events.workspace = true
+boardwalk-caql.workspace = true
+boardwalk-tunnel.workspace = true
 
 async-trait.workspace = true
 

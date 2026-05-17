@@ -1,16 +1,26 @@
 [package]
 name = "boardwalk"
-version = "0.0.1"
-description = "Boardwalk — hypermedia server framework with reverse-tunnel federation"
+description = "Hypermedia server framework with reverse-tunnel federation"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
-publish.workspace = true
+documentation = "https://docs.rs/boardwalk"
+readme = "README.md"
+keywords = ["hypermedia", "siren", "websocket", "peer", "tunnel"]
+categories = [
+    "web-programming::http-server",
+    "web-programming::websocket",
+    "network-programming",
+    "api-bindings",
+]
+publish = true
 
 [dependencies]
-boardwalk-core = { path = "../boardwalk-core" }
-boardwalk-http = { path = "../boardwalk-http" }
-boardwalk-macros = { path = "../boardwalk-macros" }
-boardwalk-server = { path = "../boardwalk-server" }
+boardwalk-core.workspace = true
+boardwalk-http.workspace = true
+boardwalk-macros.workspace = true
+boardwalk-server.workspace = true

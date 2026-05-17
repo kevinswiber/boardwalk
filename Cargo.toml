@@ -18,16 +18,32 @@ members = [
 ]
 
 [workspace.package]
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 authors = ["Kevin Swiber <kevin@swiber.dev>"]
+homepage = "https://github.com/kevinswiber/boardwalk"
 repository = "https://github.com/kevinswiber/boardwalk"
-# Until we cut a real release, nothing is published. Flip on the
-# specific crates that ship when v0.1 lands.
+# Workspace default. Each library crate that ships flips this on
+# explicitly with `publish = true`. Examples, drivers, and other
+# in-tree-only members inherit `publish = false` and stay unpublished.
 publish = false
 
 [workspace.dependencies]
+# Internal crates (path + version so they publish + resolve from
+# crates.io once the dependency chain lands there).
+boardwalk-core = { path = "crates/boardwalk-core", version = "0.0.1" }
+boardwalk-siren = { path = "crates/boardwalk-siren", version = "0.0.1" }
+boardwalk-caql = { path = "crates/boardwalk-caql", version = "0.0.1" }
+boardwalk-events = { path = "crates/boardwalk-events", version = "0.0.1" }
+boardwalk-registry = { path = "crates/boardwalk-registry", version = "0.0.1" }
+boardwalk-tunnel = { path = "crates/boardwalk-tunnel", version = "0.0.1" }
+boardwalk-http = { path = "crates/boardwalk-http", version = "0.0.1" }
+boardwalk-peer = { path = "crates/boardwalk-peer", version = "0.0.1" }
+boardwalk-macros = { path = "crates/boardwalk-macros", version = "0.0.1" }
+boardwalk-server = { path = "crates/boardwalk-server", version = "0.0.1" }
+
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "codec"] }

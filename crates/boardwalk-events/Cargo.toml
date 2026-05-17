@@ -1,16 +1,18 @@
 [package]
 name = "boardwalk-events"
-version = "0.0.1"
-description = "Pub/sub bus and multiplexed event WebSocket sub-protocol"
+description = "Pub/sub bus and multiplexed event WebSocket sub-protocol for Boardwalk"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 
 [dependencies]
-boardwalk-caql = { path = "../boardwalk-caql" }
+boardwalk-caql.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true }
