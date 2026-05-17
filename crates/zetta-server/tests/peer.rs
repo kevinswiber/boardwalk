@@ -250,6 +250,89 @@ async fn cloud_dedups_peer_subscriptions() {
 }
 
 #[tokio::test]
+async fn unsubscribe_tears_down_forwarded_stream() {
+    let cloud = Zetta::new().name("cloud").build().unwrap();
+    let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud_addr = cloud_listener.local_addr().unwrap();
+    let cloud_acceptors = cloud.acceptors.clone();
+    let cloud_streams = cloud.peer_streams.clone();
+    tokio::spawn(async move {
+        axum::serve(cloud_listener, cloud.router).await.unwrap();
+    });
+
+    let hub = Zetta::new()
+        .name("hub")
+        .use_device(Led::default())
+        .link(format!("http://{cloud_addr}"))
+        .build()
+        .unwrap();
+    let hub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    tokio::spawn(async move {
+        axum::serve(hub_listener, hub.router).await.unwrap();
+    });
+
+    assert!(cloud_acceptors.wait_for_first(Duration::from_secs(5)).await);
+
+    let server: Json = reqwest::get(format!("http://{cloud_addr}/servers/hub"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let dev_id = server["entities"][0]["properties"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let topic = format!("hub/led/{dev_id}/state");
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{cloud_addr}/events"))
+        .await
+        .unwrap();
+    let sub = serde_json::json!({"type": "subscribe", "topic": topic});
+    ws.send(Message::Text(sub.to_string().into()))
+        .await
+        .unwrap();
+
+    // Drain subscribe-ack.
+    let ack = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ack: Json = match ack {
+        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        _ => panic!(),
+    };
+    let sub_id = ack["subscriptionId"].as_u64().unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(cloud_streams.active_streams().await, 1);
+
+    // Unsubscribe — cloud should drop the H2 body for this stream,
+    // which sends RST_STREAM to the hub.
+    let unsub = serde_json::json!({"type": "unsubscribe", "subscriptionId": sub_id});
+    ws.send(Message::Text(unsub.to_string().into()))
+        .await
+        .unwrap();
+
+    // Wait for the unsubscribe-ack.
+    let _ack = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    // After the last subscriber leaves, the (peer, topic) entry should
+    // be torn down and the H2 stream cancelled.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        cloud_streams.active_streams().await,
+        0,
+        "forwarded stream should be torn down after last unsubscribe"
+    );
+}
+
+#[tokio::test]
 async fn cloud_ws_forwards_peer_events() {
     let cloud = Zetta::new().name("cloud").build().unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

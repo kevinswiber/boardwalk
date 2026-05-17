@@ -18,118 +18,59 @@ question (`v2#Q14`, `v3#Q24`) so the rationale stays discoverable.
   /servers/{name}/devices wired with peer-forward fall-through.
 - ✅ `v3#Q21` TLS integration test via `dangerous-test-tls` feature
   on `zetta-tunnel` + rcgen self-signed cert.
+- ✅ `v3#Q22` Duplicate peer-name handling: cloud returns 409 Conflict
+  when a second hub tries to claim a name already in use.
+- ✅ `v3#Q25` `/events` WS upgrade negotiates `zetta-events/1`
+  subprotocol.
+- ✅ `v3#Q31` Tunnel cancellation hygiene: WS unsubscribe aborts the
+  cloud-side H2 driver task; dropping the body sends RST_STREAM
+  upstream (test: `unsubscribe_tears_down_forwarded_stream`).
 - ✅ Graceful shutdown via `Zetta::listen_until(addr, signal)`.
 - ✅ `cargo deny` configured + CI step.
 - ✅ Multi-device observe: `ServerHandle::observe(queries, callback)`
-  fires when all queries are satisfied.
+  fires when all queries are satisfied; `observe_loop` re-fires on
+  device-set changes.
 - ✅ Transition-dispatch macro: `zetta_core::transitions! { ... }`
   in `Device` impl removes the `Box::pin(async move { match ... })`
-  boilerplate. (Full `#[device]` proc-macro deferred — see below.)
+  boilerplate.
+- ✅ Full proc-macro `#[device]` + `#[transition]` on `zetta-macros`
+  (collapses the whole `Device` impl).
 - ✅ CI: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
-  across Linux + macOS, plus `cargo deny check`.
+  across Linux + macOS + Windows, plus `cargo deny check`.
 - ✅ TLS uses `rustls-platform-verifier` (OS trust store).
+- ✅ Peer records persisted on first confirm (alongside device records)
+  when `Zetta::persist(path)` is enabled.
+- ✅ Device-declared streams: `DeviceCtx::publish` wired through
+  `BusSink` from `Device::on_start`, so devices can emit on topics
+  beyond `state`.
+- ✅ Forwarded-events cleanup: cloud emits a 502 error frame when the
+  upstream H2 stream closes mid-subscription.
+- ✅ `POST /servers/{name}/events/unsubscribe` parity stub
+  (forwards to peer or returns 202).
+- ✅ Tracing instrumentation pass for transitions, WS subscribe/
+  unsubscribe, and peer-forward request paths.
 
-## Operational hardening
-
-### Duplicate peer-name handling — `v3#Q22`
-Two hubs both calling themselves "hub" linking to the same cloud:
-second overwrites first silently. Reject the second WS upgrade with
-`409 Conflict` and a clear error body.
-
-### Tunnel cancellation hygiene — `v3#Q31`
-When a forwarded subscription aborts (WS unsubscribe / client close),
-the cloud's HTTP/2 stream to the hub should `RST_STREAM` so the hub
-stops producing. Verify and tighten.
+## Still open
 
 ### Graceful peer-disconnect behavior — `v3#Q32`
 Currently: hub goes offline → cloud's `SendRequest` errors → cloud
 returns 502 → hub eventually reconnects. Probably correct but needs a
-longer-running test to confirm no leak.
-
-### Per-platform peer-link test in CI
-`rustls-platform-verifier` behaves differently per OS. CI matrix
-already covers Linux + macOS. Add Windows once we have a Windows-aware
-test harness.
-
-## Protocol completeness
-
-### Forwarded events: cleanup on connection drop
-When the H2 connection drops mid-event-stream, the cloud's WS client
-should receive a clear `error` or `unsubscribe-ack`. Currently the
-stream just dies silently.
-
-### `/events` subprotocol negotiation — `v3#Q25`
-Cloud's WS upgrade should negotiate `zetta-events/1`. Cheap. M10
-polish.
-
-### `POST /servers/{name}/events/unsubscribe` parity
-The original Zetta defines this as a way to cancel a subscription via
-HTTP (not WS). We don't have it. Probably never needed since v0 uses
-WS unsubscribe or H2 RST_STREAM, but worth a once-over.
-
-### Stream subscriptions on devices (beyond `state`)
-Today only `state` is auto-published when monitored. Devices that
-declare `.stream("intensity", ...)` need a story for actually
-publishing values to that topic. `DeviceCtx::publish` exists but
-isn't wired into the `Device::run` path.
-
-## Platform features
-
-### Persist peer records too
-Right now `zetta-registry` persists device records (via
-`Zetta::persist`) but `PeerRecord` is not persisted on
-connect/disconnect. Useful for "show me peers that have ever connected"
-in the UI/CLI.
-
-### Re-firing observe
-Today `ServerHandle::observe` is single-shot — fires once when all
-queries are satisfied. The original Zetta re-fires when device sets
-change. Worth adding `observe_loop` that re-runs the callback on every
-device-set change.
-
-## Developer experience
-
-### Full proc-macro `#[device]` / `#[transition]` / `#[app]`
-The current `transitions! { ... }` macro_rules helper removes the
-transition-dispatch boilerplate but `Device for X { ... }` still has
-to be written by hand (config, state, etc.). A proc-macro could
-collapse the whole impl into:
-
-```rust
-#[device]
-impl Led {
-    #[config] fn config(&self, cfg: &mut DeviceConfig) { ... }
-    #[state] fn state(&self) -> &str { ... }
-    #[transition] async fn turn_on(&mut self) -> Result<()> { ... }
-    #[transition] async fn turn_off(&mut self) -> Result<()> { ... }
-}
-```
-
-Needs a `zetta-macros` crate. Land when there are ≥3 real drivers
-written by hand and the remaining boilerplate hurts.
+longer-running test to confirm no leak (connection task count over
+many disconnect/reconnect cycles).
 
 ### Embedded admin UI — `v2#Q8`
 Originally defaulted to "no UI in v0", and we're keeping that. If
 ever: a small leptos/yew SPA at `/_ui`.
 
-### Better `serve_with_shutdown`
-`Zetta::listen` blocks until the listener stops. Worth adding
-`listen_until(signal: impl Future)` for clean shutdown in long-running
-processes.
-
-## Cross-cutting / housekeeping
-
-### Tracing instrumentation pass
-Most paths log at the right level, but it hasn't been audited. M10
-polish.
-
 ### Crate name on crates.io
 `zetta` may be taken. Check before first publish; `zetta-rs` is the
 fallback per `v1#Q9`.
 
-### `cargo deny` config
-Audit dependencies for licenses, advisories, duplicates. Add a
-`deny.toml` and a CI step.
+### `#[app]` proc-macro
+`#[device]` collapses the `Device` impl. `App` is simpler (single
+async fn) but a `#[app]` macro could still cut some boilerplate for
+configurable apps. Defer until ≥3 real apps exist and the shape is
+obvious.
 
 ## Things explicitly NOT in v1
 

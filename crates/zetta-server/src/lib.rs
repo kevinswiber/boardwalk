@@ -163,6 +163,9 @@ impl Zetta {
 
         let peer_init = PeerInitState::default();
         let acceptors = PeerAcceptors::new();
+        if let Some(reg) = registry.as_ref() {
+            acceptors.with_registry(reg.clone());
+        }
 
         let handler: PeerHandler = {
             let acceptors = acceptors.clone();

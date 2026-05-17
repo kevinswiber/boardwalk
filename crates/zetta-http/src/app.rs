@@ -168,6 +168,69 @@ impl ServerHandle {
             }
         }
     }
+
+    /// Continuous variant of [`observe`]. Fires `callback` every time
+    /// the matching device set changes. The callback receives the same
+    /// "one proxy per query" shape. Loops until the device-changes
+    /// channel closes (i.e. the server shuts down).
+    pub async fn observe_loop<F, Fut>(
+        &self,
+        queries: Vec<&str>,
+        mut callback: F,
+    ) -> Result<(), AppError>
+    where
+        F: FnMut(Vec<DeviceProxy>) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), AppError>> + Send,
+    {
+        let parsed: Vec<zetta_caql::Query> = queries
+            .iter()
+            .map(|q| zetta_caql::parse(q))
+            .collect::<Result<_, _>>()
+            .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
+        let mut rx = self.core.device_changes.subscribe();
+        let mut prev: Option<Vec<DeviceId>> = None;
+        loop {
+            let devices = self.core.list_devices().await;
+            let mut proxies = Vec::with_capacity(parsed.len());
+            let mut ok = true;
+            for q in &parsed {
+                let m = devices.iter().find(|d| {
+                    let target = serde_json::json!({
+                        "id": d.id.to_string(),
+                        "type": d.type_,
+                        "name": d.name,
+                        "state": d.state,
+                    });
+                    zetta_caql::matches(q, &target).unwrap_or(false)
+                });
+                match m {
+                    Some(d) => proxies.push(DeviceProxy {
+                        core: self.core.clone(),
+                        id: d.id,
+                    }),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                let ids: Vec<DeviceId> = proxies.iter().map(|p| p.id()).collect();
+                if prev.as_ref() != Some(&ids) {
+                    callback(proxies).await?;
+                    prev = Some(ids);
+                }
+            } else if prev.is_some() {
+                // The set was satisfied before but is no longer; reset
+                // so the next satisfying set re-fires.
+                prev = None;
+            }
+            match rx.recv().await {
+                Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
+    }
 }
 
 /// Handle on a specific device that an app can read, transition, and

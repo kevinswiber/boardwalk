@@ -75,11 +75,11 @@ pub trait Device: Send + Sync + 'static {
         input: TransitionInput,
     ) -> BoxFuture<'a, Result<(), DeviceError>>;
 
-    /// Optional long-running task — typically pushes telemetry to
-    /// declared streams. Default: do nothing.
-    fn run<'a>(&'a mut self, _ctx: DeviceCtx) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async { Ok(()) })
-    }
+    /// Called once after registration. Drivers spawn background tasks
+    /// here (e.g. periodic telemetry) using `ctx.publish` to push to
+    /// declared streams. `&self` — drivers needing mutable state
+    /// during these background tasks use interior mutability.
+    fn on_start(&self, _ctx: DeviceCtx) {}
 }
 
 /// Stream kind hint, surfaced in metadata for clients.

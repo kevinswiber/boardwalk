@@ -12,4 +12,5 @@ publish.workspace = true
 [dependencies]
 zetta-core = { path = "../zetta-core" }
 zetta-http = { path = "../zetta-http" }
+zetta-macros = { path = "../zetta-macros" }
 zetta-server = { path = "../zetta-server" }

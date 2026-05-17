@@ -80,6 +80,13 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                         let app_id = conn.next_app_id;
                         conn.next_app_id += 1;
 
+                        tracing::debug!(
+                            %topic,
+                            subscription_id = app_id,
+                            forwarded = is_peer_topic,
+                            "events ws subscribe"
+                        );
+
                         let _ = out_tx.send(OutboundMessage::SubscribeAck {
                             timestamp: now_ms(),
                             topic: topic.clone(),
@@ -116,6 +123,15 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                                             _,
                                         )) => continue,
                                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                            // Peer stream ended unexpectedly. Tell the WS
+                                            // client so it can re-subscribe or clean up.
+                                            let _ = out_tx_clone.send(OutboundMessage::Error {
+                                                code: 502,
+                                                timestamp: now_ms(),
+                                                topic: Some(topic_for_task.clone()),
+                                                message: Some("peer stream closed".to_string()),
+                                                subscription_id: Some(app_id),
+                                            });
                                             break;
                                         }
                                     }
@@ -149,6 +165,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     Ok(InboundMessage::Unsubscribe { subscription_id }) => {
+                        tracing::debug!(subscription_id, "events ws unsubscribe");
                         if let Some(bus_id) = conn.local_subs.remove(&subscription_id) {
                             state.core.bus.unsubscribe(bus_id);
                         }

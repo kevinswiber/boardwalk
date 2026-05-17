@@ -9,6 +9,7 @@ members = [
     "crates/zetta-http",
     "crates/zetta-peer",
     "crates/zetta-tunnel",
+    "crates/zetta-macros",
     "crates/zetta-server",
     "crates/zetta",
     "drivers/zetta-mock-led",

@@ -15,6 +15,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 use zetta_http::{Core, PeerInitState, PeerSenders};
+use zetta_registry::{PeerDirection, PeerRecord, PeerStatus, Registry};
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -126,11 +127,18 @@ pub struct PeerAcceptors {
     senders: Arc<tokio::sync::Mutex<HashMap<String, SendRequest<axum::body::Body>>>>,
     confirmations: Arc<std::sync::atomic::AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
+    registry: Arc<std::sync::Mutex<Option<Arc<Registry>>>>,
 }
 
 impl PeerAcceptors {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install a registry. Subsequent `on_upgraded` calls will persist
+    /// PeerRecords on confirmation and update status on disconnect.
+    pub fn with_registry(&self, registry: Arc<Registry>) {
+        *self.registry.lock().unwrap() = Some(registry);
     }
 
     pub fn confirmation_count(&self) -> u64 {
@@ -162,6 +170,7 @@ impl PeerAcceptors {
         let acceptors = self.clone();
         let peer_name_for_task = peer_name.clone();
         let task = tokio::spawn(async move {
+            let registry_snapshot = acceptors.registry.lock().unwrap().clone();
             match drive_acceptor(
                 peer_name_for_task.clone(),
                 connection_id,
@@ -171,17 +180,44 @@ impl PeerAcceptors {
             .await
             {
                 Ok(()) => {
+                    if let Some(reg) = &registry_snapshot {
+                        write_peer(
+                            reg,
+                            &peer_name_for_task,
+                            connection_id,
+                            PeerStatus::Connected,
+                        );
+                    }
                     acceptors
                         .confirmations
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     acceptors.notify.notify_waiters();
                 }
                 Err(e) => {
+                    if let Some(reg) = &registry_snapshot {
+                        write_peer(reg, &peer_name_for_task, connection_id, PeerStatus::Failed);
+                    }
                     tracing::warn!(peer = %peer_name_for_task, error = %e, "peer acceptor failed");
                 }
             }
             let mut inner = acceptors.inner.lock().await;
             inner.remove(&peer_name_for_task);
+            // The senders entry is cleaned up by the conn-cleanup task
+            // inside drive_acceptor; once that fires, transition to
+            // disconnected.
+            if let Some(reg) = &registry_snapshot {
+                // Best-effort: if the sender is still there, leave the
+                // status alone; otherwise mark disconnected.
+                let senders = acceptors.senders.lock().await;
+                if !senders.contains_key(&peer_name_for_task) {
+                    write_peer(
+                        reg,
+                        &peer_name_for_task,
+                        connection_id,
+                        PeerStatus::Disconnected,
+                    );
+                }
+            }
         });
         let mut inner = self.inner.lock().await;
         inner.insert(peer_name, task);
@@ -205,6 +241,13 @@ impl PeerSenders for PeerAcceptors {
     async fn names(&self) -> Vec<String> {
         let map = self.senders.lock().await;
         map.keys().cloned().collect()
+    }
+
+    async fn has_active_peer(&self, name: &str) -> bool {
+        if self.senders.lock().await.contains_key(name) {
+            return true;
+        }
+        self.inner.lock().await.contains_key(name)
     }
 }
 
@@ -255,6 +298,25 @@ async fn drive_acceptor(
         s.insert(peer_name.clone(), sender);
     }
     Ok(())
+}
+
+fn write_peer(registry: &Registry, name: &str, connection_id: Uuid, status: PeerStatus) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let url: url::Url = format!("peer://{name}/").parse().unwrap();
+    let record = PeerRecord {
+        id: connection_id,
+        name: name.to_string(),
+        url,
+        direction: PeerDirection::Acceptor,
+        status,
+        updated_ms: now_ms,
+    };
+    if let Err(e) = registry.put_peer(&record) {
+        tracing::warn!(error = %e, "failed to persist peer record");
+    }
 }
 
 fn backoff_ms(attempt: u32) -> u64 {

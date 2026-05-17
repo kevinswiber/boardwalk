@@ -35,6 +35,12 @@ pub trait PeerSenders: Send + Sync + 'static {
         name: &str,
     ) -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>>;
     async fn names(&self) -> Vec<String>;
+    /// Check whether a peer is currently connected or mid-handshake.
+    /// Default consults `names()`; impls (e.g. `PeerAcceptors`) can
+    /// override to also see pending peers.
+    async fn has_active_peer(&self, name: &str) -> bool {
+        self.names().await.iter().any(|n| n == name)
+    }
 }
 
 /// Inputs to the hubless device registration flow
@@ -109,6 +115,10 @@ pub fn router_with(state: AppState) -> Router {
         .route("/servers/{name}/meta", get(meta_get))
         .route("/servers/{name}/meta/{type}", get(meta_type_get))
         .route("/servers/{name}/events", get(server_events_stream))
+        .route(
+            "/servers/{name}/events/unsubscribe",
+            axum::routing::post(events_unsubscribe),
+        )
         .route("/peer-management", get(peer_management_get))
         .route("/events", get(events_ws))
         .route("/peers/{name}", any(peers_upgrade))
@@ -160,9 +170,20 @@ async fn maybe_forward_or_404(
             );
         }
     };
+    tracing::debug!(
+        peer = %target_name,
+        method = %req.method(),
+        path = %path_and_query,
+        "forwarding request to peer"
+    );
     let resp = match sender.send_request(req).await {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!(
+                peer = %target_name,
+                error = %e,
+                "peer forward send failed"
+            );
             return Some((StatusCode::BAD_GATEWAY, format!("peer forward: {e}")).into_response());
         }
     };
@@ -432,6 +453,30 @@ struct EventsQuery {
     topic: Option<String>,
 }
 
+/// `POST /servers/{name}/events/unsubscribe` — protocol-parity route.
+/// The original SPDY peer protocol used this to cancel a long-body
+/// event stream. Under HTTP/2 the cleaner pattern is dropping the
+/// streaming response (which triggers RST_STREAM), so this route is
+/// retained for compatibility but is intentionally a stub. Returns
+/// 202 Accepted and otherwise does nothing.
+async fn events_unsubscribe(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Body,
+) -> Response {
+    // Forward to a peer if the name is remote.
+    if name != state.core.name {
+        return maybe_forward_or_404(&state, &name, Method::POST, &uri, &headers, body)
+            .await
+            .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
+    }
+    // Local: accept and ignore. (Subscriptions cancel via WS unsubscribe
+    // or by RST_STREAM on the streaming response body.)
+    (StatusCode::ACCEPTED, "").into_response()
+}
+
 async fn server_events_stream(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -530,8 +575,15 @@ async fn peer_management_get() -> Response {
     .into_response()
 }
 
+/// Wire-level subprotocol token for the multiplex event WS.
+pub const EVENTS_SUBPROTOCOL: &str = "zetta-events/1";
+
 async fn events_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| crate::ws::handle_socket(socket, state))
+    // Negotiate the protocol token. If the client doesn't offer it,
+    // axum serves the upgrade without a Sec-WebSocket-Protocol header
+    // (backward-compatible).
+    ws.protocols([EVENTS_SUBPROTOCOL])
+        .on_upgrade(move |socket| crate::ws::handle_socket(socket, state))
 }
 
 #[derive(Debug, Deserialize)]
@@ -556,6 +608,18 @@ async fn peers_upgrade(
         Some(h) => h,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "peering disabled").into_response(),
     };
+
+    // Reject duplicate peer names. Two hubs with the same name landing
+    // on the same cloud is a config error — fail fast with 409.
+    if let Some(senders) = &state.peer_senders
+        && senders.has_active_peer(&peer_name).await
+    {
+        return (
+            StatusCode::CONFLICT,
+            format!("peer `{peer_name}` is already connected"),
+        )
+            .into_response();
+    }
 
     // Build 101 from request headers.
     let upgrade_response = match zetta_tunnel_upgrade_response(req.headers()) {

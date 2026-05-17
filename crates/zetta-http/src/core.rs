@@ -4,7 +4,9 @@ use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use zetta_core::{Device, DeviceConfig, DeviceError, DeviceId, TransitionInput};
+use zetta_core::{
+    Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink, TransitionInput,
+};
 use zetta_events::{Event, EventBus};
 
 /// Runtime owned by the HTTP layer (and reused by the peer tunnel
@@ -32,17 +34,24 @@ impl DeviceHandle {
     }
 }
 
-/// Builder used by `zetta-server`.
+/// Builder used by `zetta-server`. Devices are held un-Mutex'd until
+/// `build()` so `on_start` can be called with `&self`.
 pub struct CoreBuilder {
     name: String,
-    devices: Vec<DeviceHandle>,
+    pending: Vec<PendingDevice>,
+}
+
+struct PendingDevice {
+    id: DeviceId,
+    config: DeviceConfig,
+    device: Box<dyn Device>,
 }
 
 impl CoreBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            devices: Vec::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -63,21 +72,58 @@ impl CoreBuilder {
     /// Add a device when both the id and the config have already been
     /// resolved (e.g. via a registry lookup).
     pub fn add_device_full(&mut self, id: DeviceId, config: DeviceConfig, device: Box<dyn Device>) {
-        self.devices.push(DeviceHandle {
-            id,
-            config,
-            device: tokio::sync::Mutex::new(device),
-        });
+        self.pending.push(PendingDevice { id, config, device });
     }
 
     pub fn build(self) -> Arc<Core> {
         let (device_changes, _) = tokio::sync::broadcast::channel(64);
+        let bus = EventBus::new();
+        let mut handles = Vec::with_capacity(self.pending.len());
+        for p in self.pending {
+            let type_ = p.config.type_.clone().unwrap_or_else(|| "unknown".into());
+            let sink: Arc<dyn StreamSink> = Arc::new(BusSink {
+                bus: bus.clone(),
+                server: self.name.clone(),
+                type_: type_.clone(),
+                id: p.id,
+            });
+            let ctx = DeviceCtx {
+                id: p.id,
+                type_,
+                publish: sink,
+            };
+            p.device.on_start(ctx);
+            handles.push(DeviceHandle {
+                id: p.id,
+                config: p.config,
+                device: tokio::sync::Mutex::new(p.device),
+            });
+        }
         Arc::new(Core {
             name: self.name,
-            bus: EventBus::new(),
-            devices: RwLock::new(self.devices),
+            bus,
+            devices: RwLock::new(handles),
             device_changes,
         })
+    }
+}
+
+/// `StreamSink` impl backed by the event bus.
+struct BusSink {
+    bus: EventBus,
+    server: String,
+    type_: String,
+    id: DeviceId,
+}
+
+impl StreamSink for BusSink {
+    fn publish(&self, stream: &str, data: serde_json::Value) {
+        let topic = format!("{}/{}/{}/{}", self.server, self.type_, self.id, stream);
+        self.bus.publish(Event {
+            topic,
+            timestamp_ms: now_ms(),
+            data,
+        });
     }
 }
 
@@ -90,6 +136,19 @@ impl Core {
         config: DeviceConfig,
         device: Box<dyn Device>,
     ) {
+        let type_ = config.type_.clone().unwrap_or_else(|| "unknown".into());
+        let sink: Arc<dyn StreamSink> = Arc::new(BusSink {
+            bus: self.bus.clone(),
+            server: self.name.clone(),
+            type_: type_.clone(),
+            id,
+        });
+        let ctx = DeviceCtx {
+            id,
+            type_,
+            publish: sink,
+        };
+        device.on_start(ctx);
         let mut guard = self.devices.write().await;
         guard.push(DeviceHandle {
             id,
@@ -159,14 +218,35 @@ impl Core {
             .iter()
             .any(|t| t == name)
         {
+            tracing::debug!(
+                device = %handle.id,
+                transition = %name,
+                state = %prior_state,
+                "transition not allowed in current state"
+            );
             return Err(DeviceError::NotAllowed(format!(
                 "transition `{name}` not allowed in state `{prior_state}`"
             )));
         }
 
-        dev.transition(name, input).await?;
+        if let Err(e) = dev.transition(name, input).await {
+            tracing::warn!(
+                device = %handle.id,
+                transition = %name,
+                error = %e,
+                "device transition failed"
+            );
+            return Err(e);
+        }
 
         let new_state = dev.state().to_string();
+        tracing::debug!(
+            device = %handle.id,
+            transition = %name,
+            from = %prior_state,
+            to = %new_state,
+            "device transition ok"
+        );
         let extra = dev.properties();
         let snapshot = DeviceSnapshot {
             id: handle.id,

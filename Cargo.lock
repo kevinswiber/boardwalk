@@ -2646,6 +2646,7 @@ version = "0.0.1"
 dependencies = [
  "zetta-core",
  "zetta-http",
+ "zetta-macros",
  "zetta-server",
 ]
 
@@ -2720,6 +2721,18 @@ dependencies = [
  "zetta-events",
  "zetta-siren",
  "zetta-tunnel",
+]
+
+[[package]]
+name = "zetta-macros"
+version = "0.0.1"
+dependencies = [
+ "futures",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "tokio",
+ "zetta-core",
 ]
 
 [[package]]
