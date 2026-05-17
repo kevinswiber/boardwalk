@@ -11,8 +11,8 @@ name = "hello-led"
 path = "src/main.rs"
 
 [dependencies]
-zetta = { path = "../../crates/zetta" }
-zetta-mock-led = { path = "../../drivers/zetta-mock-led" }
+boardwalk = { path = "../../crates/boardwalk" }
+boardwalk-mock-led = { path = "../../drivers/boardwalk-mock-led" }
 tokio.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

@@ -184,6 +184,218 @@ dependencies = [
 ]
 
 [[package]]
+name = "boardwalk"
+version = "0.0.1"
+dependencies = [
+ "boardwalk-core",
+ "boardwalk-http",
+ "boardwalk-macros",
+ "boardwalk-server",
+]
+
+[[package]]
+name = "boardwalk-caql"
+version = "0.0.1"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "boardwalk-core"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "boardwalk-events"
+version = "0.0.1"
+dependencies = [
+ "boardwalk-caql",
+ "futures",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "boardwalk-http"
+version = "0.0.1"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "axum",
+ "boardwalk-caql",
+ "boardwalk-core",
+ "boardwalk-events",
+ "boardwalk-siren",
+ "boardwalk-tunnel",
+ "bytes",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mime",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "boardwalk-macros"
+version = "0.0.1"
+dependencies = [
+ "boardwalk-core",
+ "futures",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "tokio",
+]
+
+[[package]]
+name = "boardwalk-mock-led"
+version = "0.0.1"
+dependencies = [
+ "boardwalk-core",
+ "futures",
+]
+
+[[package]]
+name = "boardwalk-peer"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "backon",
+ "boardwalk-events",
+ "boardwalk-http",
+ "boardwalk-registry",
+ "boardwalk-tunnel",
+ "bytes",
+ "futures",
+ "h2",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "boardwalk-registry"
+version = "0.0.1"
+dependencies = [
+ "boardwalk-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "boardwalk-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "boardwalk-core",
+ "boardwalk-events",
+ "boardwalk-http",
+ "boardwalk-peer",
+ "boardwalk-registry",
+ "boardwalk-tunnel",
+ "bytes",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "boardwalk-siren"
+version = "0.0.1"
+dependencies = [
+ "http",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "boardwalk-tunnel"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures",
+ "h2",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "sha1",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -592,10 +804,10 @@ name = "hello-led"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "boardwalk",
+ "boardwalk-mock-led",
  "tokio",
  "tracing-subscriber",
- "zetta",
- "zetta-mock-led",
 ]
 
 [[package]]
@@ -2638,218 +2850,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "zetta"
-version = "0.0.1"
-dependencies = [
- "zetta-core",
- "zetta-http",
- "zetta-macros",
- "zetta-server",
-]
-
-[[package]]
-name = "zetta-caql"
-version = "0.0.1"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "zetta-core"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "futures",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "zetta-events"
-version = "0.0.1"
-dependencies = [
- "futures",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "zetta-caql",
-]
-
-[[package]]
-name = "zetta-http"
-version = "0.0.1"
-dependencies = [
- "async-stream",
- "async-trait",
- "axum",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "mime",
- "reqwest",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "thiserror",
- "time",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tower",
- "tower-http",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
- "zetta-caql",
- "zetta-core",
- "zetta-events",
- "zetta-siren",
- "zetta-tunnel",
-]
-
-[[package]]
-name = "zetta-macros"
-version = "0.0.1"
-dependencies = [
- "futures",
- "proc-macro2",
- "quote",
- "syn",
- "tokio",
- "zetta-core",
-]
-
-[[package]]
-name = "zetta-mock-led"
-version = "0.0.1"
-dependencies = [
- "futures",
- "zetta-core",
-]
-
-[[package]]
-name = "zetta-peer"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "backon",
- "bytes",
- "futures",
- "h2",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
- "zetta-events",
- "zetta-http",
- "zetta-registry",
- "zetta-tunnel",
-]
-
-[[package]]
-name = "zetta-registry"
-version = "0.0.1"
-dependencies = [
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tracing",
- "url",
- "uuid",
- "zetta-core",
-]
-
-[[package]]
-name = "zetta-server"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bytes",
- "futures",
- "hyper",
- "hyper-util",
- "rcgen",
- "reqwest",
- "rustls",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
- "uuid",
- "zetta-core",
- "zetta-events",
- "zetta-http",
- "zetta-peer",
- "zetta-registry",
- "zetta-tunnel",
-]
-
-[[package]]
-name = "zetta-siren"
-version = "0.0.1"
-dependencies = [
- "http",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "zetta-tunnel"
-version = "0.0.1"
-dependencies = [
- "base64",
- "bytes",
- "futures",
- "h2",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "rand",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "sha1",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
 ]
 
 [[package]]

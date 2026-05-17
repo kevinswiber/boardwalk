@@ -1,0 +1,42 @@
+[package]
+name = "boardwalk-server"
+version = "0.0.1"
+description = "Top-level builder for assembling a Boardwalk server"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+boardwalk-core = { path = "../boardwalk-core" }
+boardwalk-events = { path = "../boardwalk-events" }
+boardwalk-http = { path = "../boardwalk-http" }
+boardwalk-peer = { path = "../boardwalk-peer" }
+boardwalk-registry = { path = "../boardwalk-registry" }
+
+axum.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+tokio.workspace = true
+url.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { workspace = true, default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+serde_json.workspace = true
+tokio-rustls = { workspace = true, default-features = false, features = ["aws-lc-rs", "tls12"] }
+tokio-tungstenite.workspace = true
+tempfile = "3"
+boardwalk-http = { path = "../boardwalk-http" }
+boardwalk-tunnel = { path = "../boardwalk-tunnel", features = ["dangerous-test-tls"] }

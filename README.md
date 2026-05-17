@@ -1,12 +1,13 @@
-# zetta-rs
+# boardwalk
 
-A Rust port of [Zetta](https://github.com/zettajs/zetta) — a hypermedia
-server framework that models things as state machines, exposes them
+A hypermedia server framework for federated services, started as a
+Rust port of [Zetta](https://github.com/zettajs/zetta) and evolving
+independently from there. Models things as state machines, exposes them
 over Siren HTTP, multiplexes telemetry over WebSockets, and tunnels
-HTTP requests back through outbound connections so devices behind NATs
+HTTP requests back through outbound connections so services behind NATs
 can be reached from anywhere.
 
-**Status: v0 working with peering.** A single-process Zetta server runs
+**Status: v0 working with peering.** A single-process Boardwalk server runs
 end-to-end: typed device state machines, Siren HTTP API, multiplex
 WebSocket event streams, CaQL filtering. The full reverse-tunnel
 peering protocol works: a hub dials a cloud, both flip into HTTP/2
@@ -66,24 +67,24 @@ cargo run --bin tunnel-poc
 
 ```
 crates/                         core building-block crates
-  zetta-core/                   Device + DeviceConfig + Transition + state-machine types
-  zetta-siren/                  Siren types + serde + ergonomic builders
-  zetta-caql/                   Calypso Query Language — lexer, parser, evaluator
-  zetta-events/                 Event bus + topic matching + multiplex WS protocol
-  zetta-registry/               redb-backed device + peer registry
-  zetta-http/                   axum router emitting Siren; multiplex WS endpoint;
+  boardwalk-core/                   Device + DeviceConfig + Transition + state-machine types
+  boardwalk-siren/                  Siren types + serde + ergonomic builders
+  boardwalk-caql/                   Calypso Query Language — lexer, parser, evaluator
+  boardwalk-events/                 Event bus + topic matching + multiplex WS protocol
+  boardwalk-registry/               redb-backed device + peer registry
+  boardwalk-http/                   axum router emitting Siren; multiplex WS endpoint;
                                 peer upgrade route; transition dispatch
-  zetta-tunnel/                 WS upgrade + h2 prior-knowledge primitives
-  zetta-peer/                   PeerClient (initiator side) + PeerAcceptors
-  zetta-server/                 Top-level Zetta builder + .listen()
-  zetta/                        Re-export façade
+  boardwalk-tunnel/                 WS upgrade + h2 prior-knowledge primitives
+  boardwalk-peer/                   PeerClient (initiator side) + PeerAcceptors
+  boardwalk-server/                 Top-level Boardwalk builder + .listen()
+  boardwalk/                        Re-export façade
 
 drivers/
-  zetta-mock-led/               Mock LED used by tests + examples
+  boardwalk-mock-led/               Mock LED used by tests + examples
 
 examples/
   tunnel-poc/                   Role-reversed HTTP/2 over a duplex pipe
-  hello-led/                    Boots a real Zetta server with a mock LED
+  hello-led/                    Boots a real Boardwalk server with a mock LED
 ```
 
 ## What's implemented
@@ -102,7 +103,7 @@ examples/
 - **Peer tunnel**: WS-upgrade-then-HTTP/2 handshake with the cloud
   driving the HTTP/2 client and the hub serving the HTTP/2 server. Test
   verifies the full handshake round-trip.
-- **Builder**: `Zetta::new().name("hub").use_device(Led).link("...").listen(addr)`.
+- **Builder**: `Boardwalk::new().name("hub").use_device(Led).link("...").listen(addr)`.
 
 ## What's next
 
@@ -113,4 +114,4 @@ macros, CI, etc. That's the working backlog.
 
 ## License
 
-Apache-2.0, matching the original Zetta.
+Apache-2.0, matching upstream Zetta.

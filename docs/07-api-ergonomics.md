@@ -3,10 +3,10 @@
 This is the developer-facing surface the original sells with:
 
 ```js
-zetta()
+boardwalk()
   .name('hub')
   .use(LED)
-  .link('https://hello-zetta.example.com/')
+  .link('https://hello-boardwalk.example.com/')
   .listen(1337)
 ```
 
@@ -15,27 +15,27 @@ Goal: keep that feel, type-safely.
 ## Server bootstrap
 
 ```rust
-use zetta::Zetta;
-use zetta_mock_led::Led;
+use boardwalk::Boardwalk;
+use boardwalk_mock_led::Led;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    Zetta::new()
+    Boardwalk::new()
         .name("hub")
         .use_(Led::default())
-        .link("https://hello-zetta.example.com/")
+        .link("https://hello-boardwalk.example.com/")
         .listen("0.0.0.0:1337").await
 }
 ```
 
-`use_` is generic over a `ZettaPlugin` trait. Blanket impls cover
+`use_` is generic over a `BoardwalkPlugin` trait. Blanket impls cover
 `Device`, `Scout`, and `App`, so the caller never types the trait
 explicitly.
 
 ## Defining a Device — the recommended path
 
 ```rust
-use zetta::{device, Device, Transition};
+use boardwalk::{device, Device, Transition};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default)]
@@ -72,7 +72,7 @@ impl Led {
 }
 ```
 
-`#[device]` is a macro from `zetta-macros`. It:
+`#[device]` is a macro from `boardwalk-macros`. It:
 
 1. Generates a `Device for Led` impl that wires `config` and registers
    each `#[transition]` method by its kebab-case name (`turn_on` →
@@ -89,7 +89,7 @@ questions).
 ## Defining an App
 
 ```rust
-use zetta::{app, App, ServerHandle, query};
+use boardwalk::{app, App, ServerHandle, query};
 
 #[app]
 async fn dusk_to_dawn(server: ServerHandle) -> anyhow::Result<()> {
@@ -109,7 +109,7 @@ async fn dusk_to_dawn(server: ServerHandle) -> anyhow::Result<()> {
 }
 
 // Usage:
-Zetta::new()
+Boardwalk::new()
     .name("hub")
     .use_(Led::default())
     .use_(Photocell::default())
@@ -147,7 +147,7 @@ client metadata API.
 ## Linking
 
 ```rust
-Zetta::new()
+Boardwalk::new()
     .name("hub")
     .link("https://cloud.example.com")
     .listen(...)
@@ -161,7 +161,7 @@ Zetta::new()
 
 ## Errors
 
-Driver authors return `Result<T, zetta::DeviceError>` from transitions.
+Driver authors return `Result<T, boardwalk::DeviceError>` from transitions.
 `DeviceError` is a small enum (`Invalid`, `Conflict`, `Internal`)
 that maps to HTTP statuses (400, 409, 500). For app authors,
 `anyhow::Result` is the default ergonomic.

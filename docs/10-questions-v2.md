@@ -52,10 +52,10 @@ boilerplate becomes friction.
 
 ---
 
-### Q13. Scouts (`zetta_core::Scout`)
+### Q13. Scouts (`boardwalk_core::Scout`)
 
 Scouts aren't wired into the server builder yet. The trait exists
-(`Scout::run(self, ScoutCtx)`) but `Zetta::use_scout(...)` doesn't
+(`Scout::run(self, ScoutCtx)`) but `Boardwalk::use_scout(...)` doesn't
 exist, and even if it did, `ScoutCtx` is a placeholder.
 
 The original's primary use case is "device protocol discovers things
@@ -68,7 +68,7 @@ scouts as a feature if a real driver needs them.
 
 ---
 
-### Q14. Apps (`zetta_core::App`)
+### Q14. Apps (`boardwalk_core::App`)
 
 Same shape as scouts — trait exists, `ServerHandle` is a placeholder,
 no `use_app` on the builder. The original lets you do:
@@ -87,7 +87,7 @@ isn't critical for proving the core port is sound.
 
 ### Q15. Device registry persistence
 
-`zetta_registry::Registry` is implemented (redb-backed device + peer
+`boardwalk_registry::Registry` is implemented (redb-backed device + peer
 tables with tests) but is **not actually wired into the runtime**.
 Devices added via `.use_device()` live only in memory; restart loses
 state.
@@ -117,7 +117,7 @@ we only know about by string).
 ### Q17. Strict subprotocol enforcement
 
 The peer upgrade route accepts any `Upgrade: websocket`; it doesn't
-*require* the `Sec-WebSocket-Protocol: zetta-peer/2` token. Should it?
+*require* the `Sec-WebSocket-Protocol: boardwalk-peer/2` token. Should it?
 
 **Default:** require it. This is a clean break (Q5 from the v1 doc)
 and rejecting non-token traffic is cheap protection.
@@ -137,13 +137,13 @@ is acceptable.
 
 ### Q19. Tunnel crate boundary
 
-`zetta-tunnel` currently exports primitives (`dial_initiator`,
+`boardwalk-tunnel` currently exports primitives (`dial_initiator`,
 `build_upgrade_response`); the actual h2-on-upgrade work happens in
-`zetta-peer` because zetta-tunnel can't depend on axum/hyper-util's
+`boardwalk-peer` because boardwalk-tunnel can't depend on axum/hyper-util's
 service stack without becoming heavy. There's a slight code smell.
 
 **Default:** acceptable as is. If we ever ship a third tunnel user
-beyond zetta-peer, refactor; otherwise leave it.
+beyond boardwalk-peer, refactor; otherwise leave it.
 
 ---
 
