@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -33,16 +33,16 @@ publish = false
 [workspace.dependencies]
 # Internal crates (path + version so they publish + resolve from
 # crates.io once the dependency chain lands there).
-boardwalk-core = { path = "crates/boardwalk-core", version = "0.0.1" }
-boardwalk-siren = { path = "crates/boardwalk-siren", version = "0.0.1" }
-boardwalk-caql = { path = "crates/boardwalk-caql", version = "0.0.1" }
-boardwalk-events = { path = "crates/boardwalk-events", version = "0.0.1" }
-boardwalk-registry = { path = "crates/boardwalk-registry", version = "0.0.1" }
-boardwalk-tunnel = { path = "crates/boardwalk-tunnel", version = "0.0.1" }
-boardwalk-http = { path = "crates/boardwalk-http", version = "0.0.1" }
-boardwalk-peer = { path = "crates/boardwalk-peer", version = "0.0.1" }
-boardwalk-macros = { path = "crates/boardwalk-macros", version = "0.0.1" }
-boardwalk-server = { path = "crates/boardwalk-server", version = "0.0.1" }
+boardwalk-core = { path = "crates/boardwalk-core", version = "0.1.0" }
+boardwalk-siren = { path = "crates/boardwalk-siren", version = "0.1.0" }
+boardwalk-caql = { path = "crates/boardwalk-caql", version = "0.1.0" }
+boardwalk-events = { path = "crates/boardwalk-events", version = "0.1.0" }
+boardwalk-registry = { path = "crates/boardwalk-registry", version = "0.1.0" }
+boardwalk-tunnel = { path = "crates/boardwalk-tunnel", version = "0.1.0" }
+boardwalk-http = { path = "crates/boardwalk-http", version = "0.1.0" }
+boardwalk-peer = { path = "crates/boardwalk-peer", version = "0.1.0" }
+boardwalk-macros = { path = "crates/boardwalk-macros", version = "0.1.0" }
+boardwalk-server = { path = "crates/boardwalk-server", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
