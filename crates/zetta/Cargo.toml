@@ -1,0 +1,13 @@
+[package]
+name = "zetta"
+version = "0.0.1"
+description = "Zetta — IoT-style hypermedia server framework"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+zetta-core = { path = "../zetta-core" }
+zetta-server = { path = "../zetta-server" }

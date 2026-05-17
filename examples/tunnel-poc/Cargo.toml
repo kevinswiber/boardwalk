@@ -1,0 +1,21 @@
+[package]
+name = "tunnel-poc"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "tunnel-poc"
+path = "src/main.rs"
+
+[dependencies]
+h2.workspace = true
+http.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

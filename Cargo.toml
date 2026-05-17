@@ -1,0 +1,88 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/zetta-core",
+    "crates/zetta-siren",
+    "crates/zetta-caql",
+    "crates/zetta-events",
+    "crates/zetta-registry",
+    "crates/zetta-http",
+    "crates/zetta-peer",
+    "crates/zetta-tunnel",
+    "crates/zetta-server",
+    "crates/zetta",
+    "drivers/zetta-mock-led",
+    "examples/tunnel-poc",
+    "examples/hello-led",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+authors = ["Kevin Swiber <kevin@swiber.dev>"]
+repository = "https://github.com/kevinswiber/zetta-rs"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "codec"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP / HTTP2 / WS
+axum = { version = "0.8", features = ["ws", "macros"] }
+hyper = { version = "1.5", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+h2 = "0.4"
+tokio-tungstenite = "0.26"
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1.2"
+http-body-util = "0.1"
+bytes = "1.9"
+
+# TLS
+rustls = "0.23"
+tokio-rustls = "0.26"
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+mime = "0.3"
+
+# Persistence
+redb = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+url = { version = "2", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "macros", "formatting"] }
+regex = "1"
+backon = "1"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CaQL parser
+chumsky = "0.10"
+
+# Builder / config
+bon = "3"
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Testing
+insta = { version = "1", features = ["json", "yaml"] }
+rstest = "0.23"
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

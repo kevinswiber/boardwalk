@@ -1,0 +1,21 @@
+[package]
+name = "zetta-server"
+version = "0.0.1"
+description = "Top-level builder for assembling a Zetta server"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+zetta-core = { path = "../zetta-core" }
+zetta-events = { path = "../zetta-events" }
+zetta-http = { path = "../zetta-http" }
+zetta-peer = { path = "../zetta-peer" }
+zetta-registry = { path = "../zetta-registry" }
+
+anyhow.workspace = true
+tokio.workspace = true
+url.workspace = true
+tracing.workspace = true

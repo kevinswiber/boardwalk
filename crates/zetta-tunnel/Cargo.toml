@@ -1,0 +1,21 @@
+[package]
+name = "zetta-tunnel"
+version = "0.0.1"
+description = "WebSocket-upgrade then role-reversed HTTP/2 tunnel"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+h2.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

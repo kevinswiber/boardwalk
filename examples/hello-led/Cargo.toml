@@ -1,0 +1,18 @@
+[package]
+name = "hello-led"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hello-led"
+path = "src/main.rs"
+
+[dependencies]
+zetta = { path = "../../crates/zetta" }
+zetta-mock-led = { path = "../../drivers/zetta-mock-led" }
+tokio.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

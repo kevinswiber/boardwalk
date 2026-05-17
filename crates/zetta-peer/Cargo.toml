@@ -1,0 +1,25 @@
+[package]
+name = "zetta-peer"
+version = "0.0.1"
+description = "Outbound peer client and inbound peer socket for Zetta"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+zetta-tunnel = { path = "../zetta-tunnel" }
+zetta-registry = { path = "../zetta-registry" }
+zetta-events = { path = "../zetta-events" }
+zetta-http = { path = "../zetta-http" }
+
+tokio.workspace = true
+h2.workspace = true
+hyper.workspace = true
+tower.workspace = true
+url.workspace = true
+backon.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
