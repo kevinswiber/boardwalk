@@ -104,19 +104,12 @@ examples/
   verifies the full handshake round-trip.
 - **Builder**: `Zetta::new().name("hub").use_device(Led).link("...").listen(addr)`.
 
-## What's not yet (see docs/11-questions-v3.md)
+## What's next
 
-- TLS integration test (codepath is in; manual verification needed).
-- Scouts (dynamic device discovery).
-- Apps (`server.observe([q], |dev| ...)`).
-- Persistent device registry (the redb tables exist, just not wired
-  into the runtime yet).
-- `POST /servers/{name}/devices` to register hubless devices (currently
-  returns 501).
-- Subscription deduplication on cloud (n cloud subscribers to the same
-  hub topic currently opens n HTTP/2 streams).
-- Per-stream backpressure bounds.
-- `#[device]` proc-macro sugar.
+Everything explicitly deferred from v0 lives in
+[`docs/V1-ROADMAP.md`](docs/V1-ROADMAP.md) — operational hardening,
+scouts, apps, registry persistence, hubless device registration,
+macros, CI, etc. That's the working backlog.
 
 ## License
 

@@ -208,9 +208,11 @@ pub use hyper_util::rt::TokioExecutor as H2Executor;
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + ?Sized> AsyncReadWrite for T {}
 
-/// Establish a TLS connection over `tcp` for `host`. Uses webpki-roots
-/// for the trust anchors and the workspace-default rustls crypto
-/// provider (aws-lc-rs).
+/// Establish a TLS connection over `tcp` for `host`. Uses
+/// `rustls-platform-verifier` so certificates validate against the
+/// OS-native trust store (Keychain on macOS, Schannel on Windows,
+/// system CA on Linux) — same trust model the rest of the OS uses,
+/// no baked-in root bundle to keep current.
 async fn tls_connect(
     host: &str,
     tcp: TcpStream,
@@ -223,10 +225,10 @@ async fn tls_connect(
         );
     });
 
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    use rustls_platform_verifier::BuilderVerifierExt;
     let config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
+        .with_platform_verifier()
+        .map_err(|e| TunnelError::Upgrade(format!("rustls platform verifier: {e}")))?
         .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
     let server_name = rustls_pki_types::ServerName::try_from(host.to_string())

@@ -28,5 +28,5 @@ rand = "0.9"
 urlencoding = "2"
 rustls = { workspace = true, default-features = false, features = ["std", "tls12"] }
 tokio-rustls = { workspace = true, default-features = false }
-webpki-roots = "1"
+rustls-platform-verifier = "0.7"
 rustls-pki-types = "1"
