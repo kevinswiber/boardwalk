@@ -37,19 +37,34 @@ pub struct CoreBuilder {
 
 impl CoreBuilder {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), devices: Vec::new() }
+        Self {
+            name: name.into(),
+            devices: Vec::new(),
+        }
     }
 
     pub fn add_device<D: Device + 'static>(&mut self, device: D) -> DeviceId {
         let id = Uuid::new_v4();
+        self.add_device_with_id(id, device);
+        id
+    }
+
+    /// Add a device with a caller-supplied id. Used when persistence is
+    /// enabled and a stable id was retrieved from the registry.
+    pub fn add_device_with_id<D: Device + 'static>(&mut self, id: DeviceId, device: D) {
         let mut cfg = DeviceConfig::default();
         device.config(&mut cfg);
+        self.add_device_full(id, cfg, Box::new(device));
+    }
+
+    /// Add a device when both the id and the config have already been
+    /// resolved (e.g. via a registry lookup).
+    pub fn add_device_full(&mut self, id: DeviceId, config: DeviceConfig, device: Box<dyn Device>) {
         self.devices.push(DeviceHandle {
             id,
-            config: cfg,
-            device: tokio::sync::Mutex::new(Box::new(device)),
+            config,
+            device: tokio::sync::Mutex::new(device),
         });
-        id
     }
 
     pub fn build(self) -> Arc<Core> {
@@ -115,7 +130,12 @@ impl Core {
         let mut dev = handle.device.lock().await;
         let prior_state = dev.state().to_string();
 
-        if !handle.config.allowed_in(&prior_state).iter().any(|t| t == name) {
+        if !handle
+            .config
+            .allowed_in(&prior_state)
+            .iter()
+            .any(|t| t == name)
+        {
             return Err(DeviceError::NotAllowed(format!(
                 "transition `{name}` not allowed in state `{prior_state}`"
             )));
@@ -134,11 +154,8 @@ impl Core {
             config: handle.config.clone(),
         };
 
-        if prior_state != new_state
-            && handle.config.monitored.iter().any(|m| m == "state")
-        {
-            let topic = format!("{}/{}/{}/state",
-                self.name, handle.type_(), handle.id);
+        if prior_state != new_state && handle.config.monitored.iter().any(|m| m == "state") {
+            let topic = format!("{}/{}/{}/state", self.name, handle.type_(), handle.id);
             self.bus.publish(Event {
                 topic,
                 timestamp_ms: now_ms(),

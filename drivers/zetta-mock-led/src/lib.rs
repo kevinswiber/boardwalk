@@ -31,8 +31,14 @@ impl Device for Led {
     ) -> BoxFuture<'a, Result<(), DeviceError>> {
         Box::pin(async move {
             match name {
-                "turn-on" => { self.on = true; Ok(()) }
-                "turn-off" => { self.on = false; Ok(()) }
+                "turn-on" => {
+                    self.on = true;
+                    Ok(())
+                }
+                "turn-off" => {
+                    self.on = false;
+                    Ok(())
+                }
                 other => Err(DeviceError::Invalid(format!("unknown transition {other}"))),
             }
         })

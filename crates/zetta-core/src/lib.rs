@@ -43,7 +43,9 @@ pub struct TransitionInput {
 }
 
 impl TransitionInput {
-    pub fn get(&self, name: &str) -> Option<&Value> { self.fields.get(name) }
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.fields.get(name)
+    }
     pub fn get_str(&self, name: &str) -> Option<&str> {
         self.fields.get(name).and_then(Value::as_str)
     }
@@ -61,7 +63,9 @@ pub trait Device: Send + Sync + 'static {
 
     /// Optional extra properties beyond `id`, `type`, `name`, `state`.
     /// Default: none.
-    fn properties(&self) -> Map<String, Value> { Map::new() }
+    fn properties(&self) -> Map<String, Value> {
+        Map::new()
+    }
 
     /// Dispatch a transition by name. The runtime guards against
     /// transitions not allowed in the current state before calling.
@@ -138,18 +142,17 @@ impl DeviceConfig {
         self
     }
 
-    pub fn when(
-        &mut self,
-        state: impl Into<StateName>,
-        allow: &[&str],
-    ) -> &mut Self {
+    pub fn when(&mut self, state: impl Into<StateName>, allow: &[&str]) -> &mut Self {
         let s = state.into();
         let names: Vec<String> = allow.iter().map(|s| s.to_string()).collect();
         // Ensure transitions are also recorded as known.
         for t in &names {
             self.transitions
                 .entry(t.clone())
-                .or_insert_with(|| TransitionSpec { name: t.clone(), fields: vec![] });
+                .or_insert_with(|| TransitionSpec {
+                    name: t.clone(),
+                    fields: vec![],
+                });
         }
         self.state_transitions.insert(s, names);
         self
@@ -171,7 +174,10 @@ impl DeviceConfig {
 
     /// Declare a stream the device will publish to. Use `Stream::Object` or `Binary`.
     pub fn stream(&mut self, name: impl Into<String>, kind: StreamKind) -> &mut Self {
-        self.streams.push(StreamSpec { name: name.into(), kind });
+        self.streams.push(StreamSpec {
+            name: name.into(),
+            kind,
+        });
         self
     }
 
@@ -180,7 +186,10 @@ impl DeviceConfig {
     /// property changes between transitions.
     pub fn monitor(&mut self, name: impl Into<String>) -> &mut Self {
         let n = name.into();
-        self.streams.push(StreamSpec { name: n.clone(), kind: StreamKind::Object });
+        self.streams.push(StreamSpec {
+            name: n.clone(),
+            kind: StreamKind::Object,
+        });
         self.monitored.push(n);
         self
     }
@@ -220,7 +229,7 @@ pub struct DeviceProperties {
     pub extra: Map<String, Value>,
 }
 
-// -- Scout / App -----------------------------------------------------------
+// -- Scout (App moved to zetta-http where it has Core access) ---------------
 
 #[async_trait::async_trait]
 pub trait Scout: Send + Sync + 'static {
@@ -228,17 +237,9 @@ pub trait Scout: Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-pub struct ScoutCtx { _placeholder: () }
-
-pub type AppError = Box<dyn std::error::Error + Send + Sync>;
-
-#[async_trait::async_trait]
-pub trait App: Send + Sync + 'static {
-    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError>;
+pub struct ScoutCtx {
+    _placeholder: (),
 }
-
-#[derive(Clone)]
-pub struct ServerHandle { _placeholder: () }
 
 // -- Future-pin helper -----------------------------------------------------
 
@@ -249,7 +250,9 @@ pub type DynFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send +
 mod tests {
     use super::*;
 
-    struct Led { on: bool }
+    struct Led {
+        on: bool,
+    }
 
     impl Device for Led {
         fn config(&self, cfg: &mut DeviceConfig) {
@@ -260,7 +263,9 @@ mod tests {
                 .when("on", &["turn-off"])
                 .monitor("state");
         }
-        fn state(&self) -> &str { if self.on { "on" } else { "off" } }
+        fn state(&self) -> &str {
+            if self.on { "on" } else { "off" }
+        }
         fn transition<'a>(
             &'a mut self,
             name: &'a str,
@@ -268,8 +273,14 @@ mod tests {
         ) -> BoxFuture<'a, Result<(), DeviceError>> {
             Box::pin(async move {
                 match name {
-                    "turn-on" => { self.on = true; Ok(()) }
-                    "turn-off" => { self.on = false; Ok(()) }
+                    "turn-on" => {
+                        self.on = true;
+                        Ok(())
+                    }
+                    "turn-off" => {
+                        self.on = false;
+                        Ok(())
+                    }
                     other => Err(DeviceError::Invalid(format!("unknown transition {other}"))),
                 }
             })
@@ -287,10 +298,15 @@ mod tests {
         assert!(cfg.streams.iter().any(|s| s.name == "state"));
         assert!(cfg.monitored.contains(&"state".to_string()));
 
-        led.transition("turn-on", TransitionInput::default()).await.unwrap();
+        led.transition("turn-on", TransitionInput::default())
+            .await
+            .unwrap();
         assert_eq!(led.state(), "on");
 
-        let err = led.transition("nope", TransitionInput::default()).await.unwrap_err();
+        let err = led
+            .transition("nope", TransitionInput::default())
+            .await
+            .unwrap_err();
         assert!(matches!(err, DeviceError::Invalid(_)));
     }
 

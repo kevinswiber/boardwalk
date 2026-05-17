@@ -3,40 +3,57 @@
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use url::Url;
-use zetta_core::Device;
-use zetta_http::{router_with, AppState, Core, CoreBuilder, PeerHandler, PeerInitState};
+use uuid::Uuid;
+use zetta_core::{Device, DeviceConfig};
+use zetta_http::{
+    App, AppState, Core, CoreBuilder, PeerHandler, PeerInitState, ServerHandle, router_with,
+};
 pub use zetta_peer::PeerAcceptors;
 use zetta_peer::PeerClient;
+use zetta_registry::{DeviceRecord, Registry};
 
 pub struct Zetta {
     name: String,
     peers: Vec<Url>,
-    builder: CoreBuilder,
+    devices: Vec<Box<dyn Device>>,
+    apps: Vec<Arc<dyn App>>,
+    persist_path: Option<PathBuf>,
 }
 
 impl Default for Zetta {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Zetta {
     pub fn new() -> Self {
-        let name = "zetta".to_string();
-        Self { name: name.clone(), peers: Vec::new(), builder: CoreBuilder::new(name) }
+        Self {
+            name: "zetta".to_string(),
+            peers: Vec::new(),
+            devices: Vec::new(),
+            apps: Vec::new(),
+            persist_path: None,
+        }
     }
 
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
-        let mut new_builder = CoreBuilder::new(self.name.clone());
-        std::mem::swap(&mut new_builder, &mut self.builder);
         self
     }
 
     pub fn use_device<D: Device>(mut self, d: D) -> Self {
-        self.builder.add_device(d);
+        self.devices.push(Box::new(d));
+        self
+    }
+
+    pub fn use_app<A: App>(mut self, a: A) -> Self {
+        self.apps.push(Arc::new(a));
         self
     }
 
@@ -48,9 +65,17 @@ impl Zetta {
         self
     }
 
+    /// Enable on-disk persistence of device + peer registries at the
+    /// supplied path (single redb file). Without this call, the runtime
+    /// is purely in-memory.
+    pub fn persist(mut self, path: impl Into<PathBuf>) -> Self {
+        self.persist_path = Some(path.into());
+        self
+    }
+
     /// Bind and serve. Blocks until the listener stops.
     pub async fn listen(self, addr: SocketAddr) -> anyhow::Result<()> {
-        let built = self.build();
+        let built = self.build()?;
         tracing::info!(%addr, "zetta-rs listening");
         let listener = tokio::net::TcpListener::bind(addr).await.context("bind")?;
         axum::serve(listener, built.router).await.context("serve")
@@ -58,8 +83,25 @@ impl Zetta {
 
     /// Build the runtime + router + spawn peer clients without binding.
     /// Useful for integration tests.
-    pub fn build(self) -> Built {
-        let core: Arc<Core> = self.builder.build();
+    pub fn build(self) -> anyhow::Result<Built> {
+        // Open the registry if persistence was requested. Device IDs
+        // are then stable across restarts (keyed by type + name).
+        let registry = self
+            .persist_path
+            .as_ref()
+            .map(|p| Registry::open(p).context("opening registry"))
+            .transpose()?
+            .map(Arc::new);
+
+        let mut builder = CoreBuilder::new(self.name.clone());
+        for device in self.devices {
+            let mut cfg = DeviceConfig::default();
+            device.config(&mut cfg);
+            let id = resolve_device_id(&registry, &cfg)?;
+            builder.add_device_full(id, cfg, device);
+        }
+        let core: Arc<Core> = builder.build();
+
         let peer_init = PeerInitState::default();
         let acceptors = PeerAcceptors::new();
 
@@ -68,17 +110,21 @@ impl Zetta {
             Arc::new(move |peer_name, connection_id, upgraded| {
                 let acceptors = acceptors.clone();
                 Box::pin(async move {
-                    acceptors.on_upgraded(peer_name, connection_id, upgraded).await;
+                    acceptors
+                        .on_upgraded(peer_name, connection_id, upgraded)
+                        .await;
                 })
             })
         };
 
         let peer_senders: Arc<dyn zetta_http::PeerSenders> = Arc::new(acceptors.clone());
+        let peer_streams = zetta_http::PeerStreamHub::new();
         let state = AppState {
             core: core.clone(),
             peer_handler: Some(handler),
             peer_init: peer_init.clone(),
             peer_senders: Some(peer_senders),
+            peer_streams: peer_streams.clone(),
         };
         let router = router_with(state);
 
@@ -95,14 +141,63 @@ impl Zetta {
             peer_tasks.push(pc.spawn());
         }
 
-        Built { core, peer_tasks, router, acceptors }
+        // Spawn apps. The server handle is shared across them; each
+        // app's `run` runs to completion in its own task. Errors are logged.
+        let mut app_tasks = Vec::new();
+        for app in self.apps {
+            let handle = ServerHandle::new_internal(core.clone());
+            let h = tokio::spawn(async move {
+                if let Err(e) = app.run(handle).await {
+                    tracing::warn!(error = %e, "app exited with error");
+                }
+            });
+            app_tasks.push(h);
+        }
+
+        Ok(Built {
+            core,
+            peer_tasks,
+            app_tasks,
+            router,
+            acceptors,
+            peer_streams,
+            registry,
+        })
     }
+}
+
+/// Look up a stable device ID by (type, name) identity, or mint a new
+/// one and persist the record.
+fn resolve_device_id(registry: &Option<Arc<Registry>>, cfg: &DeviceConfig) -> anyhow::Result<Uuid> {
+    let Some(reg) = registry.as_ref() else {
+        return Ok(Uuid::new_v4());
+    };
+    let type_ = cfg.type_.as_deref().unwrap_or("unknown").to_string();
+    let name = cfg.name.clone();
+    if let Some(existing) = reg
+        .find_device_by_identity(&type_, name.as_deref())
+        .context("registry find")?
+    {
+        return Ok(existing.id);
+    }
+    let id = Uuid::new_v4();
+    reg.put_device(&DeviceRecord {
+        id,
+        type_,
+        name,
+        properties: serde_json::Map::new(),
+    })
+    .context("registry put")?;
+    Ok(id)
 }
 
 /// Materialized server pieces, returned by `Zetta::build()`.
 pub struct Built {
     pub core: Arc<Core>,
     pub peer_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub app_tasks: Vec<tokio::task::JoinHandle<()>>,
     pub router: axum::Router,
     pub acceptors: PeerAcceptors,
+    pub peer_streams: zetta_http::PeerStreamHub,
+    pub registry: Option<Arc<Registry>>,
 }

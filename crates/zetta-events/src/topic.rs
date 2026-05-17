@@ -7,7 +7,11 @@ pub enum TopicParseError {
     #[error("empty topic")]
     Empty,
     #[error("invalid regex segment at index {index}: {source}")]
-    BadRegex { index: usize, #[source] source: regex::Error },
+    BadRegex {
+        index: usize,
+        #[source]
+        source: regex::Error,
+    },
     #[error("caql filter: {0}")]
     Caql(#[from] zetta_caql::CaqlError),
 }
@@ -64,14 +68,20 @@ impl TopicPattern {
                 segments.push(Segment::MultiWild);
             } else if seg.starts_with('{') && seg.ends_with('}') && seg.len() >= 2 {
                 let inner = &seg[1..seg.len() - 1];
-                let re = regex::Regex::new(inner)
-                    .map_err(|e| TopicParseError::BadRegex { index: idx, source: e })?;
+                let re = regex::Regex::new(inner).map_err(|e| TopicParseError::BadRegex {
+                    index: idx,
+                    source: e,
+                })?;
                 segments.push(Segment::Regex(re));
             } else {
                 segments.push(Segment::Literal(seg.to_string()));
             }
         }
-        Ok(Self { segments, filter, raw })
+        Ok(Self {
+            segments,
+            filter,
+            raw,
+        })
     }
 
     /// Test whether this pattern matches a concrete topic string.

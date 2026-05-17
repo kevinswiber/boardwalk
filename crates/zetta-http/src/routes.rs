@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     body::Body,
     extract::{Path, Query, Request, State, WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{any, get},
-    Json, Router,
 };
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -21,9 +21,8 @@ use crate::render::{self, Hrefs};
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
-pub type PeerHandler = Arc<
-    dyn Fn(String, Uuid, hyper::upgrade::Upgraded) -> BoxFuture<'static, ()> + Send + Sync,
->;
+pub type PeerHandler =
+    Arc<dyn Fn(String, Uuid, hyper::upgrade::Upgraded) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Cloud-side handle into the live HTTP/2 sender for each connected
 /// peer. The runtime (zetta-peer) implements this; the HTTP router
@@ -31,8 +30,10 @@ pub type PeerHandler = Arc<
 /// established tunnel.
 #[async_trait::async_trait]
 pub trait PeerSenders: Send + Sync + 'static {
-    async fn sender(&self, name: &str)
-        -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>>;
+    async fn sender(
+        &self,
+        name: &str,
+    ) -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>>;
     async fn names(&self) -> Vec<String>;
 }
 
@@ -59,6 +60,7 @@ pub struct AppState {
     pub peer_handler: Option<PeerHandler>,
     pub peer_init: PeerInitState,
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
+    pub peer_streams: crate::peer_streams::PeerStreamHub,
 }
 
 pub fn router(core: Arc<Core>) -> Router {
@@ -67,6 +69,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_handler: None,
         peer_init: PeerInitState::default(),
         peer_senders: None,
+        peer_streams: crate::peer_streams::PeerStreamHub::new(),
     })
 }
 
@@ -74,7 +77,10 @@ pub fn router_with(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/servers/{name}", get(server_get))
-        .route("/servers/{name}/devices", get(devices_get).post(devices_post_stub))
+        .route(
+            "/servers/{name}/devices",
+            get(devices_get).post(devices_post_stub),
+        )
         .route(
             "/servers/{name}/devices/{id}",
             get(device_get).post(device_post),
@@ -105,7 +111,10 @@ async fn maybe_forward_or_404(
     }
     let senders = state.peer_senders.as_ref()?;
     let mut sender = senders.sender(target_name).await?;
-    let path_and_query = uri.path_and_query().map(|p| p.as_str()).unwrap_or(uri.path());
+    let path_and_query = uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or(uri.path());
     let target_uri = format!(
         "http://{}.unreachable.zettajs.io{}",
         urlencoding::encode(target_name),
@@ -113,25 +122,35 @@ async fn maybe_forward_or_404(
     );
     let mut builder = http::Request::builder().method(method).uri(target_uri);
     for (name, value) in headers.iter() {
-        if name == http::header::HOST { continue; }
+        if name == http::header::HOST {
+            continue;
+        }
         builder = builder.header(name.clone(), value.clone());
     }
     let req = match builder.body(body) {
         Ok(r) => r,
-        Err(e) => return Some(
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("forward build: {e}")).into_response()
-        ),
+        Err(e) => {
+            return Some(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("forward build: {e}"),
+                )
+                    .into_response(),
+            );
+        }
     };
     let resp = match sender.send_request(req).await {
         Ok(r) => r,
-        Err(e) => return Some(
-            (StatusCode::BAD_GATEWAY, format!("peer forward: {e}")).into_response()
-        ),
+        Err(e) => {
+            return Some((StatusCode::BAD_GATEWAY, format!("peer forward: {e}")).into_response());
+        }
     };
     let (parts, incoming) = resp.into_parts();
     let mut out = Response::builder().status(parts.status);
     for (name, value) in parts.headers.iter() {
-        if name == http::header::TRANSFER_ENCODING { continue; }
+        if name == http::header::TRANSFER_ENCODING {
+            continue;
+        }
         out = out.header(name.clone(), value.clone());
     }
     match out.body(Body::new(incoming)) {
@@ -164,7 +183,11 @@ fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
     let http_base: url::Url = format!("{scheme}://{host}/").parse().unwrap();
     let ws_scheme = if scheme == "https" { "wss" } else { "ws" };
     let ws_base: url::Url = format!("{ws_scheme}://{host}/").parse().unwrap();
-    Hrefs { http: http_base, ws: ws_base, server: server.to_string() }
+    Hrefs {
+        http: http_base,
+        ws: ws_base,
+        server: server.to_string(),
+    }
 }
 
 fn siren_response(entity: zetta_siren::Entity) -> Response {
@@ -287,7 +310,12 @@ async fn device_post(
     if name != state.core.name {
         if state.peer_senders.is_some() {
             return maybe_forward_or_404(
-                &state, &name, Method::POST, &uri, &headers, Body::from(body),
+                &state,
+                &name,
+                Method::POST,
+                &uri,
+                &headers,
+                Body::from(body),
             )
             .await
             .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
@@ -321,9 +349,11 @@ async fn device_post(
     let input = TransitionInput { fields: map };
     match core.run_transition(&id, &action_name, input).await {
         Ok(snap) => siren_response(render::render_device(&h, &snap)),
-        Err(zetta_core::DeviceError::NotAllowed(_)) => {
-            (StatusCode::CONFLICT, "transition not allowed in current state").into_response()
-        }
+        Err(zetta_core::DeviceError::NotAllowed(_)) => (
+            StatusCode::CONFLICT,
+            "transition not allowed in current state",
+        )
+            .into_response(),
         Err(zetta_core::DeviceError::Invalid(msg)) => {
             (StatusCode::BAD_REQUEST, msg).into_response()
         }
@@ -332,7 +362,9 @@ async fn device_post(
 }
 
 #[derive(Debug, Deserialize)]
-struct EventsQuery { topic: Option<String> }
+struct EventsQuery {
+    topic: Option<String>,
+}
 
 async fn server_events_stream(
     State(state): State<AppState>,
@@ -353,7 +385,10 @@ async fn server_events_stream(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("topic: {e}")).into_response(),
     };
-    let sub = state.core.bus.subscribe(pattern, zetta_events::SubscribeOpts::default());
+    let sub = state
+        .core
+        .bus
+        .subscribe(pattern, zetta_events::SubscribeOpts::default());
     let mut rx = sub.rx;
     let stream = async_stream::stream! {
         while let Some(ev) = rx.recv().await {
@@ -406,13 +441,15 @@ async fn meta_type_get(
     let devices = core.list_devices().await;
     let dev = devices.iter().find(|d| d.type_ == ty);
     match dev {
-        Some(d) => siren_response(zetta_siren::Entity::new()
-            .with_class("type")
-            .with_property("type", JsonValue::String(d.type_.clone()))
-            .with_link(zetta_siren::Link::new(
-                zetta_siren::rels::SELF,
-                h.meta_type_url(&d.type_),
-            ))),
+        Some(d) => siren_response(
+            zetta_siren::Entity::new()
+                .with_class("type")
+                .with_property("type", JsonValue::String(d.type_.clone()))
+                .with_link(zetta_siren::Link::new(
+                    zetta_siren::rels::SELF,
+                    h.meta_type_url(&d.type_),
+                )),
+        ),
         None => (StatusCode::NOT_FOUND, "unknown type").into_response(),
     }
 }
@@ -423,18 +460,19 @@ async fn peer_management_get() -> Response {
         "actions": [],
         "entities": [],
         "links": [],
-    })).into_response()
+    }))
+    .into_response()
 }
 
-async fn events_ws(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+async fn events_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| crate::ws::handle_socket(socket, state))
 }
 
 #[derive(Debug, Deserialize)]
-struct PeerQuery { #[serde(rename = "connectionId")] connection_id: Option<Uuid> }
+struct PeerQuery {
+    #[serde(rename = "connectionId")]
+    connection_id: Option<Uuid>,
+}
 
 /// `POST /peers/{name}` — WebSocket upgrade then HTTP/2 (acceptor role).
 async fn peers_upgrade(
@@ -482,10 +520,7 @@ fn zetta_tunnel_upgrade_response(headers: &HeaderMap) -> Result<Response, String
 }
 
 /// `GET /_initiate_peer/{id}` — initiator-side handshake completion.
-async fn initiate_peer(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+async fn initiate_peer(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid id").into_response(),
@@ -497,7 +532,10 @@ async fn initiate_peer(
     }
 }
 
-fn filter_by_ql(devices: &[crate::core::DeviceSnapshot], ql: &str) -> Vec<crate::core::DeviceSnapshot> {
+fn filter_by_ql(
+    devices: &[crate::core::DeviceSnapshot],
+    ql: &str,
+) -> Vec<crate::core::DeviceSnapshot> {
     let q = match zetta_caql::parse(ql) {
         Ok(q) => q,
         Err(_) => return Vec::new(),

@@ -52,37 +52,103 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
         }
         let start = i;
         match c {
-            b'.' => { out.push(Spanned { tok: Tok::Dot, offset: start }); i += 1; }
-            b',' => { out.push(Spanned { tok: Tok::Comma, offset: start }); i += 1; }
-            b'*' => { out.push(Spanned { tok: Tok::Star, offset: start }); i += 1; }
-            b'(' => { out.push(Spanned { tok: Tok::LParen, offset: start }); i += 1; }
-            b')' => { out.push(Spanned { tok: Tok::RParen, offset: start }); i += 1; }
-            b'[' => { out.push(Spanned { tok: Tok::LBracket, offset: start }); i += 1; }
-            b']' => { out.push(Spanned { tok: Tok::RBracket, offset: start }); i += 1; }
-            b'=' => { out.push(Spanned { tok: Tok::Eq, offset: start }); i += 1; }
+            b'.' => {
+                out.push(Spanned {
+                    tok: Tok::Dot,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b',' => {
+                out.push(Spanned {
+                    tok: Tok::Comma,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b'*' => {
+                out.push(Spanned {
+                    tok: Tok::Star,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b'(' => {
+                out.push(Spanned {
+                    tok: Tok::LParen,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b')' => {
+                out.push(Spanned {
+                    tok: Tok::RParen,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b'[' => {
+                out.push(Spanned {
+                    tok: Tok::LBracket,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b']' => {
+                out.push(Spanned {
+                    tok: Tok::RBracket,
+                    offset: start,
+                });
+                i += 1;
+            }
+            b'=' => {
+                out.push(Spanned {
+                    tok: Tok::Eq,
+                    offset: start,
+                });
+                i += 1;
+            }
             b'!' => {
                 if bytes.get(i + 1) == Some(&b'=') {
-                    out.push(Spanned { tok: Tok::Ne, offset: start });
+                    out.push(Spanned {
+                        tok: Tok::Ne,
+                        offset: start,
+                    });
                     i += 2;
                 } else {
-                    return Err(CaqlError::Parse { offset: start, message: "expected `!=`".into() });
+                    return Err(CaqlError::Parse {
+                        offset: start,
+                        message: "expected `!=`".into(),
+                    });
                 }
             }
             b'<' => {
                 if bytes.get(i + 1) == Some(&b'=') {
-                    out.push(Spanned { tok: Tok::Le, offset: start });
+                    out.push(Spanned {
+                        tok: Tok::Le,
+                        offset: start,
+                    });
                     i += 2;
                 } else {
-                    out.push(Spanned { tok: Tok::Lt, offset: start });
+                    out.push(Spanned {
+                        tok: Tok::Lt,
+                        offset: start,
+                    });
                     i += 1;
                 }
             }
             b'>' => {
                 if bytes.get(i + 1) == Some(&b'=') {
-                    out.push(Spanned { tok: Tok::Ge, offset: start });
+                    out.push(Spanned {
+                        tok: Tok::Ge,
+                        offset: start,
+                    });
                     i += 2;
                 } else {
-                    out.push(Spanned { tok: Tok::Gt, offset: start });
+                    out.push(Spanned {
+                        tok: Tok::Gt,
+                        offset: start,
+                    });
                     i += 1;
                 }
             }
@@ -111,14 +177,21 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                         i += 1;
                     } else if b == b'"' {
                         i += 1;
-                        out.push(Spanned { tok: Tok::String(s), offset: start });
+                        out.push(Spanned {
+                            tok: Tok::String(s),
+                            offset: start,
+                        });
                         break;
                     } else {
                         s.push(b as char);
                         i += 1;
                     }
                 }
-                if i == bytes.len() && !out.last().is_some_and(|t| matches!(t.tok, Tok::String(_) if t.offset == start)) {
+                if i == bytes.len()
+                    && !out
+                        .last()
+                        .is_some_and(|t| matches!(t.tok, Tok::String(_) if t.offset == start))
+                {
                     let _ = str_start;
                     return Err(CaqlError::Parse {
                         offset: start,
@@ -128,22 +201,31 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
             }
             c if c.is_ascii_digit() || c == b'-' || c == b'+' => {
                 let mut j = i;
-                if c == b'-' || c == b'+' { j += 1; }
+                if c == b'-' || c == b'+' {
+                    j += 1;
+                }
                 while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
                     j += 1;
                 }
                 // Optional exponent
                 if j < bytes.len() && (bytes[j] == b'e' || bytes[j] == b'E') {
                     j += 1;
-                    if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') { j += 1; }
-                    while j < bytes.len() && bytes[j].is_ascii_digit() { j += 1; }
+                    if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+                        j += 1;
+                    }
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
                 }
                 let s = &src[i..j];
                 let n: f64 = s.parse().map_err(|_| CaqlError::Parse {
                     offset: i,
                     message: format!("invalid number `{s}`"),
                 })?;
-                out.push(Spanned { tok: Tok::Number(n), offset: start });
+                out.push(Spanned {
+                    tok: Tok::Number(n),
+                    offset: start,
+                });
                 i = j;
             }
             c if c.is_ascii_alphabetic() || c == b'_' => {

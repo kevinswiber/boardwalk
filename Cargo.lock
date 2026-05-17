@@ -2478,6 +2478,7 @@ name = "zetta"
 version = "0.0.1"
 dependencies = [
  "zetta-core",
+ "zetta-http",
  "zetta-server",
 ]
 
@@ -2609,14 +2610,17 @@ name = "zetta-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "futures",
  "reqwest",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
  "url",
+ "uuid",
  "zetta-core",
  "zetta-events",
  "zetta-http",

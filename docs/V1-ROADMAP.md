@@ -1,26 +1,30 @@
 # v1 Roadmap
 
-Everything explicitly deferred from v0. Authoritative list — anything
-not here is either done in v0 or has been intentionally killed.
+Everything still deferred from v0. Items reference the original
+question (`v2#Q14`, `v3#Q24`) so the rationale stays discoverable.
 
-This is appended to over time. Items reference the question doc and
-number they came from (`v2#Q14`, `v3#Q24`) so the rationale stays
-discoverable.
+## What was deferred but is now done in v0.x
 
----
+- ✅ `v3#Q24` Cloud-side subscription deduplication (one HTTP/2 stream
+  per `(peer, topic)`, fanned via `tokio::sync::broadcast`).
+- ✅ `v3#Q23` Bounded backpressure on forwarded events (via the
+  broadcast channel's lagging behavior at `BROADCAST_BUFFER = 256`).
+- ✅ `v3#Q28` Persistent device registry (`Zetta::persist(path)` —
+  device IDs stable across restarts).
+- ✅ `v3#Q26` App support (`Zetta::use_app(impl App)` +
+  `ServerHandle::query` + `DeviceProxy`).
+- ✅ CI: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
+  across Linux + macOS.
+- ✅ TLS uses `rustls-platform-verifier` (OS trust store).
 
 ## Operational hardening
 
-### Subscription deduplication on the cloud — `v3#Q24`
-N WS clients on the cloud subscribing to the same hub topic open N
-HTTP/2 streams cloud→hub. Should be 1 stream with refcounted client
-fanout. Mirror the original Zetta's PubSub deduplication. Touches
-`zetta-http::ws` + `PeerAcceptors`.
-
-### Per-stream backpressure on forwarded events — `v3#Q23`
-The cloud's hub→client forwarder reads NDJSON from the tunnel and
-pushes into an unbounded WS mpsc. Slow client = unbounded growth.
-Bound to ~256, drop oldest with a warn-log on overflow.
+### TLS integration test — `v3#Q21`
+Stand up a rustls-fronted axum listener with a self-signed cert
+(via `rcgen`). Add a `dangerous-test-tls` feature on `zetta-tunnel`
+that swaps in a no-verify `ServerCertVerifier` so the test can trust
+the self-signed cert without poking the OS trust store. Run the
+existing peer-link test through `wss://`.
 
 ### Duplicate peer-name handling — `v3#Q22`
 Two hubs both calling themselves "hub" linking to the same cloud:
@@ -28,24 +32,19 @@ second overwrites first silently. Reject the second WS upgrade with
 `409 Conflict` and a clear error body.
 
 ### Tunnel cancellation hygiene — `v3#Q31`
-When a cloud-side forwarded subscription aborts (WS unsubscribe / WS
-client closes), the cloud's HTTP/2 stream to the hub should
-`RST_STREAM` so the hub stops producing. Verify and tighten.
+When a forwarded subscription aborts (WS unsubscribe / client close),
+the cloud's HTTP/2 stream to the hub should `RST_STREAM` so the hub
+stops producing. Verify and tighten.
 
 ### Graceful peer-disconnect behavior — `v3#Q32`
 Currently: hub goes offline → cloud's `SendRequest` errors → cloud
-returns 502 → hub eventually reconnects (backoff). Probably correct
-but needs a longer-running test to confirm there's no leak.
+returns 502 → hub eventually reconnects. Probably correct but needs a
+longer-running test to confirm no leak.
 
-### TLS integration test — `v3#Q21`
-Stand up a rustls-fronted axum listener with a self-signed cert,
-trust it from a test-only verifier extension hook, run the existing
-peer-link test through `https://`. (Note: as of v0.2, peer TLS uses
-`rustls-platform-verifier` against the OS trust store, so the test
-will need a separate path — or we generate a real cert via the
-platform CA store mechanism.)
-
----
+### Per-platform peer-link test in CI
+`rustls-platform-verifier` behaves differently per OS. CI matrix
+already covers Linux + macOS. Add Windows once we have a Windows-aware
+test harness.
 
 ## Protocol completeness
 
@@ -61,28 +60,21 @@ polish.
 ### `POST /servers/{name}/events/unsubscribe` parity
 The original Zetta defines this as a way to cancel a subscription via
 HTTP (not WS). We don't have it. Probably never needed since v0 uses
-either multiplex WS unsubscribe or stream RST_STREAM, but worth a
-once-over for protocol parity.
+WS unsubscribe or H2 RST_STREAM, but worth a once-over.
 
----
+### Stream subscriptions on devices (beyond `state`)
+Today only `state` is auto-published when monitored. Devices that
+declare `.stream("intensity", ...)` need a story for actually
+publishing values to that topic. `DeviceCtx::publish` exists but
+isn't wired into the `Device::run` path.
 
 ## Platform features
 
-### Persistent device + peer registry — `v2#Q15`, `v3#Q28`
-`zetta_registry` exists and is unit-tested but not wired into the
-runtime. Persist devices on `add_device` / on scout discovery; restore
-on boot. Same for peer records (status, last-seen, connection_id).
-
 ### Scouts — `v2#Q13`, `v3#Q27`
 Static `use_device` is enough for many use cases; scouts come back
-when a real driver needs dynamic discovery (e.g., mDNS, USB). Trait
-exists; `ScoutCtx` is a placeholder.
-
-### Apps — `v2#Q14`, `v3#Q26`
-`server.observe([q1, q2], |dev_a, dev_b| ...)`. Cross-query
-observation infra: parse CaQL once, track per-query device sets,
-fire callback when all sets non-empty, re-fire on changes. About
-half a day; needs `ServerHandle` populated.
+when a real driver needs dynamic discovery (mDNS, USB, etc.). The
+`Scout` trait exists but `ScoutCtx` is a placeholder and there's no
+`use_scout` builder method.
 
 ### Hubless device registration — `v2#Q16`, `v3#Q29`
 `POST /servers/{name}/devices` is currently 501. To wire properly:
@@ -95,7 +87,17 @@ Zetta::new()
 
 API design needs input before implementing.
 
----
+### Persist peer records too
+Right now `zetta-registry` persists device records (via
+`Zetta::persist`) but `PeerRecord` is not persisted on
+connect/disconnect. Useful for "show me peers that have ever connected"
+in the UI/CLI.
+
+### Multi-device observe (the original `server.observe([q1, q2], cb)`)
+The current `ServerHandle::query` returns a snapshot at call time.
+The original Zetta fires a callback when ALL queries are satisfied
+and re-fires when device sets change. Useful for apps that bridge
+multiple device types.
 
 ## Developer experience
 
@@ -108,7 +110,10 @@ written by hand and the boilerplate starts hurting.
 Originally defaulted to "no UI in v0", and we're keeping that. If
 ever: a small leptos/yew SPA at `/_ui`.
 
----
+### Better `serve_with_shutdown`
+`Zetta::listen` blocks until the listener stops. Worth adding
+`listen_until(signal: impl Future)` for clean shutdown in long-running
+processes.
 
 ## Cross-cutting / housekeeping
 
@@ -120,17 +125,9 @@ polish.
 `zetta` may be taken. Check before first publish; `zetta-rs` is the
 fallback per `v1#Q9`.
 
-### CI
-Nothing wired. GitHub Actions workflow: `cargo fmt --check`, `cargo
-clippy`, `cargo test --workspace`. Probably also `cargo deny check`
-once a deny.toml is in.
-
-### Per-platform peer-link test
-Right now `cargo test` runs on macOS dev box. We use
-`rustls-platform-verifier`, so the integration test paths will behave
-differently on Linux/Windows. Worth a CI matrix early.
-
----
+### `cargo deny` config
+Audit dependencies for licenses, advisories, duplicates. Add a
+`deny.toml` and a CI step.
 
 ## Things explicitly NOT in v1
 

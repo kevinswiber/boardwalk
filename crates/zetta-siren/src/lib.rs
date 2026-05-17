@@ -122,7 +122,9 @@ pub struct Field {
 }
 
 impl Entity {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_class(mut self, c: impl Into<String>) -> Self {
         self.class.push(c.into());
@@ -162,7 +164,13 @@ impl Entity {
 
 impl Link {
     pub fn new(rel: impl Into<String>, href: Url) -> Self {
-        Self { rel: vec![rel.into()], href, class: vec![], title: None, type_: None }
+        Self {
+            rel: vec![rel.into()],
+            href,
+            class: vec![],
+            title: None,
+            type_: None,
+        }
     }
 
     pub fn rels(rels: impl IntoIterator<Item = impl Into<String>>, href: Url) -> Self {
@@ -234,7 +242,10 @@ impl Field {
 
 impl EmbeddedEntity {
     pub fn new(rel: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { rel: rel.into_iter().map(Into::into).collect(), ..Default::default() }
+        Self {
+            rel: rel.into_iter().map(Into::into).collect(),
+            ..Default::default()
+        }
     }
 
     pub fn with_class(mut self, c: impl Into<String>) -> Self {

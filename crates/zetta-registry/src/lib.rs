@@ -1,6 +1,9 @@
 //! Persistent registries for devices and peers, backed by redb.
 
 #![forbid(unsafe_code)]
+// redb's error variants are intentionally large (rich diagnostic info).
+// Registry calls aren't on hot paths, so the stack cost is fine.
+#![allow(clippy::result_large_err)]
 
 use std::path::{Path, PathBuf};
 
@@ -49,29 +52,47 @@ pub struct PeerRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PeerDirection { Initiator, Acceptor }
+pub enum PeerDirection {
+    Initiator,
+    Acceptor,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PeerStatus { Connecting, Connected, Disconnected, Failed }
+pub enum PeerStatus {
+    Connecting,
+    Connected,
+    Disconnected,
+    Failed,
+}
 
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 
-pub struct Config { pub root: PathBuf }
-impl Default for Config { fn default() -> Self { Self { root: PathBuf::from(".zetta") } } }
+pub struct Config {
+    pub root: PathBuf,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            root: PathBuf::from(".zetta"),
+        }
+    }
+}
 
-pub struct Registry { db: Database }
+pub struct Registry {
+    db: Database,
+}
 
 impl Registry {
     /// Open (or create) a redb-backed registry at `path`. The parent
     /// directory is created if it doesn't exist.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RegistryError> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let db = Database::create(path)?;
         // Materialize the tables so first reads don't fail.
@@ -123,6 +144,21 @@ impl Registry {
         };
         txn.commit()?;
         Ok(removed)
+    }
+
+    /// Find an existing device by (type, name) identity. Returns the
+    /// first match. Used at boot to restore stable device IDs.
+    pub fn find_device_by_identity(
+        &self,
+        type_: &str,
+        name: Option<&str>,
+    ) -> Result<Option<DeviceRecord>, RegistryError> {
+        for rec in self.list_devices()? {
+            if rec.type_ == type_ && rec.name.as_deref() == name {
+                return Ok(Some(rec));
+            }
+        }
+        Ok(None)
     }
 
     // -- peers ------------------------------------------------------------

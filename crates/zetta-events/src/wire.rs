@@ -12,11 +12,21 @@ pub struct Event {
 #[serde(tag = "type")]
 pub enum InboundMessage {
     #[serde(rename = "subscribe")]
-    Subscribe { topic: String, #[serde(default)] limit: Option<u64> },
+    Subscribe {
+        topic: String,
+        #[serde(default)]
+        limit: Option<u64>,
+    },
     #[serde(rename = "unsubscribe")]
-    Unsubscribe { #[serde(rename = "subscriptionId")] subscription_id: u64 },
+    Unsubscribe {
+        #[serde(rename = "subscriptionId")]
+        subscription_id: u64,
+    },
     #[serde(rename = "ping")]
-    Ping { #[serde(default)] data: Option<String> },
+    Ping {
+        #[serde(default)]
+        data: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,22 +36,29 @@ pub enum OutboundMessage {
     SubscribeAck {
         timestamp: i64,
         topic: String,
-        #[serde(rename = "subscriptionId")] subscription_id: u64,
+        #[serde(rename = "subscriptionId")]
+        subscription_id: u64,
     },
     #[serde(rename = "unsubscribe-ack")]
     UnsubscribeAck {
         timestamp: i64,
-        #[serde(rename = "subscriptionId")] subscription_id: u64,
+        #[serde(rename = "subscriptionId")]
+        subscription_id: u64,
     },
     #[serde(rename = "event")]
     Event {
         topic: String,
-        #[serde(rename = "subscriptionId")] subscription_id: SubscriptionRef,
+        #[serde(rename = "subscriptionId")]
+        subscription_id: SubscriptionRef,
         timestamp: i64,
         data: serde_json::Value,
     },
     #[serde(rename = "pong")]
-    Pong { timestamp: i64, #[serde(default)] data: Option<String> },
+    Pong {
+        timestamp: i64,
+        #[serde(default)]
+        data: Option<String>,
+    },
     #[serde(rename = "error")]
     Error {
         code: u16,

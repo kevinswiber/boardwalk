@@ -19,9 +19,9 @@
 
 #![forbid(unsafe_code)]
 
+mod eval;
 mod lex;
 mod parse;
-mod eval;
 
 pub use eval::{matches, project};
 
@@ -55,7 +55,16 @@ pub enum Predicate {
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Op { Eq, Ne, Lt, Le, Gt, Ge, Like, In }
+pub enum Op {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Like,
+    In,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {

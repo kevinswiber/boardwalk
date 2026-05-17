@@ -102,13 +102,10 @@ impl PeerClient {
 
     async fn attempt_once(&self, connection_id: Uuid) -> Result<(), PeerError> {
         self.peer_init.register(connection_id);
-        let ready = zetta_tunnel::dial_initiator(
-            self.remote_url.as_str(),
-            &self.local_name,
-            connection_id,
-        ).await?;
-        let service = self.router.clone()
-            .into_service::<hyper::body::Incoming>();
+        let ready =
+            zetta_tunnel::dial_initiator(self.remote_url.as_str(), &self.local_name, connection_id)
+                .await?;
+        let service = self.router.clone().into_service::<hyper::body::Incoming>();
         let svc = hyper_util::service::TowerToHyperService::new(service);
         let result = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
             .serve_connection(ready.upgraded, svc)
@@ -132,7 +129,9 @@ pub struct PeerAcceptors {
 }
 
 impl PeerAcceptors {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn confirmation_count(&self) -> u64 {
         self.confirmations.load(std::sync::atomic::Ordering::SeqCst)
@@ -141,7 +140,9 @@ impl PeerAcceptors {
     /// Wait until at least one peer confirmation has happened, or
     /// timeout. Returns true on success.
     pub async fn wait_for_first(&self, timeout: std::time::Duration) -> bool {
-        if self.confirmation_count() > 0 { return true; }
+        if self.confirmation_count() > 0 {
+            return true;
+        }
         let notified = self.notify.notified();
         tokio::pin!(notified);
         match tokio::time::timeout(timeout, notified.as_mut()).await {
@@ -166,9 +167,13 @@ impl PeerAcceptors {
                 connection_id,
                 upgraded,
                 acceptors.senders.clone(),
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => {
-                    acceptors.confirmations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    acceptors
+                        .confirmations
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     acceptors.notify.notify_waiters();
                 }
                 Err(e) => {
@@ -256,7 +261,7 @@ fn backoff_ms(attempt: u32) -> u64 {
     let base: u64 = 100;
     let max: u64 = 30_000;
     let computed = base.saturating_mul(1u64 << attempt.min(10));
-    let jitter = (xorshift() % 1000) as u64;
+    let jitter = xorshift() % 1000;
     computed.min(max).saturating_add(jitter)
 }
 

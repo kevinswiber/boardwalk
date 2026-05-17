@@ -32,7 +32,9 @@ pub(crate) fn parse_query(toks: &[Spanned]) -> Result<Query, CaqlError> {
 }
 
 impl<'a> Parser<'a> {
-    fn peek(&self) -> Option<&Tok> { self.toks.get(self.pos).map(|s| &s.tok) }
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.pos).map(|s| &s.tok)
+    }
 
     fn peek_is(&self, t: &Tok) -> bool {
         match (self.peek(), t) {
@@ -49,7 +51,10 @@ impl<'a> Parser<'a> {
 
     fn err(&self, msg: &str) -> CaqlError {
         let offset = self.toks.get(self.pos).map(|s| s.offset).unwrap_or(0);
-        CaqlError::Parse { offset, message: msg.into() }
+        CaqlError::Parse {
+            offset,
+            message: msg.into(),
+        }
     }
 
     /// Returns Some(None) for `*`, Some(Some(paths)) otherwise.
@@ -125,7 +130,9 @@ impl<'a> Parser<'a> {
             self.bump();
             let inner = self.parse_or()?;
             match self.bump() {
-                Some(Spanned { tok: Tok::RParen, .. }) => {}
+                Some(Spanned {
+                    tok: Tok::RParen, ..
+                }) => {}
                 _ => return Err(self.err("expected `)`")),
             }
             return Ok(inner);
@@ -167,7 +174,9 @@ impl<'a> Parser<'a> {
                         }
                     }
                     match self.bump() {
-                        Some(Spanned { tok: Tok::RBracket, .. }) => Ok(Value::List(items)),
+                        Some(Spanned {
+                            tok: Tok::RBracket, ..
+                        }) => Ok(Value::List(items)),
                         _ => Err(self.err("expected `]`")),
                     }
                 }

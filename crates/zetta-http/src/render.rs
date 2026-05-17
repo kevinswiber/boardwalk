@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use url::Url;
-use zetta_siren::{rels, Action, EmbeddedEntity, Entity, Field, Link, SubEntity};
+use zetta_siren::{Action, EmbeddedEntity, Entity, Field, Link, SubEntity, rels};
 
 use crate::core::{Core, DeviceSnapshot};
 
@@ -15,21 +15,47 @@ pub(crate) struct Hrefs {
 }
 
 impl Hrefs {
-    pub fn root(&self) -> Url { self.http.clone() }
+    pub fn root(&self) -> Url {
+        self.http.clone()
+    }
     pub fn server_url(&self) -> Url {
-        self.http.join(&format!("servers/{}", urlencoding::encode(&self.server))).unwrap()
+        self.http
+            .join(&format!("servers/{}", urlencoding::encode(&self.server)))
+            .unwrap()
     }
     pub fn devices_url(&self) -> Url {
-        self.http.join(&format!("servers/{}/devices", urlencoding::encode(&self.server))).unwrap()
+        self.http
+            .join(&format!(
+                "servers/{}/devices",
+                urlencoding::encode(&self.server)
+            ))
+            .unwrap()
     }
     pub fn device_url(&self, id: &uuid::Uuid) -> Url {
-        self.http.join(&format!("servers/{}/devices/{}", urlencoding::encode(&self.server), id)).unwrap()
+        self.http
+            .join(&format!(
+                "servers/{}/devices/{}",
+                urlencoding::encode(&self.server),
+                id
+            ))
+            .unwrap()
     }
     pub fn meta_url(&self) -> Url {
-        self.http.join(&format!("servers/{}/meta", urlencoding::encode(&self.server))).unwrap()
+        self.http
+            .join(&format!(
+                "servers/{}/meta",
+                urlencoding::encode(&self.server)
+            ))
+            .unwrap()
     }
     pub fn meta_type_url(&self, ty: &str) -> Url {
-        self.http.join(&format!("servers/{}/meta/{}", urlencoding::encode(&self.server), urlencoding::encode(ty))).unwrap()
+        self.http
+            .join(&format!(
+                "servers/{}/meta/{}",
+                urlencoding::encode(&self.server),
+                urlencoding::encode(ty)
+            ))
+            .unwrap()
     }
     pub fn events_url(&self) -> Url {
         self.ws.join("events").unwrap()
@@ -39,7 +65,13 @@ impl Hrefs {
     }
     pub fn stream_url(&self, ty: &str, id: &uuid::Uuid, stream: &str) -> Url {
         let topic = format!("{}/{}/{}/{}", self.server, ty, id, stream);
-        let mut u = self.ws.join(&format!("servers/{}/events", urlencoding::encode(&self.server))).unwrap();
+        let mut u = self
+            .ws
+            .join(&format!(
+                "servers/{}/events",
+                urlencoding::encode(&self.server)
+            ))
+            .unwrap();
         u.query_pairs_mut().append_pair("topic", &topic);
         u
     }
@@ -49,19 +81,15 @@ pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs, peers: &[String]) -> Ent
     let mut e = Entity::new()
         .with_class("root")
         .with_link(Link::new(rels::SELF, h.root()))
-        .with_link(
-            Link::new(rels::SERVER, h.server_url())
-                .with_title(h.server.clone()),
-        );
+        .with_link(Link::new(rels::SERVER, h.server_url()).with_title(h.server.clone()));
     for peer in peers {
-        let url = h.http.join(&format!("servers/{}", urlencoding::encode(peer))).unwrap();
-        e = e.with_link(
-            Link::rels([rels::PEER, rels::SERVER], url)
-                .with_title(peer.clone()),
-        );
+        let url = h
+            .http
+            .join(&format!("servers/{}", urlencoding::encode(peer)))
+            .unwrap();
+        e = e.with_link(Link::rels([rels::PEER, rels::SERVER], url).with_title(peer.clone()));
     }
-    e
-        .with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()))
+    e.with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()))
         .with_link(Link::new(rels::EVENTS, h.events_url()))
         .with_action(
             Action::new("query-devices", "GET", h.root())
@@ -71,10 +99,7 @@ pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs, peers: &[String]) -> Ent
         )
 }
 
-pub(crate) fn render_server(
-    h: &Hrefs,
-    devices: &[DeviceSnapshot],
-) -> Entity {
+pub(crate) fn render_server(h: &Hrefs, devices: &[DeviceSnapshot]) -> Entity {
     let mut e = Entity::new()
         .with_class("server")
         .with_property("name", Value::String(h.server.clone()))
@@ -104,12 +129,14 @@ pub(crate) fn device_sub_entity(h: &Hrefs, d: &DeviceSnapshot) -> EmbeddedEntity
         .with_class(d.type_.clone())
         .with_property("id", Value::String(d.id.to_string()))
         .with_property("type", Value::String(d.type_.clone()))
-        .with_property("name", d.name.clone().map(Value::String).unwrap_or(Value::Null))
+        .with_property(
+            "name",
+            d.name.clone().map(Value::String).unwrap_or(Value::Null),
+        )
         .with_property("state", Value::String(d.state.clone()))
         .with_link(Link::new(rels::SELF, h.device_url(&d.id)))
         .with_link(
-            Link::rels([rels::UP, rels::SERVER], h.server_url())
-                .with_title(h.server.clone()),
+            Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
         );
     // Pass through extra properties.
     for (k, v) in d.properties.iter() {
@@ -124,14 +151,19 @@ pub(crate) fn render_device(h: &Hrefs, d: &DeviceSnapshot) -> Entity {
         .with_class(d.type_.clone())
         .with_property("id", Value::String(d.id.to_string()))
         .with_property("type", Value::String(d.type_.clone()))
-        .with_property("name", d.name.clone().map(Value::String).unwrap_or(Value::Null))
+        .with_property(
+            "name",
+            d.name.clone().map(Value::String).unwrap_or(Value::Null),
+        )
         .with_property("state", Value::String(d.state.clone()))
         .with_link(Link::rels([rels::SELF, rels::EDIT], h.device_url(&d.id)))
         .with_link(
-            Link::rels([rels::UP, rels::SERVER], h.server_url())
-                .with_title(h.server.clone()),
+            Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
         )
-        .with_link(Link::rels([rels::TYPE, "describedby"], h.meta_type_url(&d.type_)));
+        .with_link(Link::rels(
+            [rels::TYPE, "describedby"],
+            h.meta_type_url(&d.type_),
+        ));
 
     for (k, v) in d.properties.iter() {
         e = e.with_property(k.clone(), v.clone());
@@ -168,15 +200,13 @@ pub(crate) fn render_device(h: &Hrefs, d: &DeviceSnapshot) -> Entity {
     e
 }
 
-pub(crate) fn render_search_results(
-    h: &Hrefs,
-    ql: &str,
-    devices: &[DeviceSnapshot],
-) -> Entity {
+pub(crate) fn render_search_results(h: &Hrefs, ql: &str, devices: &[DeviceSnapshot]) -> Entity {
     let mut self_url = h.server_url();
     self_url.query_pairs_mut().append_pair("ql", ql);
     let mut query_ws = h.events_url();
-    query_ws.query_pairs_mut().append_pair("topic", &format!("query/{ql}"));
+    query_ws
+        .query_pairs_mut()
+        .append_pair("topic", &format!("query/{ql}"));
 
     let mut e = Entity::new()
         .with_class("server")
@@ -242,12 +272,15 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, d: &DeviceSnapshot) -> EmbeddedEnt
     EmbeddedEntity::new([rels::TYPE, "item"])
         .with_class("type")
         .with_property("type", Value::String(d.type_.clone()))
-        .with_property("properties", Value::Array(
-            ["id", "type", "state"]
-                .iter()
-                .map(|s| Value::String(s.to_string()))
-                .collect(),
-        ))
+        .with_property(
+            "properties",
+            Value::Array(
+                ["id", "type", "state"]
+                    .iter()
+                    .map(|s| Value::String(s.to_string()))
+                    .collect(),
+            ),
+        )
         .with_property("streams", Value::Array(streams))
         .with_property("transitions", Value::Array(transitions))
         .with_link(Link::new(rels::SELF, h.meta_type_url(&d.type_)))

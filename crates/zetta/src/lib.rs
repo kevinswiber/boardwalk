@@ -2,5 +2,6 @@
 
 #![forbid(unsafe_code)]
 
-pub use zetta_core::{App, Device, DeviceConfig, DeviceError, Scout};
+pub use zetta_core::{Device, DeviceConfig, DeviceError, Scout, TransitionInput};
+pub use zetta_http::{App, AppError, DeviceProxy, ServerHandle};
 pub use zetta_server::Zetta;

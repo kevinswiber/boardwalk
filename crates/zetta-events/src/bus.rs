@@ -54,7 +54,11 @@ impl EventBus {
         let mut subs = self.inner.subs.lock().unwrap();
         subs.insert(
             id,
-            SubscriptionInner { topic: topic.clone(), tx, remaining: opts.limit },
+            SubscriptionInner {
+                topic: topic.clone(),
+                tx,
+                remaining: opts.limit,
+            },
         );
         Subscription { id, topic, rx }
     }
@@ -101,7 +105,9 @@ impl EventBus {
 }
 
 impl Default for EventBus {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -110,7 +116,11 @@ mod tests {
     use serde_json::json;
 
     fn event(topic: &str, data: serde_json::Value) -> Event {
-        Event { topic: topic.into(), timestamp_ms: 0, data }
+        Event {
+            topic: topic.into(),
+            timestamp_ms: 0,
+            data,
+        }
     }
 
     #[tokio::test]
@@ -148,8 +158,14 @@ mod tests {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/sensor/*/temp?where data > 85").unwrap();
         let mut sub = bus.subscribe(pattern, SubscribeOpts::default());
-        assert_eq!(bus.publish(event("hub/sensor/abc/temp", json!({"data": 50}))), 0);
-        assert_eq!(bus.publish(event("hub/sensor/abc/temp", json!({"data": 90}))), 1);
+        assert_eq!(
+            bus.publish(event("hub/sensor/abc/temp", json!({"data": 50}))),
+            0
+        );
+        assert_eq!(
+            bus.publish(event("hub/sensor/abc/temp", json!({"data": 90}))),
+            1
+        );
         let got = sub.rx.recv().await.unwrap();
         assert_eq!(got.data["data"], 90);
     }

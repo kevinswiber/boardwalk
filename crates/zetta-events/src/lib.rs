@@ -6,6 +6,6 @@ mod bus;
 mod topic;
 mod wire;
 
-pub use bus::{EventBus, Subscription, SubscriptionId, SubscribeOpts};
-pub use topic::{Segment, TopicPattern, TopicParseError};
+pub use bus::{EventBus, SubscribeOpts, Subscription, SubscriptionId};
+pub use topic::{Segment, TopicParseError, TopicPattern};
 pub use wire::{Event, InboundMessage, OutboundMessage, SubscriptionRef};

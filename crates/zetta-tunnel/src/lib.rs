@@ -14,8 +14,8 @@ use std::sync::Arc;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Empty;
-use hyper::header::{HeaderName, HeaderValue};
 use hyper::Request;
+use hyper::header::{HeaderName, HeaderValue};
 use hyper_util::rt::TokioIo;
 use sha1::{Digest, Sha1};
 use thiserror::Error;
@@ -77,10 +77,11 @@ pub async fn dial_initiator(
     local_name: &str,
     connection_id: Uuid,
 ) -> Result<InitiatorReady, TunnelError> {
-    let url = url::Url::parse(remote_url)
-        .map_err(|e| TunnelError::Url(format!("{e}")))?;
+    let url = url::Url::parse(remote_url).map_err(|e| TunnelError::Url(format!("{e}")))?;
     let scheme = url.scheme();
-    let host = url.host_str().ok_or_else(|| TunnelError::Url("no host".into()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| TunnelError::Url("no host".into()))?;
     let port = url.port_or_known_default().unwrap_or(match scheme {
         "https" | "wss" => 443,
         _ => 80,
@@ -117,7 +118,9 @@ pub async fn dial_initiator(
         .handshake::<_, Empty<Bytes>>(io)
         .await?;
     let conn = conn.with_upgrades();
-    let conn_task = tokio::spawn(async move { let _ = conn.await; });
+    let conn_task = tokio::spawn(async move {
+        let _ = conn.await;
+    });
 
     let req = Request::builder()
         .method("POST")
@@ -155,9 +158,12 @@ pub async fn dial_initiator(
 
     let upgraded = hyper::upgrade::on(response).await?;
     // The connection task may now finish; that's OK — we own the upgraded stream.
-    let _ = conn_task;
+    drop(conn_task);
 
-    Ok(InitiatorReady { upgraded, remote_authority: authority })
+    Ok(InitiatorReady {
+        upgraded,
+        remote_authority: authority,
+    })
 }
 
 /// Build a 101 Switching Protocols response for a peer WS upgrade
@@ -174,7 +180,9 @@ pub fn build_upgrade_response(
         .get("sec-websocket-version")
         .and_then(|v| v.to_str().ok());
     if version != Some("13") {
-        return Err(TunnelError::Upgrade("missing or wrong Sec-WebSocket-Version".into()));
+        return Err(TunnelError::Upgrade(
+            "missing or wrong Sec-WebSocket-Version".into(),
+        ));
     }
 
     let offered = headers
@@ -254,7 +262,9 @@ mod tests {
     #[test]
     fn ws_new_key_is_base64_16_bytes() {
         let k = ws_new_key();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(&k).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&k)
+            .unwrap();
         assert_eq!(decoded.len(), 16);
     }
 }

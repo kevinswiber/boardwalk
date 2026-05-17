@@ -3,10 +3,14 @@
 
 #![forbid(unsafe_code)]
 
+mod app;
 mod core;
+mod peer_streams;
 mod render;
 mod routes;
 mod ws;
 
+pub use app::{App, AppError, DeviceProxy, ServerHandle};
 pub use core::{Core, CoreBuilder, DeviceHandle};
-pub use routes::{router, router_with, AppState, PeerHandler, PeerInitState, PeerSenders};
+pub use peer_streams::PeerStreamHub;
+pub use routes::{AppState, PeerHandler, PeerInitState, PeerSenders, router, router_with};

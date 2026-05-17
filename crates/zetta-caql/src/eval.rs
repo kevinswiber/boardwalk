@@ -118,8 +118,12 @@ fn glob_match(pat: &str, s: &str) -> bool {
         match (p.first(), s.first()) {
             (None, None) => true,
             (Some('*'), _) => {
-                if helper(&p[1..], s) { return true; }
-                if s.is_empty() { return false; }
+                if helper(&p[1..], s) {
+                    return true;
+                }
+                if s.is_empty() {
+                    return false;
+                }
                 helper(p, &s[1..])
             }
             (Some('?'), Some(_)) => helper(&p[1..], &s[1..]),
@@ -140,7 +144,9 @@ fn insert_path(out: &mut Map<String, JsonValue>, segs: &[String], value: JsonVal
         out.insert(segs[0].clone(), value);
         return;
     }
-    let next = out.entry(segs[0].clone()).or_insert_with(|| JsonValue::Object(Map::new()));
+    let next = out
+        .entry(segs[0].clone())
+        .or_insert_with(|| JsonValue::Object(Map::new()));
     if let JsonValue::Object(m) = next {
         insert_path(m, &segs[1..], value);
     }

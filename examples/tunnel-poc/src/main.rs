@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let (initiator_io, acceptor_io) = duplex(64 * 1024);
 
     let initiator = tokio::spawn(run_initiator(initiator_io));
-    let acceptor  = tokio::spawn(run_acceptor(acceptor_io));
+    let acceptor = tokio::spawn(run_acceptor(acceptor_io));
 
     initiator.await??;
     acceptor.await??;
@@ -51,15 +51,11 @@ async fn run_initiator(io: tokio::io::DuplexStream) -> Result<()> {
             let connection_id = path.trim_start_matches("/_initiate_peer/");
             info!("initiator: peer confirmed connection_id={}", connection_id);
 
-            let response = http::Response::builder()
-                .status(200)
-                .body(())?;
+            let response = http::Response::builder().status(200).body(())?;
             let mut send_stream = respond.send_response(response, false)?;
             send_stream.send_data(Bytes::from_static(b"ok"), true)?;
         } else {
-            let response = http::Response::builder()
-                .status(404)
-                .body(())?;
+            let response = http::Response::builder().status(404).body(())?;
             respond.send_response(response, true)?;
         }
     }

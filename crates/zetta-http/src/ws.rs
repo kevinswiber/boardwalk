@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
-use http::Request;
+use serde_json::Value as Json;
 
 use zetta_events::{
     InboundMessage, OutboundMessage, SubscribeOpts, SubscriptionId, SubscriptionRef, TopicPattern,
@@ -15,10 +16,15 @@ use crate::routes::AppState;
 struct ConnState {
     /// Local subscriptions: app-id → bus subscription id.
     local_subs: HashMap<u64, SubscriptionId>,
-    /// Forwarded subscriptions: app-id → the abort handle for the
-    /// background task that streams events from the peer.
-    fwd_subs: HashMap<u64, tokio::task::AbortHandle>,
+    /// Forwarded subscriptions: app-id → (peer name, topic) + abort handle.
+    fwd_subs: HashMap<u64, FwdSub>,
     next_app_id: u64,
+}
+
+struct FwdSub {
+    peer: String,
+    topic: String,
+    abort: tokio::task::AbortHandle,
 }
 
 pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
@@ -27,9 +33,8 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
-            let json = match serde_json::to_string(&msg) {
-                Ok(j) => j,
-                Err(_) => continue,
+            let Ok(json) = serde_json::to_string(&msg) else {
+                continue;
             };
             if sender.send(Message::Text(json.into())).await.is_err() {
                 break;
@@ -45,25 +50,18 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
     };
 
     while let Some(msg) = receiver.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(_) => break,
+        let Ok(msg) = msg else {
+            break;
         };
         match msg {
             Message::Text(text) => {
                 let parsed: Result<InboundMessage, _> = serde_json::from_str(&text);
                 match parsed {
                     Ok(InboundMessage::Subscribe { topic, limit }) => {
-                        // Decide local vs peer-forward by first segment.
-                        let first = topic.split('/').next().unwrap_or("");
-                        let peer_sender = if first != state.core.name && !first.is_empty() {
-                            match &state.peer_senders {
-                                Some(p) => p.sender(first).await,
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let first = topic.split('/').next().unwrap_or("").to_string();
+                        let is_peer_topic = first != state.core.name
+                            && !first.is_empty()
+                            && state.peer_senders.is_some();
 
                         let pattern = match TopicPattern::parse(&topic) {
                             Ok(p) => p,
@@ -88,63 +86,53 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                             subscription_id: app_id,
                         });
 
-                        if let Some(mut sender) = peer_sender {
-                            // Forward: GET /servers/{peer}/events?topic={topic}
-                            let peer = first.to_string();
-                            let target = format!(
-                                "http://{}.unreachable.zettajs.io/servers/{}/events?topic={}",
-                                urlencoding::encode(&peer),
-                                urlencoding::encode(&peer),
-                                urlencoding::encode(&topic),
-                            );
-                            let req = Request::builder()
-                                .method("GET")
-                                .uri(target)
-                                .body(axum::body::Body::empty())
-                                .expect("request");
-                            let out_tx = out_tx.clone();
+                        if is_peer_topic {
+                            let senders = state.peer_senders.clone().unwrap();
+                            let rx = state.peer_streams.subscribe(&first, &topic, senders).await;
+                            let Some(mut rx) = rx else {
+                                // Senders had no entry for this peer; ack already sent,
+                                // so emit an error and skip.
+                                let _ = out_tx.send(OutboundMessage::Error {
+                                    code: 400,
+                                    timestamp: now_ms(),
+                                    topic: Some(topic.clone()),
+                                    message: Some(format!("unknown peer `{first}`")),
+                                    subscription_id: Some(app_id),
+                                });
+                                continue;
+                            };
+                            let out_tx_clone = out_tx.clone();
                             let topic_for_task = topic.clone();
                             let task = tokio::spawn(async move {
-                                let resp = match sender.send_request(req).await {
-                                    Ok(r) => r,
-                                    Err(_) => return,
-                                };
-                                if !resp.status().is_success() {
-                                    return;
-                                }
-                                let mut body = resp.into_body();
-                                let mut buf = Vec::new();
-                                use http_body_util::BodyExt;
-                                while let Some(chunk) = body.frame().await {
-                                    let chunk = match chunk {
-                                        Ok(c) => c,
-                                        Err(_) => return,
-                                    };
-                                    let Ok(data) = chunk.into_data() else { continue };
-                                    buf.extend_from_slice(&data);
-                                    // Parse newline-delimited.
-                                    loop {
-                                        let Some(nl) = buf.iter().position(|b| *b == b'\n') else { break };
-                                        let line = buf.drain(..=nl).collect::<Vec<u8>>();
-                                        let trimmed = &line[..line.len() - 1];
-                                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(trimmed) else { continue };
-                                        let _ = out_tx.send(OutboundMessage::Event {
-                                            topic: v.get("topic").and_then(|t| t.as_str()).unwrap_or(&topic_for_task).to_string(),
-                                            subscription_id: SubscriptionRef::Single(app_id),
-                                            timestamp: v.get("timestamp").and_then(|t| t.as_i64()).unwrap_or_else(now_ms),
-                                            data: v.get("data").cloned().unwrap_or(serde_json::Value::Null),
-                                        });
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(v) => emit_forwarded(
+                                            &out_tx_clone,
+                                            app_id,
+                                            &topic_for_task,
+                                            &v,
+                                        ),
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(
+                                            _,
+                                        )) => continue,
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                            break;
+                                        }
                                     }
                                 }
                             });
-                            conn.fwd_subs.insert(app_id, task.abort_handle());
-                            let _ = pattern;
+                            conn.fwd_subs.insert(
+                                app_id,
+                                FwdSub {
+                                    peer: first.clone(),
+                                    topic: topic.clone(),
+                                    abort: task.abort_handle(),
+                                },
+                            );
                         } else {
                             // Local subscription.
-                            let bus_sub = state
-                                .core
-                                .bus
-                                .subscribe(pattern, SubscribeOpts { limit });
+                            let bus_sub =
+                                state.core.bus.subscribe(pattern, SubscribeOpts { limit });
                             conn.local_subs.insert(app_id, bus_sub.id);
                             let out_tx_clone = out_tx.clone();
                             tokio::spawn(async move {
@@ -164,8 +152,9 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                         if let Some(bus_id) = conn.local_subs.remove(&subscription_id) {
                             state.core.bus.unsubscribe(bus_id);
                         }
-                        if let Some(abort) = conn.fwd_subs.remove(&subscription_id) {
-                            abort.abort();
+                        if let Some(fwd) = conn.fwd_subs.remove(&subscription_id) {
+                            fwd.abort.abort();
+                            state.peer_streams.unsubscribe(&fwd.peer, &fwd.topic).await;
                         }
                         let _ = out_tx.send(OutboundMessage::UnsubscribeAck {
                             timestamp: now_ms(),
@@ -197,11 +186,32 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
     drop(out_tx);
     let _ = writer.await;
 
-    // Clean up.
     for (_, bus_id) in conn.local_subs.drain() {
         state.core.bus.unsubscribe(bus_id);
     }
-    for (_, abort) in conn.fwd_subs.drain() {
-        abort.abort();
+    for (_, fwd) in conn.fwd_subs.drain() {
+        fwd.abort.abort();
+        state.peer_streams.unsubscribe(&fwd.peer, &fwd.topic).await;
     }
+}
+
+fn emit_forwarded(
+    out_tx: &tokio::sync::mpsc::UnboundedSender<OutboundMessage>,
+    app_id: u64,
+    fallback_topic: &str,
+    v: &Arc<Json>,
+) {
+    let _ = out_tx.send(OutboundMessage::Event {
+        topic: v
+            .get("topic")
+            .and_then(|t| t.as_str())
+            .unwrap_or(fallback_topic)
+            .to_string(),
+        subscription_id: SubscriptionRef::Single(app_id),
+        timestamp: v
+            .get("timestamp")
+            .and_then(|t| t.as_i64())
+            .unwrap_or_else(now_ms),
+        data: v.get("data").cloned().unwrap_or(Json::Null),
+    });
 }

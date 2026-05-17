@@ -10,4 +10,5 @@ repository.workspace = true
 
 [dependencies]
 zetta-core = { path = "../zetta-core" }
+zetta-http = { path = "../zetta-http" }
 zetta-server = { path = "../zetta-server" }
