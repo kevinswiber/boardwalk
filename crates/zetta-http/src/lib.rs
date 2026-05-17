@@ -10,7 +10,10 @@ mod render;
 mod routes;
 mod ws;
 
-pub use app::{App, AppError, DeviceProxy, ServerHandle};
+pub use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
 pub use core::{Core, CoreBuilder, DeviceHandle};
 pub use peer_streams::PeerStreamHub;
-pub use routes::{AppState, PeerHandler, PeerInitState, PeerSenders, router, router_with};
+pub use routes::{
+    AppState, DeviceRegistrar, DeviceRegistration, PeerHandler, PeerInitState, PeerSenders, router,
+    router_with,
+};

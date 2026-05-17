@@ -229,22 +229,55 @@ pub struct DeviceProperties {
     pub extra: Map<String, Value>,
 }
 
-// -- Scout (App moved to zetta-http where it has Core access) ---------------
-
-#[async_trait::async_trait]
-pub trait Scout: Send + Sync + 'static {
-    async fn run(self: Arc<Self>, ctx: ScoutCtx) -> Result<(), DeviceError>;
-}
-
-#[derive(Clone)]
-pub struct ScoutCtx {
-    _placeholder: (),
-}
+// Scout + App live in zetta-http (they need Core access).
 
 // -- Future-pin helper -----------------------------------------------------
 
 /// `BoxFuture` re-export so drivers don't need a futures dependency.
 pub type DynFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Build a `transition` method body that dispatches to inherent
+/// async methods. Use inside a `Device` impl:
+///
+/// ```ignore
+/// impl Led {
+///     async fn turn_on(&mut self) -> Result<(), DeviceError> { ... }
+///     async fn turn_off(&mut self) -> Result<(), DeviceError> { ... }
+/// }
+///
+/// impl Device for Led {
+///     fn config(&self, cfg: &mut DeviceConfig) { ... }
+///     fn state(&self) -> &str { ... }
+///     zetta_core::transitions! {
+///         "turn-on" => turn_on,
+///         "turn-off" => turn_off,
+///     }
+/// }
+/// ```
+///
+/// The generated `transition` matches on the wire name and dispatches
+/// to the method; unknown names yield `DeviceError::Invalid`.
+#[macro_export]
+macro_rules! transitions {
+    ( $( $wire:literal => $method:ident ),* $(,)? ) => {
+        fn transition<'a>(
+            &'a mut self,
+            name: &'a str,
+            _input: $crate::TransitionInput,
+        ) -> ::futures::future::BoxFuture<'a, ::std::result::Result<(), $crate::DeviceError>> {
+            ::std::boxed::Box::pin(async move {
+                match name {
+                    $( $wire => self.$method().await, )*
+                    other => ::std::result::Result::Err(
+                        $crate::DeviceError::Invalid(::std::format!(
+                            "unknown transition `{}`", other
+                        )),
+                    ),
+                }
+            })
+        }
+    };
+}
 
 #[cfg(test)]
 mod tests {

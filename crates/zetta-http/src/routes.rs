@@ -37,6 +37,25 @@ pub trait PeerSenders: Send + Sync + 'static {
     async fn names(&self) -> Vec<String>;
 }
 
+/// Inputs to the hubless device registration flow
+/// (`POST /servers/{name}/devices`).
+#[derive(Debug, Clone, Default)]
+pub struct DeviceRegistration {
+    pub type_: String,
+    pub name: Option<String>,
+    pub id: Option<Uuid>,
+    pub fields: std::collections::HashMap<String, String>,
+}
+
+/// Callback supplied by `zetta-server` that consumes a registration,
+/// runs the appropriate factory, registers the device with the Core
+/// (and the persistent registry), and returns its ID.
+pub type DeviceRegistrar = Arc<
+    dyn Fn(DeviceRegistration) -> BoxFuture<'static, Result<Uuid, zetta_core::DeviceError>>
+        + Send
+        + Sync,
+>;
+
 /// Per-server in-flight peer-confirmation state, keyed by connection id.
 /// Populated when a `PeerClient` (initiator) is mid-handshake and
 /// drained when the acceptor's `GET /_initiate_peer/{id}` request lands.
@@ -61,6 +80,7 @@ pub struct AppState {
     pub peer_init: PeerInitState,
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: crate::peer_streams::PeerStreamHub,
+    pub device_registrar: Option<DeviceRegistrar>,
 }
 
 pub fn router(core: Arc<Core>) -> Router {
@@ -70,6 +90,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_init: PeerInitState::default(),
         peer_senders: None,
         peer_streams: crate::peer_streams::PeerStreamHub::new(),
+        device_registrar: None,
     })
 }
 
@@ -79,7 +100,7 @@ pub fn router_with(state: AppState) -> Router {
         .route("/servers/{name}", get(server_get))
         .route(
             "/servers/{name}/devices",
-            get(devices_get).post(devices_post_stub),
+            get(devices_get).post(devices_post),
         )
         .route(
             "/servers/{name}/devices/{id}",
@@ -262,21 +283,66 @@ async fn devices_get(
     siren_response(render::render_server(&h, &devices))
 }
 
-async fn devices_post_stub(
+async fn devices_post(
     State(state): State<AppState>,
     Path(name): Path<String>,
     headers: HeaderMap,
     uri: Uri,
-    body: Body,
+    body_bytes: bytes::Bytes,
 ) -> Response {
-    if let Some(r) = maybe_forward_or_404(&state, &name, Method::POST, &uri, &headers, body).await {
-        return r;
+    // If forwarding to a peer, do it now (we still have the body in bytes).
+    if name != state.core.name {
+        let body = Body::from(body_bytes);
+        return maybe_forward_or_404(&state, &name, Method::POST, &uri, &headers, body)
+            .await
+            .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "POST /servers/:name/devices (hubless device registration) is not implemented in v0",
-    )
-        .into_response()
+    let Some(registrar) = state.device_registrar.clone() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "no factories registered; call Zetta::register_factory(...)",
+        )
+            .into_response();
+    };
+    let pairs: Vec<(String, String)> = match serde_urlencoded::from_bytes(&body_bytes) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("bad form: {e}")).into_response(),
+    };
+    let mut reg = DeviceRegistration::default();
+    for (k, v) in pairs {
+        match k.as_str() {
+            "type" => reg.type_ = v,
+            "name" => reg.name = Some(v),
+            "id" => reg.id = Uuid::parse_str(&v).ok(),
+            _ => {
+                reg.fields.insert(k, v);
+            }
+        }
+    }
+    if reg.type_.is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing `type` field").into_response();
+    }
+    let new_id = match registrar(reg).await {
+        Ok(id) => id,
+        Err(zetta_core::DeviceError::Invalid(msg)) => {
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+        Err(zetta_core::DeviceError::Conflict(msg)) => {
+            return (StatusCode::CONFLICT, msg).into_response();
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    };
+    let h = build_hrefs(&headers, &uri, &state.core.name);
+    let Some(snap) = state.core.get_device(&new_id).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "device missing after register",
+        )
+            .into_response();
+    };
+    let mut resp = siren_response(render::render_device(&h, &snap));
+    *resp.status_mut() = StatusCode::CREATED;
+    resp
 }
 
 async fn device_get(

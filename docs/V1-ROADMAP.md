@@ -5,26 +5,31 @@ question (`v2#Q14`, `v3#Q24`) so the rationale stays discoverable.
 
 ## What was deferred but is now done in v0.x
 
-- ✅ `v3#Q24` Cloud-side subscription deduplication (one HTTP/2 stream
-  per `(peer, topic)`, fanned via `tokio::sync::broadcast`).
-- ✅ `v3#Q23` Bounded backpressure on forwarded events (via the
-  broadcast channel's lagging behavior at `BROADCAST_BUFFER = 256`).
-- ✅ `v3#Q28` Persistent device registry (`Zetta::persist(path)` —
-  device IDs stable across restarts).
+- ✅ `v3#Q24` Cloud-side subscription deduplication.
+- ✅ `v3#Q23` Bounded backpressure on forwarded events
+  (`BROADCAST_BUFFER = 256`).
+- ✅ `v3#Q28` Persistent device registry (`Zetta::persist(path)`).
 - ✅ `v3#Q26` App support (`Zetta::use_app(impl App)` +
   `ServerHandle::query` + `DeviceProxy`).
+- ✅ `v3#Q27` Scouts (`Zetta::use_scout(impl Scout)`,
+  `ScoutCtx::discover` for runtime device registration).
+- ✅ `v3#Q29` Hubless device registration via
+  `Zetta::register_factory(type_name, |args| ...)`. POST
+  /servers/{name}/devices wired with peer-forward fall-through.
+- ✅ `v3#Q21` TLS integration test via `dangerous-test-tls` feature
+  on `zetta-tunnel` + rcgen self-signed cert.
+- ✅ Graceful shutdown via `Zetta::listen_until(addr, signal)`.
+- ✅ `cargo deny` configured + CI step.
+- ✅ Multi-device observe: `ServerHandle::observe(queries, callback)`
+  fires when all queries are satisfied.
+- ✅ Transition-dispatch macro: `zetta_core::transitions! { ... }`
+  in `Device` impl removes the `Box::pin(async move { match ... })`
+  boilerplate. (Full `#[device]` proc-macro deferred — see below.)
 - ✅ CI: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
-  across Linux + macOS.
+  across Linux + macOS, plus `cargo deny check`.
 - ✅ TLS uses `rustls-platform-verifier` (OS trust store).
 
 ## Operational hardening
-
-### TLS integration test — `v3#Q21`
-Stand up a rustls-fronted axum listener with a self-signed cert
-(via `rcgen`). Add a `dangerous-test-tls` feature on `zetta-tunnel`
-that swaps in a no-verify `ServerCertVerifier` so the test can trust
-the self-signed cert without poking the OS trust store. Run the
-existing peer-link test through `wss://`.
 
 ### Duplicate peer-name handling — `v3#Q22`
 Two hubs both calling themselves "hub" linking to the same cloud:
@@ -70,41 +75,38 @@ isn't wired into the `Device::run` path.
 
 ## Platform features
 
-### Scouts — `v2#Q13`, `v3#Q27`
-Static `use_device` is enough for many use cases; scouts come back
-when a real driver needs dynamic discovery (mDNS, USB, etc.). The
-`Scout` trait exists but `ScoutCtx` is a placeholder and there's no
-`use_scout` builder method.
-
-### Hubless device registration — `v2#Q16`, `v3#Q29`
-`POST /servers/{name}/devices` is currently 501. To wire properly:
-
-```rust
-Zetta::new()
-    .register_factory("led", |args| -> Box<dyn Device> { ... })
-    .listen(...)
-```
-
-API design needs input before implementing.
-
 ### Persist peer records too
 Right now `zetta-registry` persists device records (via
 `Zetta::persist`) but `PeerRecord` is not persisted on
 connect/disconnect. Useful for "show me peers that have ever connected"
 in the UI/CLI.
 
-### Multi-device observe (the original `server.observe([q1, q2], cb)`)
-The current `ServerHandle::query` returns a snapshot at call time.
-The original Zetta fires a callback when ALL queries are satisfied
-and re-fires when device sets change. Useful for apps that bridge
-multiple device types.
+### Re-firing observe
+Today `ServerHandle::observe` is single-shot — fires once when all
+queries are satisfied. The original Zetta re-fires when device sets
+change. Worth adding `observe_loop` that re-runs the callback on every
+device-set change.
 
 ## Developer experience
 
-### Macros: `#[device]`, `#[transition]`, `#[app]` — `v2#Q12`, `v3#Q30`
-Drop the verbose hand-written `Device` impl. The shape is sketched in
-`docs/07-api-ergonomics.md`. Land when there are ≥3 real drivers
-written by hand and the boilerplate starts hurting.
+### Full proc-macro `#[device]` / `#[transition]` / `#[app]`
+The current `transitions! { ... }` macro_rules helper removes the
+transition-dispatch boilerplate but `Device for X { ... }` still has
+to be written by hand (config, state, etc.). A proc-macro could
+collapse the whole impl into:
+
+```rust
+#[device]
+impl Led {
+    #[config] fn config(&self, cfg: &mut DeviceConfig) { ... }
+    #[state] fn state(&self) -> &str { ... }
+    #[transition] async fn turn_on(&mut self) -> Result<()> { ... }
+    #[transition] async fn turn_off(&mut self) -> Result<()> { ... }
+}
+```
+
+Needs a `zetta-macros` crate. Land when there are ≥3 real drivers
+written by hand and the remaining boilerplate hurts.
 
 ### Embedded admin UI — `v2#Q8`
 Originally defaulted to "no UI in v0", and we're keeping that. If

@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
-use zetta_core::{DeviceError, DeviceId, TransitionInput};
+use uuid::Uuid;
+use zetta_core::{Device, DeviceConfig, DeviceError, DeviceId, TransitionInput};
 
 use crate::core::Core;
 
@@ -16,6 +17,48 @@ pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 #[async_trait::async_trait]
 pub trait App: Send + Sync + 'static {
     async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError>;
+}
+
+/// A scout discovers devices over a protocol (mDNS, USB, Bluetooth,
+/// etc.) and registers them with the running server.
+#[async_trait::async_trait]
+pub trait Scout: Send + Sync + 'static {
+    async fn run(self: Arc<Self>, ctx: ScoutCtx) -> Result<(), DeviceError>;
+}
+
+/// Handle handed to each scout.
+#[derive(Clone)]
+pub struct ScoutCtx {
+    core: Arc<Core>,
+}
+
+impl ScoutCtx {
+    #[doc(hidden)]
+    pub fn new_internal(core: Arc<Core>) -> Self {
+        Self { core }
+    }
+
+    /// Server name (the local instance's identity).
+    pub fn name(&self) -> &str {
+        &self.core.name
+    }
+
+    /// Register a newly-discovered device with the running server.
+    /// Returns the assigned device ID. The device is immediately
+    /// visible via the HTTP API.
+    pub async fn discover<D: Device + 'static>(&self, device: D) -> DeviceId {
+        let id = Uuid::new_v4();
+        let mut cfg = DeviceConfig::default();
+        device.config(&mut cfg);
+        self.core.register_device(id, cfg, Box::new(device)).await;
+        id
+    }
+
+    /// Get a `ServerHandle` for inspecting existing devices (e.g. to
+    /// avoid duplicate discovery).
+    pub fn server(&self) -> ServerHandle {
+        ServerHandle::new_internal(self.core.clone())
+    }
 }
 
 #[derive(Clone)]
@@ -72,6 +115,58 @@ impl ServerHandle {
             core: self.core.clone(),
             id,
         })
+    }
+
+    /// Wait until *all* of `queries` have at least one matching device,
+    /// then invoke `callback` with one proxy per query (the first match
+    /// in registration order). If a query never matches, `observe`
+    /// waits forever (drop the future to cancel).
+    ///
+    /// Single-shot: call again to observe a fresh device set.
+    pub async fn observe<F, Fut>(&self, queries: Vec<&str>, callback: F) -> Result<(), AppError>
+    where
+        F: FnOnce(Vec<DeviceProxy>) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), AppError>> + Send,
+    {
+        let parsed: Vec<zetta_caql::Query> = queries
+            .iter()
+            .map(|q| zetta_caql::parse(q))
+            .collect::<Result<_, _>>()
+            .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
+        let mut rx = self.core.device_changes.subscribe();
+        loop {
+            let devices = self.core.list_devices().await;
+            let mut proxies = Vec::with_capacity(parsed.len());
+            let mut ok = true;
+            for q in &parsed {
+                let m = devices.iter().find(|d| {
+                    let target = serde_json::json!({
+                        "id": d.id.to_string(),
+                        "type": d.type_,
+                        "name": d.name,
+                        "state": d.state,
+                    });
+                    zetta_caql::matches(q, &target).unwrap_or(false)
+                });
+                match m {
+                    Some(d) => proxies.push(DeviceProxy {
+                        core: self.core.clone(),
+                        id: d.id,
+                    }),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                return callback(proxies).await;
+            }
+            match rx.recv().await {
+                Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
     }
 }
 

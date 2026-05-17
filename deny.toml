@@ -1,0 +1,45 @@
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "warn"
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",  # webpki-root-certs (cert bundle)
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# In-workspace path deps are written without explicit versions; that's
+# fine since they're not external. Without this, cargo-deny flags every
+# `path = "..."` dependency as a wildcard.
+allow-wildcard-paths = true
+# Skip duplicates that come from major transitive dep updates; revisit
+# when the ecosystem catches up.
+skip-tree = [
+    { name = "windows-sys" },
+    { name = "windows-targets" },
+    { name = "getrandom" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

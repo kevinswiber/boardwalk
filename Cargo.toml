@@ -22,6 +22,9 @@ rust-version = "1.95"
 license = "Apache-2.0"
 authors = ["Kevin Swiber <kevin@swiber.dev>"]
 repository = "https://github.com/kevinswiber/zetta-rs"
+# Until we cut a real release, nothing is published. Flip on the
+# specific crates that ship when v0.1 lands.
+publish = false
 
 [workspace.dependencies]
 # Async runtime

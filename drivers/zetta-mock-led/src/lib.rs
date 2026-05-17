@@ -2,12 +2,22 @@
 
 #![forbid(unsafe_code)]
 
-use futures::future::BoxFuture;
-use zetta_core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use zetta_core::{Device, DeviceConfig, DeviceError};
 
 #[derive(Default)]
 pub struct Led {
     pub on: bool,
+}
+
+impl Led {
+    async fn turn_on(&mut self) -> Result<(), DeviceError> {
+        self.on = true;
+        Ok(())
+    }
+    async fn turn_off(&mut self) -> Result<(), DeviceError> {
+        self.on = false;
+        Ok(())
+    }
 }
 
 impl Device for Led {
@@ -24,23 +34,8 @@ impl Device for Led {
         if self.on { "on" } else { "off" }
     }
 
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on" => {
-                    self.on = true;
-                    Ok(())
-                }
-                "turn-off" => {
-                    self.on = false;
-                    Ok(())
-                }
-                other => Err(DeviceError::Invalid(format!("unknown transition {other}"))),
-            }
-        })
+    zetta_core::transitions! {
+        "turn-on" => turn_on,
+        "turn-off" => turn_off,
     }
 }

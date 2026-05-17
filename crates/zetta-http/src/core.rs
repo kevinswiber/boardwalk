@@ -13,6 +13,9 @@ pub struct Core {
     pub name: String,
     pub bus: EventBus,
     devices: RwLock<Vec<DeviceHandle>>,
+    /// Fires once per `register_device`. Subscribers see one tick per
+    /// new device. Used by `ServerHandle::observe`.
+    pub(crate) device_changes: tokio::sync::broadcast::Sender<()>,
 }
 
 /// One registered device. The runtime owns the device behind a lock so
@@ -68,15 +71,35 @@ impl CoreBuilder {
     }
 
     pub fn build(self) -> Arc<Core> {
+        let (device_changes, _) = tokio::sync::broadcast::channel(64);
         Arc::new(Core {
             name: self.name,
             bus: EventBus::new(),
             devices: RwLock::new(self.devices),
+            device_changes,
         })
     }
 }
 
 impl Core {
+    /// Register a device at runtime (not via the static builder).
+    /// Used by `POST /servers/{name}/devices` factories and by scouts.
+    pub async fn register_device(
+        &self,
+        id: DeviceId,
+        config: DeviceConfig,
+        device: Box<dyn Device>,
+    ) {
+        let mut guard = self.devices.write().await;
+        guard.push(DeviceHandle {
+            id,
+            config,
+            device: tokio::sync::Mutex::new(device),
+        });
+        drop(guard);
+        let _ = self.device_changes.send(());
+    }
+
     pub async fn list_devices(&self) -> Vec<DeviceSnapshot> {
         let guard = self.devices.read().await;
         let mut out = Vec::with_capacity(guard.len());

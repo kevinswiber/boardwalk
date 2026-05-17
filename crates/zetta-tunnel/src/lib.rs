@@ -233,11 +233,21 @@ async fn tls_connect(
         );
     });
 
-    use rustls_platform_verifier::BuilderVerifierExt;
-    let config = rustls::ClientConfig::builder()
-        .with_platform_verifier()
-        .map_err(|e| TunnelError::Upgrade(format!("rustls platform verifier: {e}")))?
-        .with_no_client_auth();
+    #[cfg(feature = "dangerous-test-tls")]
+    let config = {
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(dangerous_test_verifier())
+            .with_no_client_auth()
+    };
+    #[cfg(not(feature = "dangerous-test-tls"))]
+    let config = {
+        use rustls_platform_verifier::BuilderVerifierExt;
+        rustls::ClientConfig::builder()
+            .with_platform_verifier()
+            .map_err(|e| TunnelError::Upgrade(format!("rustls platform verifier: {e}")))?
+            .with_no_client_auth()
+    };
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
     let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
         .map_err(|e| TunnelError::Url(format!("invalid TLS server name: {e}")))?;
@@ -246,6 +256,60 @@ async fn tls_connect(
         .await
         .map_err(TunnelError::Io)?;
     Ok(tls)
+}
+
+/// Test-only verifier that accepts any server cert. Enabled by the
+/// `dangerous-test-tls` feature; never compiled into production builds.
+#[cfg(feature = "dangerous-test-tls")]
+fn dangerous_test_verifier() -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::{DigitallySignedStruct, SignatureScheme};
+
+    #[derive(Debug)]
+    struct Accept;
+    impl ServerCertVerifier for Accept {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ECDSA_NISTP384_SHA384,
+                SignatureScheme::ED25519,
+                SignatureScheme::RSA_PSS_SHA256,
+                SignatureScheme::RSA_PSS_SHA384,
+                SignatureScheme::RSA_PSS_SHA512,
+                SignatureScheme::RSA_PKCS1_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA384,
+                SignatureScheme::RSA_PKCS1_SHA512,
+            ]
+        }
+    }
+    Arc::new(Accept)
 }
 
 #[cfg(test)]
