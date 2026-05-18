@@ -13,9 +13,8 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Default)]
 struct Led {
@@ -173,25 +172,19 @@ async fn forwarded_get_device_returns_hub_data_through_cloud() {
     let p = boot_pair().await;
     let id = device_id_via(p.cloud_addr).await;
 
-    let via_cloud: Json = reqwest::get(format!(
-        "http://{}/servers/hub/devices/{id}",
-        p.cloud_addr
-    ))
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let via_cloud: Json = reqwest::get(format!("http://{}/servers/hub/devices/{id}", p.cloud_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
 
-    let direct: Json = reqwest::get(format!(
-        "http://{}/servers/hub/devices/{id}",
-        p.hub_addr
-    ))
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let direct: Json = reqwest::get(format!("http://{}/servers/hub/devices/{id}", p.hub_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
 
     // Properties (id, type, name, state) and class come from the
     // device snapshot and must match across forwarding paths.

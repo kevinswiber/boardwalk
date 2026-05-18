@@ -568,7 +568,19 @@ async fn meta_get(
         .iter()
         .map(|d| d.to_resource_snapshot(&core.name))
         .collect();
-    siren_response(render::render_meta(&h, &snaps))
+    // Metadata describes the kind, not the instance — gather the full
+    // transition and stream surfaces from `DeviceConfig` instead of
+    // the snapshot's state-dependent `affordances.available` lists.
+    let types: Vec<render::TypeMeta> = devices
+        .iter()
+        .zip(snaps.iter())
+        .map(|(d, snap)| render::TypeMeta {
+            snap,
+            all_transitions: d.config.transitions.keys().cloned().collect(),
+            all_streams: d.config.streams.iter().map(|s| s.name.clone()).collect(),
+        })
+        .collect();
+    siren_response(render::render_meta(&h, &types))
 }
 
 async fn meta_type_get(

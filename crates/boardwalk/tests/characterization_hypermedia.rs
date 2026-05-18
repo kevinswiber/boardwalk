@@ -70,11 +70,7 @@ fn find_link_with_rels<'a>(entity: &'a Json, rels: &[&str]) -> Option<&'a Json> 
         let link_rels = link
             .get("rel")
             .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
         rels.iter().all(|needle| link_rels.contains(needle))
     })
@@ -103,8 +99,9 @@ async fn root_advertises_self_server_peer_management_events_links() {
         .expect("server link present");
     assert_eq!(server_link["title"], "hub");
 
-    let _peer_management = find_link_with_rels(&body, &["https://rels.boardwalk.to/peer-management"])
-        .expect("peer-management link present");
+    let _peer_management =
+        find_link_with_rels(&body, &["https://rels.boardwalk.to/peer-management"])
+            .expect("peer-management link present");
 
     let events_link = find_link_with_rels(&body, &["https://rels.boardwalk.to/events"])
         .expect("events link present");
@@ -155,11 +152,17 @@ async fn server_renders_query_register_actions_and_device_entities() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert!(classes.contains(&"server"), "expected `server` class, got {classes:?}");
+    assert!(
+        classes.contains(&"server"),
+        "expected `server` class, got {classes:?}"
+    );
     assert_eq!(body["properties"]["name"], "hub");
 
     let actions = body["actions"].as_array().expect("actions present");
-    let action_names: Vec<&str> = actions.iter().map(|a| a["name"].as_str().unwrap()).collect();
+    let action_names: Vec<&str> = actions
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
     assert!(action_names.contains(&"query-devices"));
     assert!(action_names.contains(&"register-device"));
 
@@ -199,7 +202,11 @@ async fn device_renders_state_gated_transition_action_and_stream_links() {
         .unwrap();
 
     let actions = dev["actions"].as_array().expect("actions present");
-    assert_eq!(actions.len(), 1, "expected exactly one allowed transition in 'off' state");
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected exactly one allowed transition in 'off' state"
+    );
     assert_eq!(actions[0]["name"], "turn-on");
     let hidden = actions[0]["fields"]
         .as_array()
@@ -212,10 +219,7 @@ async fn device_renders_state_gated_transition_action_and_stream_links() {
 
     let stream_link = find_link_with_rels(
         &dev,
-        &[
-            "monitor",
-            "https://rels.boardwalk.to/object-stream",
-        ],
+        &["monitor", "https://rels.boardwalk.to/object-stream"],
     )
     .expect("stream link present");
     let href = stream_link["href"].as_str().unwrap();
@@ -264,13 +268,20 @@ async fn meta_collection_renders_type_subentities_with_streams_and_transitions()
     let transitions = type_entity["properties"]["transitions"]
         .as_array()
         .expect("transitions array");
-    assert!(!transitions.is_empty(), "expected at least one transition");
-    for t in transitions {
-        assert!(
-            t.get("name").and_then(|v| v.as_str()).is_some(),
-            "each transition should have a `name` field, got {t:?}"
-        );
-    }
+    let names: Vec<&str> = transitions
+        .iter()
+        .map(|t| t["name"].as_str().expect("each transition has a name"))
+        .collect();
+    // Metadata is type-level — the full transition surface must be
+    // visible regardless of the LED's current state.
+    assert!(
+        names.contains(&"turn-on"),
+        "expected `turn-on` in meta transitions, got {names:?}"
+    );
+    assert!(
+        names.contains(&"turn-off"),
+        "expected `turn-off` in meta transitions, got {names:?}"
+    );
 }
 
 #[tokio::test]

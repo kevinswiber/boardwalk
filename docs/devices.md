@@ -139,8 +139,10 @@ Patterns:
 
 - `*` — one path segment.
 - `**` — zero-or-more segments (must be the last component).
-- `?ql=...` — optional [CaQL](caql.md) filter applied to each event's
-  `data` payload.
+- `?ql=<caql>` — optional [CaQL](caql.md) filter applied to each
+  event's `data` payload. The suffix follows URL query-string
+  semantics; URL-encode the value when it contains `&` or
+  unsupported characters.
 
 Responses:
 

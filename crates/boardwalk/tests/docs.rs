@@ -6,8 +6,7 @@
 fn read(rel: &str) -> String {
     // tests run from the crate directory.
     let path = format!("../../{rel}");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("could not read {path}: {e}"))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read {path}: {e}"))
 }
 
 #[test]
@@ -15,7 +14,10 @@ fn caql_docs_mention_new_grammar_and_error_envelope() {
     let s = read("docs/caql.md");
     assert!(s.contains("contains"), "caql.md should mention `contains`");
     assert!(s.contains("exists"), "caql.md should mention `exists`");
-    assert!(s.contains("kind"), "caql.md should mention the canonical `kind` field");
+    assert!(
+        s.contains("kind"),
+        "caql.md should mention the canonical `kind` field"
+    );
     assert!(
         s.contains("400"),
         "caql.md should describe the 400 error response"
@@ -33,5 +35,8 @@ fn devices_docs_mention_resource_snapshot() {
         s.contains("ResourceSnapshot"),
         "devices.md should reference ResourceSnapshot direction"
     );
-    assert!(s.contains("kind"), "devices.md should mention the canonical `kind` field");
+    assert!(
+        s.contains("kind"),
+        "devices.md should mention the canonical `kind` field"
+    );
 }

@@ -288,14 +288,9 @@ impl DeviceSnapshot {
     /// device-supplied properties; `type` maps to `kind`.
     pub fn to_resource_snapshot(&self, node: &str) -> ResourceSnapshot {
         let properties = sanitize_properties(self.properties.clone());
-        let available_transitions: Vec<String> =
-            self.config.allowed_in(&self.state).to_vec();
-        let available_streams: Vec<String> = self
-            .config
-            .streams
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
+        let available_transitions: Vec<String> = self.config.allowed_in(&self.state).to_vec();
+        let available_streams: Vec<String> =
+            self.config.streams.iter().map(|s| s.name.clone()).collect();
         ResourceSnapshot {
             id: self.id.to_string(),
             kind: self.type_.clone(),
@@ -416,16 +411,13 @@ impl ResourceSnapshot {
                 .unwrap_or(JsonValue::Null),
         );
         o.insert("node".into(), JsonValue::String(self.node.clone()));
-        o.insert("properties".into(), JsonValue::Object(self.properties.clone()));
+        o.insert(
+            "properties".into(),
+            JsonValue::Object(self.properties.clone()),
+        );
         o.insert(
             "labels".into(),
-            JsonValue::Array(
-                self.labels
-                    .iter()
-                    .cloned()
-                    .map(JsonValue::String)
-                    .collect(),
-            ),
+            JsonValue::Array(self.labels.iter().cloned().map(JsonValue::String).collect()),
         );
         let mut affordances = Map::new();
         let mut transitions = Map::new();

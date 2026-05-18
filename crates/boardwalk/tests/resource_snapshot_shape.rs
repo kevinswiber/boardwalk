@@ -191,10 +191,7 @@ async fn adapter_maps_basic_fields() {
     assert_eq!(snap.state.as_deref(), Some(d.state.as_str()));
     assert_eq!(snap.node, "hub");
     assert!(snap.labels.is_empty());
-    assert_eq!(
-        snap.affordances.transitions.available,
-        expected_transitions
-    );
+    assert_eq!(snap.affordances.transitions.available, expected_transitions);
     assert_eq!(snap.affordances.streams.available, expected_streams);
     assert!(snap.metadata.is_empty());
 }

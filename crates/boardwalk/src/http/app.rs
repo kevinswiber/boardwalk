@@ -89,9 +89,10 @@ impl ServerHandle {
         let mut out = Vec::with_capacity(devices.len());
         for d in devices {
             let snap = d.to_resource_snapshot(&self.core.name);
-            let matched = crate::query::matches(&q, &snap.to_query_value()).map_err(
-                |e| -> AppError { Box::new(std::io::Error::other(format!("eval: {e}"))) },
-            )?;
+            let matched =
+                crate::query::matches(&q, &snap.to_query_value()).map_err(|e| -> AppError {
+                    Box::new(std::io::Error::other(format!("eval: {e}")))
+                })?;
             if matched {
                 out.push(DeviceProxy {
                     core: self.core.clone(),

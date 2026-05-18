@@ -233,19 +233,39 @@ mod tests {
     fn matches_compare_lt_le_gt_ge_on_number() {
         let target = json!({"n": 50.0});
         assert!(
-            matches(&q_with(cmp("n", ComparisonOp::Lt, Literal::Number(60.0))), &target).unwrap()
+            matches(
+                &q_with(cmp("n", ComparisonOp::Lt, Literal::Number(60.0))),
+                &target
+            )
+            .unwrap()
         );
         assert!(
-            matches(&q_with(cmp("n", ComparisonOp::Le, Literal::Number(50.0))), &target).unwrap()
+            matches(
+                &q_with(cmp("n", ComparisonOp::Le, Literal::Number(50.0))),
+                &target
+            )
+            .unwrap()
         );
         assert!(
-            matches(&q_with(cmp("n", ComparisonOp::Gt, Literal::Number(40.0))), &target).unwrap()
+            matches(
+                &q_with(cmp("n", ComparisonOp::Gt, Literal::Number(40.0))),
+                &target
+            )
+            .unwrap()
         );
         assert!(
-            matches(&q_with(cmp("n", ComparisonOp::Ge, Literal::Number(50.0))), &target).unwrap()
+            matches(
+                &q_with(cmp("n", ComparisonOp::Ge, Literal::Number(50.0))),
+                &target
+            )
+            .unwrap()
         );
         assert!(
-            !matches(&q_with(cmp("n", ComparisonOp::Lt, Literal::Number(40.0))), &target).unwrap()
+            !matches(
+                &q_with(cmp("n", ComparisonOp::Lt, Literal::Number(40.0))),
+                &target
+            )
+            .unwrap()
         );
     }
 

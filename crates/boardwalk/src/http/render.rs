@@ -146,17 +146,11 @@ pub(crate) fn device_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedE
         .with_property("type", Value::String(snap.kind.clone()))
         .with_property(
             "name",
-            snap.name
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+            snap.name.clone().map(Value::String).unwrap_or(Value::Null),
         )
         .with_property(
             "state",
-            snap.state
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+            snap.state.clone().map(Value::String).unwrap_or(Value::Null),
         )
         .with_link(Link::new(rels::SELF, h.device_url(&snap.id)))
         .with_link(
@@ -182,22 +176,13 @@ pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConf
         .with_property("type", Value::String(snap.kind.clone()))
         .with_property(
             "name",
-            snap.name
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+            snap.name.clone().map(Value::String).unwrap_or(Value::Null),
         )
         .with_property(
             "state",
-            snap.state
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+            snap.state.clone().map(Value::String).unwrap_or(Value::Null),
         )
-        .with_link(Link::rels(
-            [rels::SELF, rels::EDIT],
-            h.device_url(&snap.id),
-        ))
+        .with_link(Link::rels([rels::SELF, rels::EDIT], h.device_url(&snap.id)))
         .with_link(
             Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
         )
@@ -273,7 +258,16 @@ pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapsh
     e
 }
 
-pub(crate) fn render_meta(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
+/// Metadata about a resource *kind* (not a specific instance).
+/// `transitions` and `streams` describe the full surface declared by
+/// `DeviceConfig`, regardless of any one instance's current state.
+pub(crate) struct TypeMeta<'a> {
+    pub snap: &'a ResourceSnapshot,
+    pub all_transitions: Vec<String>,
+    pub all_streams: Vec<String>,
+}
+
+pub(crate) fn render_meta(h: &Hrefs, types: &[TypeMeta<'_>]) -> Entity {
     let mut e = Entity::new()
         .with_class("metadata")
         .with_property("name", Value::String(h.server.clone()))
@@ -286,34 +280,30 @@ pub(crate) fn render_meta(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
         }));
 
     let mut seen = std::collections::BTreeSet::new();
-    for snap in snaps {
-        if !seen.insert(snap.kind.clone()) {
+    for ty in types {
+        if !seen.insert(ty.snap.kind.clone()) {
             continue;
         }
-        e = e.with_sub_entity(SubEntity::Embedded(meta_type_sub_entity(h, snap)));
+        e = e.with_sub_entity(SubEntity::Embedded(meta_type_sub_entity(h, ty)));
     }
     e
 }
 
-pub(crate) fn meta_type_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedEntity {
-    let transitions: Vec<Value> = snap
-        .affordances
-        .transitions
-        .available
+pub(crate) fn meta_type_sub_entity(h: &Hrefs, ty: &TypeMeta<'_>) -> EmbeddedEntity {
+    let transitions: Vec<Value> = ty
+        .all_transitions
         .iter()
         .map(|n| serde_json::json!({"name": n}))
         .collect();
-    let streams: Vec<Value> = snap
-        .affordances
-        .streams
-        .available
+    let streams: Vec<Value> = ty
+        .all_streams
         .iter()
         .map(|s| Value::String(s.clone()))
         .collect();
 
     EmbeddedEntity::new([rels::TYPE, "item"])
         .with_class("type")
-        .with_property("type", Value::String(snap.kind.clone()))
+        .with_property("type", Value::String(ty.snap.kind.clone()))
         .with_property(
             "properties",
             Value::Array(
@@ -325,7 +315,7 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> Embedd
         )
         .with_property("streams", Value::Array(streams))
         .with_property("transitions", Value::Array(transitions))
-        .with_link(Link::new(rels::SELF, h.meta_type_url(&snap.kind)))
+        .with_link(Link::new(rels::SELF, h.meta_type_url(&ty.snap.kind)))
 }
 
 #[cfg(test)]
@@ -386,9 +376,44 @@ mod tests {
     fn render_meta_type_sub_entity_uses_kind_from_snapshot() {
         let h = hrefs();
         let snap = led_snapshot();
-        let sub = meta_type_sub_entity(&h, &snap);
+        let ty = TypeMeta {
+            snap: &snap,
+            all_transitions: vec!["turn-on".into(), "turn-off".into()],
+            all_streams: vec!["state".into()],
+        };
+        let sub = meta_type_sub_entity(&h, &ty);
         let v = serde_json::to_value(&sub).unwrap();
         assert_eq!(v["properties"]["type"], "led");
+    }
+
+    #[test]
+    fn render_meta_type_sub_entity_lists_all_transitions_not_state_dependent_set() {
+        // The snapshot only advertises currently-allowed transitions
+        // (here: turn-on, since state == "off"). Metadata describes
+        // the *kind*, not the instance, so the meta sub-entity must
+        // list every transition the kind can ever perform.
+        let h = hrefs();
+        let snap = led_snapshot();
+        assert_eq!(
+            snap.affordances.transitions.available,
+            vec!["turn-on".to_string()],
+            "fixture sanity: the snapshot only sees turn-on in `off`"
+        );
+        let ty = TypeMeta {
+            snap: &snap,
+            all_transitions: vec!["turn-on".into(), "turn-off".into()],
+            all_streams: vec!["state".into()],
+        };
+        let sub = meta_type_sub_entity(&h, &ty);
+        let v = serde_json::to_value(&sub).unwrap();
+        let names: Vec<&str> = v["properties"]["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"turn-on"));
+        assert!(names.contains(&"turn-off"));
     }
 
     #[test]

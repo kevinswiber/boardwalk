@@ -157,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn caql_filter_on_event() {
         let bus = EventBus::new();
-        let pattern = TopicPattern::parse("hub/sensor/*/temp?where data > 85").unwrap();
+        let pattern = TopicPattern::parse("hub/sensor/*/temp?ql=where data > 85").unwrap();
         let mut sub = bus.subscribe(pattern, SubscribeOpts::default());
         assert_eq!(
             bus.publish(event("hub/sensor/abc/temp", json!({"data": 50}))),

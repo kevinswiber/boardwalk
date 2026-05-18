@@ -170,10 +170,7 @@ mod tests {
 
     #[test]
     fn contains_and_exists_constructors() {
-        let c = Predicate::contains(
-            FieldPath::parse("labels"),
-            Literal::String("urgent".into()),
-        );
+        let c = Predicate::contains(FieldPath::parse("labels"), Literal::String("urgent".into()));
         assert!(matches!(c, Predicate::Contains { .. }));
         let e = Predicate::exists(FieldPath::parse("properties.owner"));
         assert!(matches!(e, Predicate::Exists(_)));

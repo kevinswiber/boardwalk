@@ -14,9 +14,8 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Default)]
 struct Led {

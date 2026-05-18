@@ -14,6 +14,11 @@ pub enum TopicParseError {
     },
     #[error("caql filter: {0}")]
     Caql(#[from] QueryError),
+    #[error(
+        "topic suffix `?{0}` does not include a `ql=` parameter; \
+         the only filter parameter recognized today is `ql=<caql>`"
+    )]
+    MissingQlParam(String),
 }
 
 #[derive(Debug, Clone)]
@@ -44,17 +49,35 @@ impl TopicPattern {
     /// - `hub/*/abc/state`
     /// - `hub/**/state`
     /// - `{^Det.+$}/thermostat/abc/temperature`
-    /// - `hub/thermostat/*/temperature?where data > 85`
+    /// - `hub/thermostat/*/temperature?ql=where data > 85`
+    ///
+    /// The optional `?...` suffix follows URL query-string semantics:
+    /// it is a list of `key=value` parameters joined by `&`. Today the
+    /// only recognized parameter is `ql`, whose value is parsed as
+    /// [CaQL](crate::caql). Unrecognized parameters are ignored
+    /// (forward-compat). A suffix that is present but missing `ql`
+    /// returns [`TopicParseError::MissingQlParam`] so typos are loud.
     pub fn parse(input: &str) -> Result<Self, TopicParseError> {
         if input.is_empty() {
             return Err(TopicParseError::Empty);
         }
         let raw = input.to_string();
 
-        // Split off optional `?caql` suffix.
+        // Split off optional URL-style `?key=value` suffix.
         let (path, filter) = match input.find('?') {
             Some(i) => {
-                let q = crate::caql::parse(&input[i + 1..])?;
+                let suffix = &input[i + 1..];
+                let mut ql_value: Option<String> = None;
+                for (k, v) in url::form_urlencoded::parse(suffix.as_bytes()) {
+                    if k == "ql" {
+                        ql_value = Some(v.into_owned());
+                        break;
+                    }
+                }
+                let q = match ql_value {
+                    Some(v) => crate::caql::parse(&v)?,
+                    None => return Err(TopicParseError::MissingQlParam(suffix.to_string())),
+                };
                 (&input[..i], Some(q))
             }
             None => (input, None),
@@ -175,7 +198,7 @@ mod tests {
 
     #[test]
     fn caql_filter() {
-        let p = TopicPattern::parse("hub/sensor/*/temp?where data > 85").unwrap();
+        let p = TopicPattern::parse("hub/sensor/*/temp?ql=where data > 85").unwrap();
         assert!(p.matches_event("hub/sensor/abc/temp", &json!({"data": 90})));
         assert!(!p.matches_event("hub/sensor/abc/temp", &json!({"data": 50})));
         assert!(!p.matches_event("hub/sensor/abc/humidity", &json!({"data": 90})));
@@ -184,8 +207,45 @@ mod tests {
     #[test]
     fn topic_filter_field_type_is_query_query() {
         // Compile-time check: the parsed filter is `Option<query::Query>`.
-        let p = TopicPattern::parse("hub/x?where data > 1").unwrap();
+        let p = TopicPattern::parse("hub/x?ql=where data > 1").unwrap();
         let _: Option<crate::query::Query> = p.filter;
+    }
+
+    #[test]
+    fn topic_filter_syntax_is_url_query_string_with_ql_param() {
+        // The wire format mirrors a URL query string. The CaQL
+        // predicate is the value of the `ql` parameter.
+        TopicPattern::parse("hub/sensor/*/temp?ql=where data > 85")
+            .expect("`?ql=<caql>` is the supported suffix");
+
+        // A `?` without a `ql=` parameter is a loud error rather
+        // than a silently-ignored filter.
+        assert!(
+            TopicPattern::parse("hub/sensor/*/temp?where data > 85").is_err(),
+            "bare `?<caql>` is rejected — clients must use `?ql=<caql>`"
+        );
+    }
+
+    #[test]
+    fn topic_filter_with_url_encoded_value() {
+        // CaQL values often include `=` and quotes. URL-encoding the
+        // value is the standard way to keep them clean; the parser
+        // percent-decodes via url::form_urlencoded.
+        let raw = format!(
+            "hub/sensor/*/state?ql={}",
+            url::form_urlencoded::byte_serialize(b"where data = \"on\"").collect::<String>()
+        );
+        let p = TopicPattern::parse(&raw).unwrap();
+        assert!(p.matches_event("hub/sensor/abc/state", &json!({"data": "on"})));
+        assert!(!p.matches_event("hub/sensor/abc/state", &json!({"data": "off"})));
+    }
+
+    #[test]
+    fn topic_filter_extra_params_are_ignored() {
+        // Forward-compat: unknown params don't break parsing as long
+        // as `ql` is present.
+        let p = TopicPattern::parse("hub/x?ql=where data > 1&limit=10").unwrap();
+        assert!(p.filter.is_some());
     }
 
     #[test]

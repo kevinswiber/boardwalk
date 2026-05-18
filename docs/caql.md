@@ -13,6 +13,8 @@ CaQL is a *syntax*. It compiles into a structured query model
    Returns a Siren search-results entity with the matching resources.
 2. **Event-stream filter** — append `?ql=where data > 80` to a
    subscription topic to drop events whose payload doesn't match.
+   The suffix uses URL query-string semantics: `ql=<caql>` is the
+   parameter the parser reads.
 3. **`App::query` / `ScoutCtx`** — apps and scouts can run CaQL
    programmatically inside the process via `ServerHandle::query(ql)`.
 
