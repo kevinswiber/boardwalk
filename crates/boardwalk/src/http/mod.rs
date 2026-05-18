@@ -10,7 +10,10 @@ mod render;
 mod routes;
 mod ws;
 
-pub use core::{Core, CoreBuilder, DeviceHandle};
+pub use core::{
+    Affordances, Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, ResourceSnapshot,
+    StreamAffordances, TransitionAffordances, sanitize_properties,
+};
 
 pub use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
 pub use peer_streams::PeerStreamHub;
