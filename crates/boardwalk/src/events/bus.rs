@@ -34,8 +34,10 @@ pub struct Subscription {
     pub topic: TopicPattern,
     pub rx: mpsc::Receiver<EventEnvelope>,
     /// Resolves once when a `Lossless` subscription's queue overflows;
-    /// fires *before* the bus removes the entry. WS (5.1) and HTTP
-    /// NDJSON (5.4) forwarders `select!` on this alongside `rx.recv()`.
+    /// fires *before* the bus removes the entry. WebSocket and HTTP
+    /// NDJSON forwarders `select!` on this alongside `rx.recv()` so
+    /// they can emit a final `stream-gap` frame on the out-of-band
+    /// channel before disconnecting.
     pub slow_consumer_rx: tokio::sync::oneshot::Receiver<SlowConsumerNotice>,
 }
 
