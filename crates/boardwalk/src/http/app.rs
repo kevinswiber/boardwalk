@@ -80,33 +80,26 @@ impl ServerHandle {
     }
 
     /// Run a CaQL query against the local device registry. Returns a
-    /// `DeviceProxy` for each match. Invalid queries return an empty
-    /// list and log a warning.
-    pub async fn query(&self, ql: &str) -> Vec<DeviceProxy> {
-        let q = match crate::caql::parse(ql) {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!(%ql, error = %e, "invalid CaQL in app query");
-                return Vec::new();
-            }
-        };
+    /// `DeviceProxy` for each match. Invalid CaQL surfaces as
+    /// `Err(AppError)` so callers can react explicitly.
+    pub async fn query(&self, ql: &str) -> Result<Vec<DeviceProxy>, AppError> {
+        let q = crate::caql::parse(ql)
+            .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
         let devices = self.core.list_devices().await;
-        devices
-            .into_iter()
-            .filter(|d| {
-                let target = serde_json::json!({
-                    "id": d.id.to_string(),
-                    "type": d.type_,
-                    "name": d.name,
-                    "state": d.state,
+        let mut out = Vec::with_capacity(devices.len());
+        for d in devices {
+            let snap = d.to_resource_snapshot(&self.core.name);
+            let matched = crate::query::matches(&q, &snap.to_query_value()).map_err(
+                |e| -> AppError { Box::new(std::io::Error::other(format!("eval: {e}"))) },
+            )?;
+            if matched {
+                out.push(DeviceProxy {
+                    core: self.core.clone(),
+                    id: d.id,
                 });
-                crate::caql::matches(&q, &target).unwrap_or(false)
-            })
-            .map(|d| DeviceProxy {
-                core: self.core.clone(),
-                id: d.id,
-            })
-            .collect()
+            }
+        }
+        Ok(out)
     }
 
     /// Get a proxy by exact device id, if known.
@@ -140,13 +133,8 @@ impl ServerHandle {
             let mut ok = true;
             for q in &parsed {
                 let m = devices.iter().find(|d| {
-                    let target = serde_json::json!({
-                        "id": d.id.to_string(),
-                        "type": d.type_,
-                        "name": d.name,
-                        "state": d.state,
-                    });
-                    crate::caql::matches(q, &target).unwrap_or(false)
+                    let target = d.to_resource_snapshot(&self.core.name).to_query_value();
+                    crate::query::matches(q, &target).unwrap_or(false)
                 });
                 match m {
                     Some(d) => proxies.push(DeviceProxy {
@@ -195,13 +183,8 @@ impl ServerHandle {
             let mut ok = true;
             for q in &parsed {
                 let m = devices.iter().find(|d| {
-                    let target = serde_json::json!({
-                        "id": d.id.to_string(),
-                        "type": d.type_,
-                        "name": d.name,
-                        "state": d.state,
-                    });
-                    crate::caql::matches(q, &target).unwrap_or(false)
+                    let target = d.to_resource_snapshot(&self.core.name).to_query_value();
+                    crate::query::matches(q, &target).unwrap_or(false)
                 });
                 match m {
                     Some(d) => proxies.push(DeviceProxy {

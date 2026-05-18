@@ -144,74 +144,72 @@ async fn ql_with_non_matching_predicate_returns_search_results_with_no_entities(
 }
 
 #[tokio::test]
-#[allow(non_snake_case)]
-async fn current_invalid_ql_returns_empty_search_results__pending_replacement() {
-    // CONTRACT TO BREAK: the HTTP `?ql=` endpoint currently swallows
-    // CaQL parse errors and renders an empty search-results entity
-    // with status 200. The structured-error refactor will replace
-    // this with a 400 response carrying a parse-error body — at that
-    // point this assertion should be updated together with the
-    // source change.
+async fn invalid_ql_returns_400_with_structured_body() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
         "http://{addr}/servers/hub?ql={}",
         urlencoding::encode("where type =")
     );
     let resp = reqwest::get(&url).await.unwrap();
-    assert_eq!(resp.status(), 200, "swallow-on-error keeps status at 200");
+    assert_eq!(resp.status(), 400);
     let body: Json = resp.json().await.unwrap();
-    let entities = body.get("entities").and_then(|v| v.as_array());
-    assert!(
-        entities.map(|a| a.is_empty()).unwrap_or(true),
-        "invalid ql is currently rendered as an empty result, got {entities:?}"
-    );
+    assert_eq!(body["error"], "query-parse-error");
+    assert!(body["message"].is_string(), "expected message string");
+    assert!(body["ql"].is_string(), "expected ql echoed in body");
 }
 
 #[tokio::test]
-#[allow(non_snake_case)]
-async fn current_app_query_returns_empty_for_invalid_ql__pending_replacement() {
-    // CONTRACT TO BREAK: `ServerHandle::query` currently logs a
-    // warning and returns an empty `Vec<DeviceProxy>` on parse error.
-    // The refactor will flip this to a `Result<Vec<DeviceProxy>>` so
-    // apps can react explicitly.
+async fn app_query_returns_err_for_invalid_ql() {
     let (_addr, core) = boot_with(Led::default()).await;
     let server = ServerHandle::new_internal(core);
-    let results = server.query("where ===bogus===").await;
+    let result = server.query("where ===bogus===").await;
     assert!(
-        results.is_empty(),
-        "today the app-side query swallows parse errors and returns empty"
+        result.is_err(),
+        "invalid ql should surface as Err, not be silently swallowed"
     );
 }
 
 #[tokio::test]
-#[allow(non_snake_case)]
-async fn current_query_projection_is_limited_to_id_type_name_state__pending_replacement() {
-    // CONTRACT TO BREAK: the current query target is a four-field
-    // JSON object built inline in `filter_by_ql` — extra `properties`
-    // exposed by the device do not participate in the query. After
-    // the projection moves to ResourceSnapshot, querying `where
-    // color = "red"` against a device that advertises `color: "red"`
-    // should match.
+async fn app_query_uses_resource_snapshot_target() {
+    let (_addr, core) = boot_with(ColoredLed { color: "red" }).await;
+    let server = ServerHandle::new_internal(core);
+    let matches = server
+        .query(r#"where properties.color = "red""#)
+        .await
+        .expect("query parses");
+    assert_eq!(matches.len(), 1);
+}
+
+#[tokio::test]
+async fn query_can_match_extra_device_properties() {
     let (addr, _core) = boot_with(ColoredLed { color: "red" }).await;
 
-    // Sanity check: the device DOES render `color` as a Siren property.
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(server["entities"][0]["properties"]["color"], "red");
-
-    // But it does not currently match a query against `color`.
+    // The new query target exposes device properties under a
+    // `properties` subobject, so `properties.color` resolves.
     let url = format!(
         "http://{addr}/servers/hub?ql={}",
-        urlencoding::encode(r#"where color = "red""#)
+        urlencoding::encode(r#"where properties.color = "red""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
-    let entities = body.get("entities").and_then(|v| v.as_array());
-    assert!(
-        entities.map(|a| a.is_empty()).unwrap_or(true),
-        "current projection ignores `properties`; expected no matches, got {entities:?}"
+    let entities = body["entities"]
+        .as_array()
+        .expect("matching property query should populate entities");
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0]["properties"]["color"], "red");
+}
+
+#[tokio::test]
+async fn query_with_kind_alias_still_uses_type_keyword() {
+    // `where type = "led"` continues to work via the `type → kind`
+    // alias in the evaluator's path lookup.
+    let (addr, _core) = boot_with(Led::default()).await;
+    let url = format!(
+        "http://{addr}/servers/hub?ql={}",
+        urlencoding::encode(r#"where type = "led""#)
     );
+    let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
+    let entities = body["entities"]
+        .as_array()
+        .expect("kind alias should resolve `type = led`");
+    assert_eq!(entities.len(), 1);
 }

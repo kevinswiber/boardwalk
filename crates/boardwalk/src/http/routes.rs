@@ -256,8 +256,10 @@ async fn root(
     let h = build_hrefs(&headers, &uri, &core.name);
     if let Some(ql) = params.ql {
         let devices = core.list_devices().await;
-        let filtered = filter_by_ql(&devices, &ql);
-        return siren_response(render::render_search_results(&h, &ql, &filtered));
+        return match filter_by_ql(&devices, &ql, &core.name) {
+            Ok(filtered) => siren_response(render::render_search_results(&h, &ql, &filtered)),
+            Err(e) => query_error_response(&ql, &e),
+        };
     }
     let _ = params.server;
     let peers = match &state.peer_senders {
@@ -281,8 +283,10 @@ async fn server_get(
     let h = build_hrefs(&headers, &uri, &core.name);
     let devices = core.list_devices().await;
     if let Some(ql) = params.ql {
-        let filtered = filter_by_ql(&devices, &ql);
-        return siren_response(render::render_search_results(&h, &ql, &filtered));
+        return match filter_by_ql(&devices, &ql, &core.name) {
+            Ok(filtered) => siren_response(render::render_search_results(&h, &ql, &filtered)),
+            Err(e) => query_error_response(&ql, &e),
+        };
     }
     siren_response(render::render_server(&h, &devices))
 }
@@ -663,22 +667,29 @@ async fn initiate_peer(State(state): State<AppState>, Path(id): Path<String>) ->
 fn filter_by_ql(
     devices: &[super::core::DeviceSnapshot],
     ql: &str,
-) -> Vec<super::core::DeviceSnapshot> {
-    let q = match crate::caql::parse(ql) {
-        Ok(q) => q,
-        Err(_) => return Vec::new(),
-    };
-    devices
-        .iter()
-        .filter(|d| {
-            let target = serde_json::json!({
-                "id": d.id.to_string(),
-                "type": d.type_,
-                "name": d.name,
-                "state": d.state,
-            });
-            crate::caql::matches(&q, &target).unwrap_or(false)
-        })
-        .cloned()
-        .collect()
+    node_name: &str,
+) -> Result<Vec<super::core::DeviceSnapshot>, crate::query::QueryError> {
+    let q = crate::caql::parse(ql)?;
+    let mut out = Vec::with_capacity(devices.len());
+    for d in devices {
+        let snap = d.to_resource_snapshot(node_name);
+        if crate::query::matches(&q, &snap.to_query_value())? {
+            out.push(d.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
+    let body = serde_json::json!({
+        "error": "query-parse-error",
+        "message": e.to_string(),
+        "ql": ql,
+    });
+    let mut resp = (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/problem+json"),
+    );
+    resp
 }

@@ -55,7 +55,7 @@ struct TurnAllOn {
 #[async_trait]
 impl App for TurnAllOn {
     async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError> {
-        let leds = server.query("where type = \"led\"").await;
+        let leds = server.query("where type = \"led\"").await?;
         for led in &leds {
             if led.available("turn-on").await {
                 led.call_simple("turn-on").await?;
