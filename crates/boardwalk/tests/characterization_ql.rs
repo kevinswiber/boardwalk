@@ -262,7 +262,8 @@ async fn current_root_query_action_carries_unused_server_field() {
 /// Pins the dead `query` stream link that search-results currently
 /// advertises. The href points at the server-wide events socket with a
 /// `topic=query/{ql}` parameter, but nothing publishes on that topic.
-/// Phase 5 will remove the link and the corresponding renderer code.
+/// The resource-route migration will remove the link and the
+/// corresponding renderer code.
 #[tokio::test]
 async fn current_search_results_advertise_dead_query_stream_link() {
     let (addr, _core) = boot_with(Led::default()).await;

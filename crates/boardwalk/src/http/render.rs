@@ -131,10 +131,11 @@ pub(crate) fn device_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedE
 
     // Write user-supplied extras first, skipping any literal `type`
     // key — the canonical `type` (= snap.kind) is the next write and
-    // must not be shadowed by user input. Property maps go through
-    // `sanitize_properties` at the snapshot layer, but `type` is
-    // intentionally not reserved there (it's only a query-time
-    // alias), so we filter it here.
+    // must not be shadowed by user input. `sanitize_properties`
+    // already strips `type` from the snapshot's property map; the
+    // explicit filter here is a defense-in-depth guard for callers
+    // that construct a `ResourceSnapshot` without going through the
+    // sanitizer.
     for (k, v) in snap.properties.iter() {
         if k == "type" {
             continue;
@@ -198,7 +199,7 @@ pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConf
         .transitions
         .iter()
         .filter(|t| t.available)
-        .map(|t| &t.name)
+        .map(|t| &t.spec.name)
     {
         let t_name: &String = t_name;
         let spec = cfg.transitions.get(t_name);
@@ -351,12 +352,18 @@ mod tests {
             labels: BTreeMap::new(),
             transitions: vec![
                 TransitionAffordance {
-                    name: "turn-on".into(),
+                    spec: crate::core::TransitionSpec {
+                        name: "turn-on".into(),
+                        ..Default::default()
+                    },
                     available: true,
                     unavailable_reason: None,
                 },
                 TransitionAffordance {
-                    name: "turn-off".into(),
+                    spec: crate::core::TransitionSpec {
+                        name: "turn-off".into(),
+                        ..Default::default()
+                    },
                     available: false,
                     unavailable_reason: None,
                 },
@@ -414,7 +421,7 @@ mod tests {
             .transitions
             .iter()
             .filter(|t| t.available)
-            .map(|t| t.name.as_str())
+            .map(|t| t.spec.name.as_str())
             .collect();
         assert_eq!(
             available_names,

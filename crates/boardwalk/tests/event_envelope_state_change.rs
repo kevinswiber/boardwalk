@@ -98,7 +98,8 @@ async fn successive_state_transitions_get_strictly_increasing_sequence() {
 
 /// Pins the current causation gap: `Core::run_transition` does not
 /// thread correlation/causation/trace context onto the envelope it
-/// mints. Task 4.2 flips this to populated and updates this snapshot.
+/// mints. The context-publish work flips this to populated and
+/// updates this snapshot.
 #[tokio::test]
 async fn current_state_transition_envelope_has_empty_causation_chain() {
     let (core, id) = boot_with_led().await;

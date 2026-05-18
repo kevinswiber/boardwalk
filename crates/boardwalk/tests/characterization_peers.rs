@@ -223,8 +223,9 @@ async fn forwarded_get_device_returns_hub_data_through_cloud() {
 /// device through the cloud tunnel, the renderer reconstructs absolute
 /// hrefs using the tunnel-internal host (`http://localhost/...`) rather
 /// than the external host the caller used. Properties and action
-/// affordances are intact — only the link origin diverges. Task 5.4
-/// fixes this and updates the assertion to full equality.
+/// affordances are intact — only the link origin diverges. The
+/// resource-routing repair work updates the assertion to full
+/// equality.
 #[tokio::test]
 #[allow(non_snake_case)]
 async fn forwarded_get_currently_preserves_properties_but_rewrites_hrefs_to_tunnel_internal_host__pending_replacement()

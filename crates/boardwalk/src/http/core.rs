@@ -146,7 +146,7 @@ impl StreamSink for BusSink {
             node_id: self.node_id.clone(),
             resource_id: self.resource_id.clone(),
             resource_kind: self.resource_kind.clone(),
-            // TODO(plan-c): wire kind versioning.
+            // Resource versioning is not yet wired in; emitted as 1 for now.
             resource_version: 1,
             stream_id,
             stream: stream.to_string(),
@@ -310,7 +310,7 @@ impl Core {
                 node_id,
                 resource_id,
                 resource_kind,
-                // TODO(plan-c): wire kind versioning.
+                // Resource versioning is not yet wired in; emitted as 1 for now.
                 resource_version: 1,
                 stream_id,
                 stream: "state".to_string(),
@@ -358,11 +358,14 @@ impl DeviceSnapshot {
         let transitions: Vec<TransitionAffordance> = self
             .config
             .transitions
-            .keys()
-            .map(|name| TransitionAffordance {
-                name: name.clone(),
-                available: allowed.contains(name.as_str()),
-                unavailable_reason: None,
+            .values()
+            .map(|spec| {
+                let available = allowed.contains(spec.name.as_str());
+                TransitionAffordance {
+                    spec: spec.clone(),
+                    available,
+                    unavailable_reason: None,
+                }
             })
             .collect();
         let streams: Vec<StreamSpec> = self
@@ -412,15 +415,25 @@ pub struct ResourceSnapshot {
     pub metadata: serde_json::Map<String, JsonValue>,
 }
 
-/// One transition affordance on a resource. `available` reflects
-/// whether the transition can fire in the resource's current state;
-/// `unavailable_reason` carries an optional, human-readable hint when
-/// `available` is false.
+/// One transition affordance on a resource. Carries the full
+/// declared `TransitionSpec` so metadata renderers can read schema,
+/// safety, idempotency, and required scopes directly from a snapshot.
+/// `available` reflects whether the transition can fire in the
+/// resource's current state; `unavailable_reason` carries an optional,
+/// human-readable hint when `available` is false.
 #[derive(Debug, Clone, Default)]
 pub struct TransitionAffordance {
-    pub name: String,
+    pub spec: crate::core::TransitionSpec,
     pub available: bool,
     pub unavailable_reason: Option<String>,
+}
+
+impl TransitionAffordance {
+    /// Convenience accessor since the most common use site needs only
+    /// the name.
+    pub fn name(&self) -> &str {
+        &self.spec.name
+    }
 }
 
 /// One stream a resource publishes. `kind` is the wire kind hint
@@ -517,19 +530,7 @@ impl ResourceSnapshot {
         let transitions: Vec<JsonValue> = self
             .transitions
             .iter()
-            .map(|t| {
-                let mut m = Map::new();
-                m.insert("name".into(), JsonValue::String(t.name.clone()));
-                m.insert("available".into(), JsonValue::Bool(t.available));
-                m.insert(
-                    "unavailableReason".into(),
-                    t.unavailable_reason
-                        .clone()
-                        .map(JsonValue::String)
-                        .unwrap_or(JsonValue::Null),
-                );
-                JsonValue::Object(m)
-            })
+            .map(transition_affordance_to_query_json)
             .collect();
         o.insert("transitions".into(), JsonValue::Array(transitions));
         let streams: Vec<JsonValue> = self
@@ -553,6 +554,89 @@ impl ResourceSnapshot {
         o.insert("metadata".into(), JsonValue::Object(self.metadata.clone()));
         JsonValue::Object(o)
     }
+}
+
+/// Serialize a `TransitionAffordance` for the query projection. The
+/// shape inlines the `TransitionSpec` fields at the top level so
+/// existing CaQL paths like `transitions[*].name` keep resolving, and
+/// `available` / `unavailableReason` sit alongside them. Optional spec
+/// fields are emitted only when populated; `requiredScopes` and
+/// `allowedStates` are always arrays (possibly empty).
+fn transition_affordance_to_query_json(t: &TransitionAffordance) -> JsonValue {
+    use serde_json::Map;
+    let spec = &t.spec;
+    let mut m = Map::new();
+    m.insert("name".into(), JsonValue::String(spec.name.clone()));
+    if let Some(title) = &spec.title {
+        m.insert("title".into(), JsonValue::String(title.clone()));
+    }
+    m.insert(
+        "allowedStates".into(),
+        JsonValue::Array(
+            spec.allowed_states
+                .iter()
+                .cloned()
+                .map(JsonValue::String)
+                .collect(),
+        ),
+    );
+    if let Some(s) = &spec.input_schema {
+        m.insert("inputSchema".into(), s.clone());
+    }
+    if let Some(s) = &spec.output_schema {
+        m.insert("outputSchema".into(), s.clone());
+    }
+    m.insert(
+        "result".into(),
+        JsonValue::String(
+            match spec.result {
+                crate::core::TransitionResultKind::Sync => "sync",
+                crate::core::TransitionResultKind::AsyncJob => "async-job",
+            }
+            .into(),
+        ),
+    );
+    m.insert(
+        "idempotency".into(),
+        JsonValue::String(
+            match spec.idempotency {
+                crate::core::Idempotency::None => "none",
+                crate::core::Idempotency::Supported => "supported",
+                crate::core::Idempotency::Required => "required",
+            }
+            .into(),
+        ),
+    );
+    m.insert(
+        "safety".into(),
+        JsonValue::String(
+            match spec.safety {
+                crate::core::Safety::Safe => "safe",
+                crate::core::Safety::Idempotent => "idempotent",
+                crate::core::Safety::Unsafe => "unsafe",
+            }
+            .into(),
+        ),
+    );
+    m.insert(
+        "requiredScopes".into(),
+        JsonValue::Array(
+            spec.required_scopes
+                .iter()
+                .cloned()
+                .map(JsonValue::String)
+                .collect(),
+        ),
+    );
+    m.insert("available".into(), JsonValue::Bool(t.available));
+    m.insert(
+        "unavailableReason".into(),
+        t.unavailable_reason
+            .clone()
+            .map(JsonValue::String)
+            .unwrap_or(JsonValue::Null),
+    );
+    JsonValue::Object(m)
 }
 
 pub(crate) fn now_ms() -> i64 {

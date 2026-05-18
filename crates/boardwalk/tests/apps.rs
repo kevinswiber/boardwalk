@@ -96,8 +96,8 @@ impl Device for ColoredLed {
 /// Pins the current app-side query contract: `ServerHandle::query`
 /// returns one `DeviceProxy` per resource snapshot whose projection
 /// matches, and invalid CaQL surfaces as `Err` (not silently empty).
-/// Phase 3 will move this surface off `ServerHandle`; this snapshot
-/// must update when that happens.
+/// The runtime-handle migration will move this surface off
+/// `ServerHandle`; this snapshot must update when that happens.
 #[tokio::test]
 async fn server_handle_query_returns_device_proxy_for_resource_snapshot_match() {
     let mut b = CoreBuilder::new("hub");

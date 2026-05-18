@@ -148,8 +148,8 @@ pub struct TransitionSpec {
     pub safety: Safety,
     pub required_scopes: Vec<String>,
     /// Renderer-only adapter for the current Siren `fields` surface.
-    /// Phase 5 derives this from `input_schema`; the field stays for
-    /// now so existing form-based renders keep working.
+    /// Will eventually be derived from `input_schema`; the field stays
+    /// for now so existing form-based renders keep working.
     pub fields: Vec<FieldSpec>,
 }
 

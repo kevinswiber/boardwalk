@@ -47,6 +47,10 @@ impl ResourceDirectory {
         self.by_id.get(id).map(|i| self.entries[*i].clone())
     }
 
+    pub(crate) fn contains_id(&self, id: &str) -> bool {
+        self.by_id.contains_key(id)
+    }
+
     /// Insert a fully-formed entry. Returns an error if the id is
     /// already taken.
     pub(crate) fn insert(

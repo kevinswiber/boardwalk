@@ -31,10 +31,10 @@ enum Command {
         ctx: ResourceCtx,
         reply: oneshot::Sender<Result<ResourceSnapshot, ResourceError>>,
     },
-    Stop {
-        ctx: ActorCtx,
-        reply: oneshot::Sender<()>,
-    },
+    /// Drains the actor: runs `on_stop` and exits the task. The
+    /// actor's identity is carried on the task itself, so the
+    /// caller does not provide an `ActorCtx`.
+    Stop { reply: oneshot::Sender<()> },
 }
 
 /// Cloneable handle to a running actor. Drops to the actor's task
@@ -71,22 +71,30 @@ impl PendingTransition {
 impl ActorHandle {
     /// Spawn a task that owns `actor` and serves transition commands
     /// off a bounded mpsc channel of size `capacity`. Runs
-    /// `Actor::on_start` before draining any messages so transitions
-    /// see an initialised actor.
+    /// `Actor::on_start` (with a default `ActorCtx`) before draining
+    /// any messages so transitions see an initialised actor. Real
+    /// node-managed actors use `spawn_with_task` and pass an
+    /// `ActorCtx` carrying their resource identity.
     pub fn spawn<A: Actor>(actor: A, capacity: usize) -> Self {
-        let (handle, _task) = Self::spawn_with_task(actor, capacity);
+        let (handle, _task) = Self::spawn_with_task(actor, capacity, ActorCtx::default());
         handle
     }
 
-    /// Same as `spawn` but also returns the `JoinHandle` of the
-    /// actor task so the node can await termination during shutdown.
-    pub(crate) fn spawn_with_task<A: Actor>(actor: A, capacity: usize) -> (Self, JoinHandle<()>) {
+    /// Same as `spawn` but also returns the `JoinHandle` of the actor
+    /// task and accepts an `ActorCtx` carrying the resource identity
+    /// to hand to `on_start` / `on_stop`.
+    pub(crate) fn spawn_with_task<A: Actor>(
+        actor: A,
+        capacity: usize,
+        actor_ctx: ActorCtx,
+    ) -> (Self, JoinHandle<()>) {
         let capacity = capacity.max(1);
         let (tx, mut rx) = mpsc::channel::<Command>(capacity);
         let task = tokio::spawn(async move {
             let mut actor = actor;
-            // Run on_start before draining transitions.
-            let _ = actor.on_start(ActorCtx::default()).await;
+            // Run on_start with the actor's identity before draining
+            // transitions.
+            let _ = actor.on_start(actor_ctx.clone()).await;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     Command::Transition {
@@ -105,8 +113,9 @@ impl ActorHandle {
                         let snap = super::resource::Resource::snapshot(&actor, ctx).await;
                         let _ = reply.send(snap);
                     }
-                    Command::Stop { ctx, reply } => {
-                        let _ = actor.on_stop(ctx).await;
+                    Command::Stop { reply } => {
+                        // Use the actor's identity, not a default.
+                        let _ = actor.on_stop(actor_ctx.clone()).await;
                         let _ = reply.send(());
                         break;
                     }
@@ -184,14 +193,11 @@ impl ActorHandle {
     /// Send a stop signal and wait for `on_stop` to complete. Returns
     /// `true` if the actor task acknowledged the stop within `within`;
     /// `false` on timeout or if the actor task had already exited.
-    pub(crate) async fn shutdown(&self, ctx: ActorCtx, within: Duration) -> bool {
+    /// The actor's identity is carried on the spawned task itself —
+    /// callers do not need to provide an `ActorCtx`.
+    pub(crate) async fn shutdown(&self, within: Duration) -> bool {
         let (rtx, rrx) = oneshot::channel();
-        if self
-            .tx
-            .send(Command::Stop { ctx, reply: rtx })
-            .await
-            .is_err()
-        {
+        if self.tx.send(Command::Stop { reply: rtx }).await.is_err() {
             return false;
         }
         matches!(tokio::time::timeout(within, rrx).await, Ok(Ok(())))
@@ -224,9 +230,9 @@ impl ActorHandle {
     }
 }
 
-/// Policy knobs shared across the node's actors. Phase 3 reads from
-/// this to decide actor command-queue capacity; Phase 4 will extend
-/// it with bus and coalesce settings.
+/// Policy knobs shared across the node's actors. The node reads
+/// `actor_queue_capacity` to size each actor's command channel; the
+/// struct will gain bus and coalesce settings as those layers grow.
 #[derive(Clone, Debug)]
 pub struct NodePolicy {
     pub actor_queue_capacity: usize,

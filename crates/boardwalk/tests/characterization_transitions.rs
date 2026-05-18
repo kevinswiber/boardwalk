@@ -165,7 +165,8 @@ async fn post_disallowed_transition_returns_409() {
 ///     "resource.state.changed"`, `stream == "state"`, and the legacy
 ///     topic `hub/led/{id}/state`,
 ///   * `correlationId`, `causationId`, and `traceContext` are all
-///     absent — Task 4.2 must populate them and flip this snapshot.
+///     absent — the context-publish work that populates them will
+///     flip this snapshot.
 #[tokio::test]
 async fn current_form_transition_returns_device_siren_and_state_event() {
     let (addr, core, _h) = boot().await;
@@ -206,15 +207,15 @@ async fn current_form_transition_returns_device_siren_and_state_event() {
     assert_eq!(env.topic(), topic);
     assert!(
         env.correlation_id.is_none(),
-        "correlationId is unpopulated today; Task 4.2 will fill it"
+        "correlationId is unpopulated today; the context-publish work will fill it"
     );
     assert!(
         env.causation_id.is_none(),
-        "causationId is unpopulated today; Task 4.2 will fill it"
+        "causationId is unpopulated today; the context-publish work will fill it"
     );
     assert!(
         env.trace_context.is_none(),
-        "traceContext is unpopulated today; Task 4.2 will fill it"
+        "traceContext is unpopulated today; the context-publish work will fill it"
     );
 }
 

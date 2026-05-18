@@ -166,8 +166,8 @@ pub enum ActorError {
 
 /// Executable resource: drives state through transitions and owns
 /// lifecycle hooks. `&mut self` on the hooks lets actors own state
-/// without interior mutability; the runtime guarantees serialized
-/// access in Phase 3.
+/// without interior mutability; the runtime serializes access to each
+/// actor through a bounded command channel.
 pub trait Actor: Resource {
     fn transition<'a>(
         &'a mut self,

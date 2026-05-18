@@ -34,9 +34,16 @@ impl NodeHandle {
     pub async fn query(&self, ql: &str) -> Result<Vec<ResourceProxy>, NodeHandleError> {
         let parsed =
             crate::caql::parse(ql).map_err(|e| NodeHandleError::QueryParse(e.to_string()))?;
-        let dir = self.node.directory_read().await;
+        // Snapshot the entry list under the read lock, then release
+        // the lock before awaiting any actor snapshots. Holding the
+        // directory lock across `entry.snapshot(...).await` would let
+        // a slow actor block new registrations.
+        let entries = {
+            let dir = self.node.directory_read().await;
+            dir.entries().to_vec()
+        };
         let mut matches = Vec::new();
-        for entry in dir.entries() {
+        for entry in entries {
             let ctx = ResourceCtx::new_test();
             let snap = match entry.snapshot(ctx, self.node.id()).await {
                 Ok(snap) => snap,

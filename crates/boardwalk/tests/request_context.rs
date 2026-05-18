@@ -113,9 +113,8 @@ fn transition_ctx_exposes_resource_registration_service_signature() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async move {
         let result: Result<String, TransitionError> = ctx.register_actor(StubActor).await;
-        // Until Task 3.1 backs this with a real `Node`, the service
-        // returns Internal so the call shape is pinned but no resource
-        // is actually registered.
+        // A context built without a `Node` returns Internal so the
+        // call shape is pinned but no resource is actually registered.
         match result {
             Err(TransitionError::Internal(_)) => {}
             Ok(_) => panic!("test stub should not return Ok yet"),

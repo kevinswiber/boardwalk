@@ -87,9 +87,9 @@ impl App for DuskDawn {
 
 /// Pins the current `ServerHandle::observe` contract: callback fires
 /// exactly once when every supplied CaQL query has at least one match,
-/// and the callback receives one device-proxy slice per query. Phase 3
-/// moves this off `ServerHandle`; this snapshot must update when that
-/// happens.
+/// and the callback receives one device-proxy slice per query. The
+/// runtime-handle migration moves this off `ServerHandle`; this
+/// snapshot must update when that happens.
 struct ObservePin {
     fired: Arc<AtomicBool>,
     saw_two: Arc<AtomicBool>,

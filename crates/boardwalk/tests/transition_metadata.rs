@@ -2,10 +2,10 @@
 //! `ResourceSpec`/`ActorSpec` envelopes, and the `TransitionOutcome`
 //! enum.
 //!
-//! These pins drive the spec-aware metadata rendering work that lands
-//! in Phase 5 and the typed transition return type that the job runner
-//! depends on. Field names and serialized keys are part of the
-//! contract — changing them must update these snapshots.
+//! These pins drive the spec-aware metadata rendering and the typed
+//! transition return type that the job runner depends on. Field names
+//! and serialized keys are part of the contract — changing them must
+//! update these snapshots.
 
 use std::collections::BTreeMap;
 

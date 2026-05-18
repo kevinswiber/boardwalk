@@ -2,9 +2,10 @@
 //!
 //! `OverflowPolicy::Coalesce` is intentionally absent: a truthful
 //! coalesce policy needs a sidecar queue with iterable-replace, which
-//! `mpsc` does not provide. `Backpressure` currently behaves as
-//! `DropNewest` because the lift-point publish path is synchronous;
-//! a future async publish path will make it real.
+//! `mpsc` does not provide. `Backpressure` on the synchronous
+//! `try_publish` path still behaves as `DropNewest` (the sync path
+//! cannot await capacity); the asynchronous `EventBus::publish`
+//! honors `Lossy + Backpressure` by awaiting `tx.send`.
 
 use crate::events::SubscriptionId;
 

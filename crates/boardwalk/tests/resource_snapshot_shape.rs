@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use boardwalk::core::TransitionSpec;
 use boardwalk::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
 use boardwalk::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
@@ -27,7 +28,10 @@ fn sample() -> ResourceSnapshot {
         properties,
         labels,
         transitions: vec![TransitionAffordance {
-            name: "turn-on".into(),
+            spec: TransitionSpec {
+                name: "turn-on".into(),
+                ..Default::default()
+            },
             available: true,
             unavailable_reason: None,
         }],
@@ -60,7 +64,18 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
         properties: Map::new(),
         labels,
         transitions: vec![boardwalk::http::TransitionAffordance {
-            name: "cancel".into(),
+            spec: TransitionSpec {
+                name: "cancel".into(),
+                title: Some("Cancel job".into()),
+                allowed_states: vec!["running".into()],
+                input_schema: Some(serde_json::json!({"type": "object"})),
+                output_schema: None,
+                result: boardwalk::core::TransitionResultKind::Sync,
+                idempotency: boardwalk::core::Idempotency::Required,
+                safety: boardwalk::core::Safety::Idempotent,
+                required_scopes: vec!["job.cancel".into()],
+                fields: vec![],
+            },
             available: true,
             unavailable_reason: None,
         }],
@@ -92,9 +107,17 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
         .as_array()
         .expect("transitions is a structured array");
     assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0]["name"], "cancel");
-    assert_eq!(transitions[0]["available"], true);
-    assert_eq!(transitions[0]["unavailableReason"], Json::Null);
+    let t = &transitions[0];
+    assert_eq!(t["name"], "cancel");
+    assert_eq!(t["title"], "Cancel job");
+    assert_eq!(t["allowedStates"], serde_json::json!(["running"]));
+    assert_eq!(t["inputSchema"], serde_json::json!({"type": "object"}));
+    assert_eq!(t["result"], "sync");
+    assert_eq!(t["idempotency"], "required");
+    assert_eq!(t["safety"], "idempotent");
+    assert_eq!(t["requiredScopes"], serde_json::json!(["job.cancel"]));
+    assert_eq!(t["available"], true);
+    assert_eq!(t["unavailableReason"], Json::Null);
 
     let streams = v["streams"]
         .as_array()
@@ -189,6 +212,13 @@ fn to_query_value_transitions_and_streams_shape() {
     assert_eq!(transitions[0]["name"], "turn-on");
     assert_eq!(transitions[0]["available"], true);
     assert_eq!(transitions[0]["unavailableReason"], Json::Null);
+    // Default spec fields are always emitted so the JSON shape is
+    // stable across resources whose actor declared no extra metadata.
+    assert_eq!(transitions[0]["allowedStates"], serde_json::json!([]));
+    assert_eq!(transitions[0]["result"], "sync");
+    assert_eq!(transitions[0]["safety"], "unsafe");
+    assert_eq!(transitions[0]["idempotency"], "none");
+    assert_eq!(transitions[0]["requiredScopes"], serde_json::json!([]));
 
     let streams = v["streams"]
         .as_array()
@@ -251,7 +281,7 @@ fn type_is_stripped_at_snapshot_level_as_render_compat_alias() {
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
 
-// ---------- Adapter tests (Task 4.3) ----------
+// ---------- Snapshot adapter tests ----------
 
 #[derive(Default)]
 struct AdapterLed {
@@ -315,7 +345,7 @@ async fn adapter_maps_basic_fields() {
     assert!(snap.metadata.is_empty());
 
     let snap_transition_names: std::collections::BTreeSet<&str> =
-        snap.transitions.iter().map(|t| t.name.as_str()).collect();
+        snap.transitions.iter().map(|t| t.name()).collect();
     let cfg_transition_names: std::collections::BTreeSet<&str> =
         d.config.transitions.keys().map(String::as_str).collect();
     assert_eq!(
@@ -323,7 +353,7 @@ async fn adapter_maps_basic_fields() {
         "every declared transition must be visible in the snapshot"
     );
     for t in &snap.transitions {
-        assert_eq!(t.available, allowed.contains(t.name.as_str()));
+        assert_eq!(t.available, allowed.contains(t.name()));
         assert!(t.unavailable_reason.is_none());
     }
 
@@ -388,7 +418,11 @@ async fn adapter_to_query_value_contains_works_on_transitions() {
 
     // Structured transition arrays use `name` keys; query `contains`
     // sees the array of names through `transitions[*].name`.
-    let names: Vec<String> = snap.transitions.iter().map(|t| t.name.clone()).collect();
+    let names: Vec<String> = snap
+        .transitions
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect();
     assert!(names.iter().any(|n| n == "turn-on"));
 
     // The query evaluator can still spot the kind alias.

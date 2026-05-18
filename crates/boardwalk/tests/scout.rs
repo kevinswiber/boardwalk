@@ -49,9 +49,9 @@ impl Scout for DelayedScout {
 
 /// Pins the current `ScoutCtx::discover` contract: when persistence is
 /// off, each discovery mints a fresh random `DeviceId`, and the device
-/// becomes visible in `Core::list_devices`. Phase 3 will rebrand this
-/// to `ActorCtx::register`; this snapshot must update when that
-/// happens.
+/// becomes visible in `Core::list_devices`. The runtime-handle
+/// migration will rebrand this to `ActorCtx::register`; this snapshot
+/// must update when that happens.
 #[tokio::test]
 async fn current_scout_discover_mints_random_device_id() {
     let built = Boardwalk::new()

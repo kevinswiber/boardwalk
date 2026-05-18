@@ -20,7 +20,8 @@ pub type DynFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// task work can attach correlation IDs without touching the trait.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceCtx {
-    // Real fields land when the `Node` runtime wires this in (Phase 3).
+    // Kept opaque so future request metadata can be added without
+    // touching the trait method signature.
     _placeholder: (),
 }
 
@@ -48,7 +49,7 @@ pub trait Resource: Send + Sync + 'static {
     fn spec(&self) -> ResourceSpec;
 
     /// Current snapshot. Reads are async because the resource may
-    /// live behind a runtime queue (Phase 3 wires this up).
+    /// live behind the per-actor command queue.
     fn snapshot<'a>(
         &'a self,
         ctx: ResourceCtx,

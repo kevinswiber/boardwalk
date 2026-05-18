@@ -86,16 +86,32 @@ impl Node {
     }
 
     /// Register an actor with a caller-supplied id. Returns an error
-    /// if the id is already taken.
+    /// if the id is already taken. The uniqueness check happens before
+    /// the actor task is spawned so a duplicate id never runs
+    /// `on_start` or leaks a detached task.
     pub async fn register_with_id<A: Actor>(
         &self,
         id: String,
         actor: A,
     ) -> Result<(), ResourceError> {
-        let kind = actor.spec().kind;
-        let (handle, task) = ActorHandle::spawn_with_task(actor, self.actor_queue_capacity);
-        let slot = super::executor::ActorSlot { handle, task };
+        let spec = actor.spec();
+        let kind = spec.kind.clone();
+        let labels = spec.labels.clone();
+        let actor_ctx = ActorCtx::new(self.id.clone(), id.clone(), kind.clone(), labels);
+
+        // Hold the write lock across spawn so the uniqueness check and
+        // the entry insertion are atomic. Spawning is cheap (channel +
+        // task creation) so this doesn't block other registrations
+        // meaningfully.
         let mut dir = self.directory.write().await;
+        if dir.contains_id(&id) {
+            return Err(ResourceError::Internal(format!(
+                "duplicate resource id: {id}"
+            )));
+        }
+        let (handle, task) =
+            ActorHandle::spawn_with_task(actor, self.actor_queue_capacity, actor_ctx);
+        let slot = super::executor::ActorSlot { handle, task };
         dir.insert(id, kind, slot)
     }
 
@@ -119,26 +135,24 @@ impl Node {
 
     /// Stop every actor under this node. Each actor receives
     /// `on_stop` and then its task is joined. `within` bounds how
-    /// long the node will wait for each actor; remaining tasks are
-    /// aborted after.
+    /// long the node will wait for each actor; tasks that have not
+    /// exited by then are aborted.
     pub async fn shutdown(&self, within: Duration) {
         let entries = {
             let dir = self.directory.read().await;
             dir.entries().to_vec()
         };
         for entry in entries {
-            let _ = entry.handle.shutdown(ActorCtx::default(), within).await;
+            let _ = entry.handle.shutdown(within).await;
             let mut task_slot = entry.task.lock().await;
             if let Some(task) = task_slot.take() {
-                match tokio::time::timeout(within, task).await {
-                    Ok(_joined) => {}
-                    Err(_timeout) => {
-                        // Task didn't exit in time; we'd abort here
-                        // if we still owned the JoinHandle. The
-                        // `.take()` above transferred ownership into
-                        // `_joined` so we can no longer reach it; the
-                        // tokio scheduler drops it.
-                    }
+                let abort_handle = task.abort_handle();
+                if tokio::time::timeout(within, task).await.is_err() {
+                    // Timed out waiting for the task to exit on its
+                    // own; force-abort so the task is actually gone
+                    // (dropping a JoinHandle detaches but does not
+                    // abort).
+                    abort_handle.abort();
                 }
             }
         }

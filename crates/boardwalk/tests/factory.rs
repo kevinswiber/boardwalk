@@ -112,8 +112,9 @@ async fn register_factory_creates_device_at_runtime() {
 
 /// Pins the current hubless registration form: `POST
 /// /servers/hub/devices` consumes the `type`, `id`, and `name`
-/// form fields and returns 201 Created with a Siren device. Phase 5
-/// will swap this for the resource registration endpoint.
+/// form fields and returns 201 Created with a Siren device. The
+/// resource-route migration will swap this for the resource
+/// registration endpoint.
 #[tokio::test]
 async fn current_factory_registration_posts_type_id_name_to_devices_route() {
     let boardwalk = Boardwalk::new()
