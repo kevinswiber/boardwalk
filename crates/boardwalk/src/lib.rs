@@ -12,6 +12,7 @@ pub mod http;
 pub mod peer;
 pub mod query;
 pub mod registry;
+pub mod runtime;
 pub mod server;
 pub mod siren;
 pub mod tunnel;

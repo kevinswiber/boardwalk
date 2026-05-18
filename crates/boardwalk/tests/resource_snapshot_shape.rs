@@ -2,10 +2,11 @@
 //! produces. The shape is the contract the query evaluator sees, so
 //! any reordering or omission must be a deliberate, observable change.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use boardwalk::http::{Affordances, CoreBuilder, ResourceSnapshot};
-use boardwalk::query::{self, FieldPath, Literal, Predicate, Projection, Query};
+use boardwalk::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
+use boardwalk::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
@@ -15,6 +16,8 @@ fn sample() -> ResourceSnapshot {
     properties.insert("color".into(), Json::String("red".into()));
     let mut metadata = Map::new();
     metadata.insert("introduced_in".into(), Json::String("v0.1".into()));
+    let mut labels = BTreeMap::new();
+    labels.insert("zone".into(), "kitchen".into());
     ResourceSnapshot {
         id: "device-1".into(),
         kind: "led".into(),
@@ -22,17 +25,120 @@ fn sample() -> ResourceSnapshot {
         state: Some("off".into()),
         node: "hub".into(),
         properties,
-        labels: vec!["kitchen".into()],
-        affordances: Affordances {
-            transitions: boardwalk::http::TransitionAffordances {
-                available: vec!["turn-on".into()],
-            },
-            streams: boardwalk::http::StreamAffordances {
-                available: vec!["state".into()],
-            },
-        },
+        labels,
+        transitions: vec![TransitionAffordance {
+            name: "turn-on".into(),
+            available: true,
+            unavailable_reason: None,
+        }],
+        streams: vec![StreamSpec {
+            name: "state".into(),
+            kind: "object".into(),
+        }],
+        revision: None,
         metadata,
     }
+}
+
+/// Canonical contract test for the widened `ResourceSnapshot`:
+/// `labels` is a string-string map, `transitions` and `streams` are
+/// structured arrays, `revision` is optional, and `type` is a derived
+/// alias for `kind` so existing query/render expectations keep working.
+#[test]
+fn resource_snapshot_query_value_exposes_widened_contract() {
+    use std::collections::BTreeMap;
+    let mut labels = BTreeMap::new();
+    labels.insert("owner".to_string(), "platform".to_string());
+    labels.insert("queue".to_string(), "default".to_string());
+
+    let snap = ResourceSnapshot {
+        id: "job-1".into(),
+        kind: "job".into(),
+        name: Some("default".into()),
+        state: Some("running".into()),
+        node: "hub".into(),
+        properties: Map::new(),
+        labels,
+        transitions: vec![boardwalk::http::TransitionAffordance {
+            name: "cancel".into(),
+            available: true,
+            unavailable_reason: None,
+        }],
+        streams: vec![boardwalk::http::StreamSpec {
+            name: "logs".into(),
+            kind: "object".into(),
+        }],
+        revision: Some("rev-1".into()),
+        metadata: Map::new(),
+    };
+
+    let v = snap.to_query_value();
+    assert_eq!(v["kind"], "job");
+    assert_eq!(v["type"], "job", "type alias must mirror kind");
+
+    let labels_obj = v["labels"]
+        .as_object()
+        .expect("labels is an object, not an array");
+    assert_eq!(
+        labels_obj.get("owner"),
+        Some(&Json::String("platform".into()))
+    );
+    assert_eq!(
+        labels_obj.get("queue"),
+        Some(&Json::String("default".into()))
+    );
+
+    let transitions = v["transitions"]
+        .as_array()
+        .expect("transitions is a structured array");
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0]["name"], "cancel");
+    assert_eq!(transitions[0]["available"], true);
+    assert_eq!(transitions[0]["unavailableReason"], Json::Null);
+
+    let streams = v["streams"]
+        .as_array()
+        .expect("streams is a structured array");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0]["name"], "logs");
+    assert_eq!(streams[0]["kind"], "object");
+
+    assert_eq!(v["revision"], "rev-1");
+}
+
+/// Canonical contract test for `sanitize_properties`: every reserved
+/// name — including `type`, the render-time alias — is stripped from
+/// user-supplied properties so user data cannot shadow Boardwalk-owned
+/// fields or render aliases.
+#[test]
+fn sanitize_properties_strips_all_reserved_resource_fields() {
+    let mut hostile = Map::new();
+    for k in [
+        "id",
+        "kind",
+        "type",
+        "name",
+        "state",
+        "node",
+        "properties",
+        "labels",
+        "transitions",
+        "streams",
+        "revision",
+        "affordances",
+        "metadata",
+    ] {
+        hostile.insert(k.into(), Json::String("attacker".into()));
+    }
+    hostile.insert("color".into(), Json::String("red".into()));
+
+    let cleaned = boardwalk::http::sanitize_properties(hostile);
+    assert_eq!(
+        cleaned.len(),
+        1,
+        "expected every reserved field to be stripped; survivors: {cleaned:?}"
+    );
+    assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
 
 #[test]
@@ -44,12 +150,15 @@ fn to_query_value_includes_all_reserved_fields() {
     let mut expected = [
         "id",
         "kind",
+        "type",
         "name",
         "state",
         "node",
         "properties",
         "labels",
-        "affordances",
+        "transitions",
+        "streams",
+        "revision",
         "metadata",
     ];
     expected.sort();
@@ -71,27 +180,30 @@ fn to_query_value_omits_state_when_none_serialized_as_null() {
 }
 
 #[test]
-fn to_query_value_affordances_shape() {
+fn to_query_value_transitions_and_streams_shape() {
     let v = sample().to_query_value();
-    let transitions = v["affordances"]["transitions"]["available"]
+    let transitions = v["transitions"]
         .as_array()
-        .expect("transitions.available is array");
-    assert!(transitions.iter().all(|x| x.is_string()));
-    assert_eq!(transitions, &vec![Json::String("turn-on".into())]);
+        .expect("transitions is a structured array");
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0]["name"], "turn-on");
+    assert_eq!(transitions[0]["available"], true);
+    assert_eq!(transitions[0]["unavailableReason"], Json::Null);
 
-    let streams = v["affordances"]["streams"]["available"]
+    let streams = v["streams"]
         .as_array()
-        .expect("streams.available is array");
-    assert!(streams.iter().all(|x| x.is_string()));
-    assert_eq!(streams, &vec![Json::String("state".into())]);
+        .expect("streams is a structured array");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0]["name"], "state");
+    assert_eq!(streams[0]["kind"], "object");
 }
 
 #[test]
-fn to_query_value_labels_is_array_even_if_empty() {
+fn to_query_value_labels_is_object_even_if_empty() {
     let mut snap = sample();
-    snap.labels = vec![];
+    snap.labels = BTreeMap::new();
     let v = snap.to_query_value();
-    assert_eq!(v["labels"], Json::Array(vec![]));
+    assert_eq!(v["labels"], Json::Object(Map::new()));
 }
 
 #[test]
@@ -115,7 +227,7 @@ fn reserved_fields_are_stripped_from_properties() {
     hostile.insert("kind".into(), Json::String("hacker".into()));
     hostile.insert("color".into(), Json::String("red".into()));
     hostile.insert("affordances".into(), Json::Object(Map::new()));
-    hostile.insert("labels".into(), Json::Array(vec![Json::String("a".into())]));
+    hostile.insert("labels".into(), Json::Object(Map::new()));
     hostile.insert("node".into(), Json::String("evil".into()));
     hostile.insert("metadata".into(), Json::Object(Map::new()));
     hostile.insert("properties".into(), Json::Object(Map::new()));
@@ -126,15 +238,17 @@ fn reserved_fields_are_stripped_from_properties() {
 }
 
 #[test]
-fn type_is_not_reserved_at_snapshot_level() {
+fn type_is_stripped_at_snapshot_level_as_render_compat_alias() {
     let mut props = Map::new();
     props.insert("type".into(), Json::String("shadow-led".into()));
+    props.insert("color".into(), Json::String("red".into()));
     let cleaned = boardwalk::http::sanitize_properties(props);
     assert_eq!(
         cleaned.get("type"),
-        Some(&Json::String("shadow-led".into())),
-        "`type` is only a query-time alias for `kind`; it must not be stripped at the snapshot layer"
+        None,
+        "`type` is a render/query alias for `kind`; user properties must not shadow it"
     );
+    assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
 
 // ---------- Adapter tests (Task 4.3) ----------
@@ -181,8 +295,14 @@ async fn adapter_maps_basic_fields() {
     let devices = core.list_devices().await;
     let d = devices.into_iter().next().unwrap();
 
-    let expected_transitions: Vec<String> = d.config.allowed_in(&d.state).to_vec();
-    let expected_streams: Vec<String> = d.config.streams.iter().map(|s| s.name.clone()).collect();
+    let allowed: std::collections::BTreeSet<&str> = d
+        .config
+        .allowed_in(&d.state)
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let expected_stream_names: Vec<String> =
+        d.config.streams.iter().map(|s| s.name.clone()).collect();
 
     let snap = d.to_resource_snapshot("hub");
     assert_eq!(snap.id, d.id.to_string());
@@ -191,9 +311,27 @@ async fn adapter_maps_basic_fields() {
     assert_eq!(snap.state.as_deref(), Some(d.state.as_str()));
     assert_eq!(snap.node, "hub");
     assert!(snap.labels.is_empty());
-    assert_eq!(snap.affordances.transitions.available, expected_transitions);
-    assert_eq!(snap.affordances.streams.available, expected_streams);
+    assert!(snap.revision.is_none());
     assert!(snap.metadata.is_empty());
+
+    let snap_transition_names: std::collections::BTreeSet<&str> =
+        snap.transitions.iter().map(|t| t.name.as_str()).collect();
+    let cfg_transition_names: std::collections::BTreeSet<&str> =
+        d.config.transitions.keys().map(String::as_str).collect();
+    assert_eq!(
+        snap_transition_names, cfg_transition_names,
+        "every declared transition must be visible in the snapshot"
+    );
+    for t in &snap.transitions {
+        assert_eq!(t.available, allowed.contains(t.name.as_str()));
+        assert!(t.unavailable_reason.is_none());
+    }
+
+    let snap_stream_names: Vec<String> = snap.streams.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(snap_stream_names, expected_stream_names);
+    for s in &snap.streams {
+        assert_eq!(s.kind, "object");
+    }
 }
 
 #[tokio::test]
@@ -248,12 +386,19 @@ async fn adapter_to_query_value_contains_works_on_transitions() {
     let d = core.list_devices().await.into_iter().next().unwrap();
     let snap = d.to_resource_snapshot("hub");
 
+    // Structured transition arrays use `name` keys; query `contains`
+    // sees the array of names through `transitions[*].name`.
+    let names: Vec<String> = snap.transitions.iter().map(|t| t.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "turn-on"));
+
+    // The query evaluator can still spot the kind alias.
     let q = Query {
         projection: Projection::All,
-        predicate: Predicate::contains(
-            FieldPath::parse("affordances.transitions.available"),
-            Literal::String("turn-on".into()),
-        ),
+        predicate: Predicate::Compare {
+            left: FieldPath::parse("kind"),
+            op: ComparisonOp::Eq,
+            right: Literal::String("led".into()),
+        },
     };
     assert!(query::matches(&q, &snap.to_query_value()).unwrap());
 }

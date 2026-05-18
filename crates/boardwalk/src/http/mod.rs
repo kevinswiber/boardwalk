@@ -11,8 +11,8 @@ mod routes;
 mod ws;
 
 pub use core::{
-    Affordances, Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, ResourceSnapshot,
-    StreamAffordances, TransitionAffordances, sanitize_properties,
+    Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, ResourceSnapshot, StreamSpec,
+    TransitionAffordance, sanitize_properties,
 };
 
 pub use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};

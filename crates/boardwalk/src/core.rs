@@ -107,12 +107,97 @@ pub struct FieldSpec {
     pub value: Option<Value>,
 }
 
+/// How a transition's effect is delivered. `Sync` transitions return
+/// the updated `ResourceSnapshot` directly; `AsyncJob` transitions
+/// hand back a typed `JobHandle` that the caller follows on a job
+/// resource.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionResultKind {
+    #[default]
+    Sync,
+    AsyncJob,
+}
+
+/// Re-invocation contract for a transition.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Idempotency {
+    #[default]
+    None,
+    Supported,
+    Required,
+}
+
+/// HTTP-style safety classification for the transition.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Safety {
+    Safe,
+    Idempotent,
+    #[default]
+    Unsafe,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct TransitionSpec {
     pub name: TransitionName,
-    /// Fields beyond the mandatory hidden `action` field.
+    pub title: Option<String>,
+    pub allowed_states: Vec<StateName>,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub result: TransitionResultKind,
+    pub idempotency: Idempotency,
+    pub safety: Safety,
+    pub required_scopes: Vec<String>,
+    /// Renderer-only adapter for the current Siren `fields` surface.
+    /// Phase 5 derives this from `input_schema`; the field stays for
+    /// now so existing form-based renders keep working.
     pub fields: Vec<FieldSpec>,
 }
+
+/// Declarative shape of a resource kind: stable identity, optional
+/// property schema, and the streams it publishes.
+#[derive(Debug, Default, Clone)]
+pub struct ResourceSpec {
+    pub kind: ResourceKind,
+    pub name: Option<String>,
+    pub labels: BTreeMap<String, String>,
+    pub property_schema: Option<Value>,
+    pub streams: Vec<StreamSpec>,
+}
+
+/// Declarative shape of an actor: a resource plus the transitions it
+/// accepts.
+#[derive(Debug, Default, Clone)]
+pub struct ActorSpec {
+    pub resource: ResourceSpec,
+    pub transitions: Vec<TransitionSpec>,
+}
+
+/// Typed handle for an async transition's downstream job resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobHandle {
+    pub id: String,
+    pub kind: ResourceKind,
+    pub location: String,
+}
+
+/// Typed return type for invoking a transition. `Sync` transitions
+/// produce `Completed`; async ones produce `Accepted` with a typed
+/// `JobHandle`.
+#[derive(Debug, Clone)]
+pub enum TransitionOutcome {
+    Completed {
+        output: Option<Value>,
+        snapshot: crate::http::ResourceSnapshot,
+    },
+    Accepted {
+        job: JobHandle,
+        output: Option<Value>,
+    },
+}
+
+/// Resource kind name (e.g. `"led"`, `"job"`). Currently a string;
+/// Plan D may swap this for a richer type without renaming usage.
+pub type ResourceKind = String;
 
 /// Builder accepted by `Device::config`.
 #[derive(Default, Debug, Clone)]
@@ -151,7 +236,7 @@ impl DeviceConfig {
                 .entry(t.clone())
                 .or_insert_with(|| TransitionSpec {
                     name: t.clone(),
-                    fields: vec![],
+                    ..Default::default()
                 });
         }
         self.state_transitions.insert(s, names);
@@ -167,8 +252,14 @@ impl DeviceConfig {
         fields: Vec<FieldSpec>,
     ) -> &mut Self {
         let n: TransitionName = name.into();
-        self.transitions
-            .insert(n.clone(), TransitionSpec { name: n, fields });
+        self.transitions.insert(
+            n.clone(),
+            TransitionSpec {
+                name: n,
+                fields,
+                ..Default::default()
+            },
+        );
         self
     }
 

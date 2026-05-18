@@ -194,7 +194,13 @@ pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConf
     // Actions for currently-allowed transitions. Field shapes come
     // from DeviceConfig because the snapshot doesn't carry FieldSpec
     // (Plan A scope).
-    for t_name in &snap.affordances.transitions.available {
+    for t_name in snap
+        .transitions
+        .iter()
+        .filter(|t| t.available)
+        .map(|t| &t.name)
+    {
+        let t_name: &String = t_name;
         let spec = cfg.transitions.get(t_name);
         let mut action = Action::new(t_name.clone(), "POST", h.device_url(&snap.id))
             .with_class("transition")
@@ -211,14 +217,13 @@ pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConf
         e = e.with_action(action);
     }
 
-    // Stream links for declared streams come straight from the
-    // snapshot's affordances.
-    for name in &snap.affordances.streams.available {
+    // Stream links for every declared stream on the snapshot.
+    for stream in &snap.streams {
         let link = Link::rels(
             [rels::MONITOR, rels::OBJECT_STREAM],
-            h.stream_url(&snap.kind, &snap.id, name),
+            h.stream_url(&snap.kind, &snap.id, &stream.name),
         )
-        .with_title(name.clone());
+        .with_title(stream.name.clone());
         e = e.with_link(link);
     }
 
@@ -320,10 +325,12 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, ty: &TypeMeta<'_>) -> EmbeddedEnti
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::{Map, Value as Json};
 
     use super::*;
-    use crate::http::core::{Affordances, StreamAffordances, TransitionAffordances};
+    use crate::http::core::{StreamSpec, TransitionAffordance};
 
     fn hrefs() -> Hrefs {
         Hrefs {
@@ -341,15 +348,24 @@ mod tests {
             state: Some("off".into()),
             node: "hub".into(),
             properties: Map::new(),
-            labels: vec![],
-            affordances: Affordances {
-                transitions: TransitionAffordances {
-                    available: vec!["turn-on".into()],
+            labels: BTreeMap::new(),
+            transitions: vec![
+                TransitionAffordance {
+                    name: "turn-on".into(),
+                    available: true,
+                    unavailable_reason: None,
                 },
-                streams: StreamAffordances {
-                    available: vec!["state".into()],
+                TransitionAffordance {
+                    name: "turn-off".into(),
+                    available: false,
+                    unavailable_reason: None,
                 },
-            },
+            ],
+            streams: vec![StreamSpec {
+                name: "state".into(),
+                kind: "object".into(),
+            }],
+            revision: None,
             metadata: Map::new(),
         }
     }
@@ -394,9 +410,15 @@ mod tests {
         // list every transition the kind can ever perform.
         let h = hrefs();
         let snap = led_snapshot();
+        let available_names: Vec<&str> = snap
+            .transitions
+            .iter()
+            .filter(|t| t.available)
+            .map(|t| t.name.as_str())
+            .collect();
         assert_eq!(
-            snap.affordances.transitions.available,
-            vec!["turn-on".to_string()],
+            available_names,
+            vec!["turn-on"],
             "fixture sanity: the snapshot only sees turn-on in `off`"
         );
         let ty = TypeMeta {

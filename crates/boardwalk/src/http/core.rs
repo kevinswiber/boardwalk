@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
@@ -348,9 +349,34 @@ impl DeviceSnapshot {
     /// device-supplied properties; `type` maps to `kind`.
     pub fn to_resource_snapshot(&self, node: &str) -> ResourceSnapshot {
         let properties = sanitize_properties(self.properties.clone());
-        let available_transitions: Vec<String> = self.config.allowed_in(&self.state).to_vec();
-        let available_streams: Vec<String> =
-            self.config.streams.iter().map(|s| s.name.clone()).collect();
+        let allowed: std::collections::BTreeSet<&str> = self
+            .config
+            .allowed_in(&self.state)
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let transitions: Vec<TransitionAffordance> = self
+            .config
+            .transitions
+            .keys()
+            .map(|name| TransitionAffordance {
+                name: name.clone(),
+                available: allowed.contains(name.as_str()),
+                unavailable_reason: None,
+            })
+            .collect();
+        let streams: Vec<StreamSpec> = self
+            .config
+            .streams
+            .iter()
+            .map(|s| StreamSpec {
+                name: s.name.clone(),
+                kind: match s.kind {
+                    crate::core::StreamKind::Object => "object".to_string(),
+                    crate::core::StreamKind::Binary => "binary".to_string(),
+                },
+            })
+            .collect();
         ResourceSnapshot {
             id: self.id.to_string(),
             kind: self.type_.clone(),
@@ -358,15 +384,10 @@ impl DeviceSnapshot {
             state: Some(self.state.clone()),
             node: node.to_string(),
             properties,
-            labels: Vec::new(),
-            affordances: Affordances {
-                transitions: TransitionAffordances {
-                    available: available_transitions,
-                },
-                streams: StreamAffordances {
-                    available: available_streams,
-                },
-            },
+            labels: BTreeMap::new(),
+            transitions,
+            streams,
+            revision: None,
             metadata: serde_json::Map::new(),
         }
     }
@@ -384,41 +405,51 @@ pub struct ResourceSnapshot {
     pub state: Option<String>,
     pub node: String,
     pub properties: serde_json::Map<String, JsonValue>,
-    pub labels: Vec<String>,
-    pub affordances: Affordances,
+    pub labels: BTreeMap<String, String>,
+    pub transitions: Vec<TransitionAffordance>,
+    pub streams: Vec<StreamSpec>,
+    pub revision: Option<String>,
     pub metadata: serde_json::Map<String, JsonValue>,
 }
 
+/// One transition affordance on a resource. `available` reflects
+/// whether the transition can fire in the resource's current state;
+/// `unavailable_reason` carries an optional, human-readable hint when
+/// `available` is false.
 #[derive(Debug, Clone, Default)]
-pub struct Affordances {
-    pub transitions: TransitionAffordances,
-    pub streams: StreamAffordances,
+pub struct TransitionAffordance {
+    pub name: String,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
 }
 
+/// One stream a resource publishes. `kind` is the wire kind hint
+/// (`"object"` or `"binary"`), serialized lowercase into the query
+/// value and metadata renders.
 #[derive(Debug, Clone, Default)]
-pub struct TransitionAffordances {
-    pub available: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct StreamAffordances {
-    pub available: Vec<String>,
+pub struct StreamSpec {
+    pub name: String,
+    pub kind: String,
 }
 
 /// Top-level field names that `ResourceSnapshot` owns directly.
 /// User-supplied properties carrying any of these names are stripped
-/// by `sanitize_properties` to prevent them from masking the
-/// canonical fields. Note: `"type"` is intentionally absent — it is
-/// only a query-time alias for `kind` and may appear in user
-/// properties.
+/// by `sanitize_properties` so that user data cannot shadow
+/// Boardwalk-owned fields or render aliases. `"type"` is reserved
+/// alongside `"kind"`: it is a derived alias for `kind` exposed in
+/// query values and Siren renders.
 pub const RESERVED_FIELDS: &[&str] = &[
     "id",
     "kind",
+    "type",
     "name",
     "state",
     "node",
     "properties",
     "labels",
+    "transitions",
+    "streams",
+    "revision",
     "affordances",
     "metadata",
 ];
@@ -450,12 +481,14 @@ pub fn sanitize_properties(
 impl ResourceSnapshot {
     /// Produces the JSON shape the query evaluator targets. `None`
     /// fields serialize as `Null` so `Exists(path)` semantics remain
-    /// truthful (the key is always present).
+    /// truthful (the key is always present). `type` is exposed as a
+    /// render/query alias for `kind`; do not store it separately.
     pub fn to_query_value(&self) -> JsonValue {
         use serde_json::Map;
         let mut o = Map::new();
         o.insert("id".into(), JsonValue::String(self.id.clone()));
         o.insert("kind".into(), JsonValue::String(self.kind.clone()));
+        o.insert("type".into(), JsonValue::String(self.kind.clone()));
         o.insert(
             "name".into(),
             self.name
@@ -475,40 +508,48 @@ impl ResourceSnapshot {
             "properties".into(),
             JsonValue::Object(self.properties.clone()),
         );
+        let labels_obj: Map<String, JsonValue> = self
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), JsonValue::String(v.clone())))
+            .collect();
+        o.insert("labels".into(), JsonValue::Object(labels_obj));
+        let transitions: Vec<JsonValue> = self
+            .transitions
+            .iter()
+            .map(|t| {
+                let mut m = Map::new();
+                m.insert("name".into(), JsonValue::String(t.name.clone()));
+                m.insert("available".into(), JsonValue::Bool(t.available));
+                m.insert(
+                    "unavailableReason".into(),
+                    t.unavailable_reason
+                        .clone()
+                        .map(JsonValue::String)
+                        .unwrap_or(JsonValue::Null),
+                );
+                JsonValue::Object(m)
+            })
+            .collect();
+        o.insert("transitions".into(), JsonValue::Array(transitions));
+        let streams: Vec<JsonValue> = self
+            .streams
+            .iter()
+            .map(|s| {
+                let mut m = Map::new();
+                m.insert("name".into(), JsonValue::String(s.name.clone()));
+                m.insert("kind".into(), JsonValue::String(s.kind.clone()));
+                JsonValue::Object(m)
+            })
+            .collect();
+        o.insert("streams".into(), JsonValue::Array(streams));
         o.insert(
-            "labels".into(),
-            JsonValue::Array(self.labels.iter().cloned().map(JsonValue::String).collect()),
+            "revision".into(),
+            self.revision
+                .clone()
+                .map(JsonValue::String)
+                .unwrap_or(JsonValue::Null),
         );
-        let mut affordances = Map::new();
-        let mut transitions = Map::new();
-        transitions.insert(
-            "available".into(),
-            JsonValue::Array(
-                self.affordances
-                    .transitions
-                    .available
-                    .iter()
-                    .cloned()
-                    .map(JsonValue::String)
-                    .collect(),
-            ),
-        );
-        affordances.insert("transitions".into(), JsonValue::Object(transitions));
-        let mut streams = Map::new();
-        streams.insert(
-            "available".into(),
-            JsonValue::Array(
-                self.affordances
-                    .streams
-                    .available
-                    .iter()
-                    .cloned()
-                    .map(JsonValue::String)
-                    .collect(),
-            ),
-        );
-        affordances.insert("streams".into(), JsonValue::Object(streams));
-        o.insert("affordances".into(), JsonValue::Object(affordances));
         o.insert("metadata".into(), JsonValue::Object(self.metadata.clone()));
         JsonValue::Object(o)
     }
