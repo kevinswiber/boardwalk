@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::{Core, CoreBuilder, router};
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use serde_json::Value as Json;
@@ -151,6 +152,70 @@ async fn post_disallowed_transition_returns_409() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 409);
+}
+
+/// Survivor characterization for the current form-url-encoded
+/// transition path and the envelope it mints.
+///
+/// Pins three rules together so each is renamed deliberately later:
+///   * `POST /servers/hub/devices/{id}` with
+///     `application/x-www-form-urlencoded; action=...` returns 200
+///     and a Siren device entity carrying the new state,
+///   * the bus emits one envelope with `payloadKind ==
+///     "resource.state.changed"`, `stream == "state"`, and the legacy
+///     topic `hub/led/{id}/state`,
+///   * `correlationId`, `causationId`, and `traceContext` are all
+///     absent — Task 4.2 must populate them and flip this snapshot.
+#[tokio::test]
+async fn current_form_transition_returns_device_siren_and_state_event() {
+    let (addr, core, _h) = boot().await;
+    let id = device_id(addr).await;
+    let topic = format!("hub/led/{id}/state");
+    let mut sub = core.bus.subscribe(
+        TopicPattern::parse(&topic).unwrap(),
+        SubscribeOpts::default(),
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/servers/hub/devices/{id}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("action=turn-on")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: Json = resp.json().await.unwrap();
+    let class: Vec<&str> = body["class"]
+        .as_array()
+        .expect("class array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        class.contains(&"device") && class.contains(&"led"),
+        "expected device+led class, got {class:?}"
+    );
+    assert_eq!(body["properties"]["state"], "on");
+    assert_eq!(body["properties"]["type"], "led");
+
+    let env = sub.rx.recv().await.expect("state-change envelope");
+    assert_eq!(env.payload_kind, "resource.state.changed");
+    assert_eq!(env.stream, "state");
+    assert_eq!(env.topic(), topic);
+    assert!(
+        env.correlation_id.is_none(),
+        "correlationId is unpopulated today; Task 4.2 will fill it"
+    );
+    assert!(
+        env.causation_id.is_none(),
+        "causationId is unpopulated today; Task 4.2 will fill it"
+    );
+    assert!(
+        env.trace_context.is_none(),
+        "traceContext is unpopulated today; Task 4.2 will fill it"
+    );
 }
 
 #[tokio::test]

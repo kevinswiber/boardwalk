@@ -110,6 +110,35 @@ async fn register_factory_creates_device_at_runtime() {
     assert_eq!(entities[0]["properties"]["name"], "KitchenLED");
 }
 
+/// Pins the current hubless registration form: `POST
+/// /servers/hub/devices` consumes the `type`, `id`, and `name`
+/// form fields and returns 201 Created with a Siren device. Phase 5
+/// will swap this for the resource registration endpoint.
+#[tokio::test]
+async fn current_factory_registration_posts_type_id_name_to_devices_route() {
+    let boardwalk = Boardwalk::new()
+        .name("hub")
+        .register_factory("led", |_args: HashMap<String, String>| {
+            Ok(Box::new(Led::default()) as Box<dyn Device>)
+        });
+    let addr = serve(boardwalk).await;
+
+    let supplied_id = uuid::Uuid::new_v4();
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/servers/hub/devices"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("type=led&id={supplied_id}&name=PantryLED",))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: Json = resp.json().await.unwrap();
+    assert_eq!(body["properties"]["id"], supplied_id.to_string());
+    assert_eq!(body["properties"]["type"], "led");
+    assert_eq!(body["properties"]["name"], "PantryLED");
+}
+
 #[tokio::test]
 async fn missing_type_returns_400() {
     let boardwalk = Boardwalk::new()

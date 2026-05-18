@@ -198,6 +198,108 @@ async fn query_can_match_extra_device_properties() {
     assert_eq!(entities[0]["properties"]["color"], "red");
 }
 
+/// Pins the `?ql=` parameter as the only way the server consumes a
+/// CaQL predicate. Later resource-route work will swap `/servers/...`
+/// for `/resources`, but the `ql` parameter name must survive.
+#[tokio::test]
+async fn current_server_query_uses_ql_parameter() {
+    let (addr, _core) = boot_with(Led::default()).await;
+    let url = format!(
+        "http://{addr}/servers/hub?ql={}",
+        urlencoding::encode(r#"where state = "off""#)
+    );
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Json = resp.json().await.unwrap();
+    let classes: Vec<&str> = body["class"]
+        .as_array()
+        .expect("class array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        classes.contains(&"server") && classes.contains(&"search-results"),
+        "expected server+search-results, got {classes:?}"
+    );
+    assert_eq!(body["properties"]["ql"], r#"where state = "off""#);
+    let entities = body["entities"]
+        .as_array()
+        .expect("entities array for matching query");
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0]["properties"]["state"], "off");
+}
+
+/// Pins the unused `server` field on the root `query-devices` action —
+/// the field exists in the form today but the route handler ignores it.
+/// Removing the field is a route surface change that needs an explicit
+/// test update.
+#[tokio::test]
+async fn current_root_query_action_carries_unused_server_field() {
+    let (addr, _core) = boot_with(Led::default()).await;
+    let body: Json = reqwest::get(format!("http://{addr}/"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let action = body["actions"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|a| a["name"] == "query-devices"))
+        .expect("query-devices action on root");
+    let field_names: Vec<&str> = action["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        field_names,
+        vec!["server", "ql"],
+        "root action still advertises both `server` (unused) and `ql`"
+    );
+}
+
+/// Pins the dead `query` stream link that search-results currently
+/// advertises. The href points at the server-wide events socket with a
+/// `topic=query/{ql}` parameter, but nothing publishes on that topic.
+/// Phase 5 will remove the link and the corresponding renderer code.
+#[tokio::test]
+async fn current_search_results_advertise_dead_query_stream_link() {
+    let (addr, _core) = boot_with(Led::default()).await;
+    let ql = r#"where kind = "led""#;
+    let url = format!("http://{addr}/servers/hub?ql={}", urlencoding::encode(ql));
+    let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
+
+    let links = body["links"].as_array().expect("links array");
+    let query_link = links
+        .iter()
+        .find(|l| {
+            l["rel"]
+                .as_array()
+                .map(|rs| rs.iter().any(|r| r == "https://rels.boardwalk.to/query"))
+                .unwrap_or(false)
+        })
+        .expect("dead query stream link present on search results");
+    let href = query_link["href"].as_str().unwrap();
+    assert!(
+        href.starts_with("ws://") || href.starts_with("wss://"),
+        "query stream link uses ws scheme; got {href}"
+    );
+    // The href is form-encoded (spaces become `+`); compare the
+    // query/<ql> prefix on the form-decoded form.
+    let after_topic = href
+        .split_once("?topic=")
+        .map(|(_, q)| q)
+        .expect("?topic= query param present");
+    let topic_form_decoded = after_topic.replace('+', " ");
+    let topic_url_decoded = urlencoding::decode(&topic_form_decoded).expect("topic url-decodes");
+    let expected = format!("query/{ql}");
+    assert_eq!(
+        topic_url_decoded, expected,
+        "query stream topic should be query/<ql>"
+    );
+}
+
 #[tokio::test]
 async fn query_with_kind_alias_still_uses_type_keyword() {
     // `where type = "led"` continues to work via the `type → kind`

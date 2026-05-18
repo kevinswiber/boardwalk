@@ -96,6 +96,28 @@ async fn successive_state_transitions_get_strictly_increasing_sequence() {
     assert_eq!(c.sequence, 3);
 }
 
+/// Pins the current causation gap: `Core::run_transition` does not
+/// thread correlation/causation/trace context onto the envelope it
+/// mints. Task 4.2 flips this to populated and updates this snapshot.
+#[tokio::test]
+async fn current_state_transition_envelope_has_empty_causation_chain() {
+    let (core, id) = boot_with_led().await;
+    let topic = format!("hub/led/{id}/state");
+    let mut sub = core.bus.subscribe(
+        TopicPattern::parse(&topic).unwrap(),
+        SubscribeOpts::default(),
+    );
+
+    core.run_transition(&id, "turn-on", TransitionInput::default())
+        .await
+        .unwrap();
+
+    let env = sub.rx.recv().await.expect("state-change envelope");
+    assert!(env.correlation_id.is_none());
+    assert!(env.causation_id.is_none());
+    assert!(env.trace_context.is_none());
+}
+
 #[tokio::test]
 async fn state_transition_envelope_stream_id_uses_bw_uri_scheme() {
     let (core, id) = boot_with_led().await;

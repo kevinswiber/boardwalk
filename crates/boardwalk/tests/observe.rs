@@ -85,6 +85,64 @@ impl App for DuskDawn {
     }
 }
 
+/// Pins the current `ServerHandle::observe` contract: callback fires
+/// exactly once when every supplied CaQL query has at least one match,
+/// and the callback receives one device-proxy slice per query. Phase 3
+/// moves this off `ServerHandle`; this snapshot must update when that
+/// happens.
+struct ObservePin {
+    fired: Arc<AtomicBool>,
+    saw_two: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl App for ObservePin {
+    async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError> {
+        let me = self.clone();
+        server
+            .observe(
+                vec![r#"where type = "led""#, r#"where type = "photocell""#],
+                |devs| {
+                    let me = me.clone();
+                    async move {
+                        me.saw_two.store(devs.len() == 2, Ordering::SeqCst);
+                        me.fired.store(true, Ordering::SeqCst);
+                        Ok(())
+                    }
+                },
+            )
+            .await
+    }
+}
+
+#[tokio::test]
+async fn current_server_handle_observe_fires_on_resource_snapshot_match() {
+    let fired = Arc::new(AtomicBool::new(false));
+    let saw_two = Arc::new(AtomicBool::new(false));
+    let _built = Boardwalk::new()
+        .name("hub")
+        .use_device(Led)
+        .use_scout(LatePhotocell)
+        .use_app(ObservePin {
+            fired: fired.clone(),
+            saw_two: saw_two.clone(),
+        })
+        .build()
+        .unwrap();
+
+    for _ in 0..50 {
+        if fired.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(fired.load(Ordering::SeqCst), "observe never fired");
+    assert!(
+        saw_two.load(Ordering::SeqCst),
+        "observe should hand both matches to the callback"
+    );
+}
+
 #[tokio::test]
 async fn observe_fires_when_all_queries_satisfied() {
     let fired = Arc::new(AtomicBool::new(false));

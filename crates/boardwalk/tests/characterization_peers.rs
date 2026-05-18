@@ -219,6 +219,75 @@ async fn forwarded_get_device_returns_hub_data_through_cloud() {
     assert_eq!(cloud_actions, direct_actions);
 }
 
+/// Pins the current peer-forwarding href bug: when a request reaches a
+/// device through the cloud tunnel, the renderer reconstructs absolute
+/// hrefs using the tunnel-internal host (`http://localhost/...`) rather
+/// than the external host the caller used. Properties and action
+/// affordances are intact — only the link origin diverges. Task 5.4
+/// fixes this and updates the assertion to full equality.
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn forwarded_get_currently_preserves_properties_but_rewrites_hrefs_to_tunnel_internal_host__pending_replacement()
+ {
+    let p = boot_pair().await;
+    let id = device_id_via(p.cloud_addr).await;
+
+    let via_cloud: Json = reqwest::get(format!("http://{}/servers/hub/devices/{id}", p.cloud_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let direct: Json = reqwest::get(format!("http://{}/servers/hub/devices/{id}", p.hub_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(via_cloud["properties"], direct["properties"]);
+    assert_eq!(via_cloud["class"], direct["class"]);
+    assert_ne!(
+        via_cloud["links"], direct["links"],
+        "forwarded render emits tunnel-internal hrefs, so links must differ today"
+    );
+
+    let via_cloud_str = via_cloud.to_string();
+    assert!(
+        via_cloud_str.contains("http://localhost/"),
+        "expected forwarded render to leak `http://localhost/...`; got body {via_cloud_str}"
+    );
+    assert!(
+        !via_cloud_str.contains(&format!("http://{}/", p.cloud_addr)),
+        "forwarded render should NOT echo the external cloud origin today; got body {via_cloud_str}"
+    );
+
+    fn action_stub(a: &Json) -> Json {
+        json!({
+            "name": a["name"],
+            "method": a["method"],
+            "type": a["type"],
+            "fields": a["fields"],
+        })
+    }
+    let cloud_actions: Vec<Json> = via_cloud["actions"]
+        .as_array()
+        .expect("actions array")
+        .iter()
+        .map(action_stub)
+        .collect();
+    let direct_actions: Vec<Json> = direct["actions"]
+        .as_array()
+        .expect("actions array")
+        .iter()
+        .map(action_stub)
+        .collect();
+    assert_eq!(
+        cloud_actions, direct_actions,
+        "only the absolute href origin should diverge between direct and via-cloud renders"
+    );
+}
+
 #[tokio::test]
 async fn forwarded_event_stream_shares_one_upstream_per_topic() {
     let p = boot_pair().await;

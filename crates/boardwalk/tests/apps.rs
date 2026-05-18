@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use boardwalk::http::CoreBuilder;
 use boardwalk::{
     App, AppError, Boardwalk, Device, DeviceConfig, DeviceError, ServerHandle, TransitionInput,
 };
 use futures::future::BoxFuture;
+use serde_json::{Map, Value as Json};
 
 #[derive(Default)]
 struct Led {
@@ -64,6 +66,60 @@ impl App for TurnAllOn {
         self.fired.store(true, Ordering::SeqCst);
         Ok(())
     }
+}
+
+struct ColoredLed {
+    color: &'static str,
+}
+
+impl Device for ColoredLed {
+    fn config(&self, cfg: &mut DeviceConfig) {
+        cfg.type_("led").name("LED").state("off");
+    }
+    fn state(&self) -> &str {
+        "off"
+    }
+    fn properties(&self) -> Map<String, Json> {
+        let mut m = Map::new();
+        m.insert("color".into(), Json::String(self.color.into()));
+        m
+    }
+    fn transition<'a>(
+        &'a mut self,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> BoxFuture<'a, Result<(), DeviceError>> {
+        Box::pin(async move { Err(DeviceError::Invalid("no transitions".into())) })
+    }
+}
+
+/// Pins the current app-side query contract: `ServerHandle::query`
+/// returns one `DeviceProxy` per resource snapshot whose projection
+/// matches, and invalid CaQL surfaces as `Err` (not silently empty).
+/// Phase 3 will move this surface off `ServerHandle`; this snapshot
+/// must update when that happens.
+#[tokio::test]
+async fn server_handle_query_returns_device_proxy_for_resource_snapshot_match() {
+    let mut b = CoreBuilder::new("hub");
+    b.add_device(ColoredLed { color: "red" });
+    let core = b.build();
+    let server = ServerHandle::new_internal(core);
+
+    let matches = server
+        .query(r#"where exists properties.color"#)
+        .await
+        .expect("query parses against projection with properties.color");
+    assert_eq!(
+        matches.len(),
+        1,
+        "exactly one device exposes properties.color in this fixture"
+    );
+
+    let result = server.query("where ===nonsense===").await;
+    assert!(
+        result.is_err(),
+        "invalid ql must surface as Err, not be silently swallowed"
+    );
 }
 
 #[tokio::test]

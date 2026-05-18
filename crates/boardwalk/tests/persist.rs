@@ -60,6 +60,86 @@ async fn device_id_is_stable_across_builds() {
     );
 }
 
+struct NamedLed {
+    name: &'static str,
+}
+
+impl Device for NamedLed {
+    fn config(&self, cfg: &mut DeviceConfig) {
+        cfg.type_("led").name(self.name.to_string()).state("off");
+    }
+    fn state(&self) -> &str {
+        "off"
+    }
+    fn transition<'a>(
+        &'a mut self,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> BoxFuture<'a, Result<(), DeviceError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Pins today's persistent identity key: `(type, name)`. Two devices
+/// of the same type but different names get two distinct stable ids,
+/// and each restart reuses the same id only for its matching name.
+/// Plan E owns repository expansion beyond this identity; this snapshot
+/// must update when the key changes.
+#[tokio::test]
+async fn current_registry_identity_is_type_and_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_device(NamedLed { name: "kitchen" })
+        .use_device(NamedLed { name: "pantry" })
+        .build()
+        .unwrap();
+    let mut first_devices = first.core.list_devices().await;
+    first_devices.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(first_devices.len(), 2);
+    assert_ne!(
+        first_devices[0].id, first_devices[1].id,
+        "two devices with different names must get distinct ids"
+    );
+    let kitchen_id = first_devices
+        .iter()
+        .find(|d| d.name.as_deref() == Some("kitchen"))
+        .unwrap()
+        .id;
+    let pantry_id = first_devices
+        .iter()
+        .find(|d| d.name.as_deref() == Some("pantry"))
+        .unwrap()
+        .id;
+    drop(first);
+
+    // Restart with the same two (type, name) pairs — each must reuse
+    // its matching id.
+    let second = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_device(NamedLed { name: "kitchen" })
+        .use_device(NamedLed { name: "pantry" })
+        .build()
+        .unwrap();
+    let second_devices = second.core.list_devices().await;
+    let kitchen_again = second_devices
+        .iter()
+        .find(|d| d.name.as_deref() == Some("kitchen"))
+        .unwrap()
+        .id;
+    let pantry_again = second_devices
+        .iter()
+        .find(|d| d.name.as_deref() == Some("pantry"))
+        .unwrap()
+        .id;
+    assert_eq!(kitchen_id, kitchen_again);
+    assert_eq!(pantry_id, pantry_again);
+}
+
 #[tokio::test]
 async fn device_id_random_without_persist() {
     let a = Boardwalk::new()

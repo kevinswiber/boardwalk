@@ -47,6 +47,41 @@ impl Scout for DelayedScout {
     }
 }
 
+/// Pins the current `ScoutCtx::discover` contract: when persistence is
+/// off, each discovery mints a fresh random `DeviceId`, and the device
+/// becomes visible in `Core::list_devices`. Phase 3 will rebrand this
+/// to `ActorCtx::register`; this snapshot must update when that
+/// happens.
+#[tokio::test]
+async fn current_scout_discover_mints_random_device_id() {
+    let built = Boardwalk::new()
+        .name("hub")
+        .use_scout(DelayedScout)
+        .build()
+        .unwrap();
+
+    let mut tries = 0;
+    let devices = loop {
+        let now = built.core.list_devices().await;
+        if now.len() == 2 {
+            break now;
+        }
+        tries += 1;
+        if tries > 50 {
+            panic!("scout never discovered devices");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    // Both ids must be parseable UUIDs and distinct from each other
+    // (no persist => fresh v4).
+    let id0 = devices[0].id;
+    let id1 = devices[1].id;
+    assert_ne!(id0, id1, "scout-minted ids must be distinct");
+    assert_eq!(id0.get_version_num(), 4, "expected UUID v4 from scout");
+    assert_eq!(id1.get_version_num(), 4, "expected UUID v4 from scout");
+}
+
 #[tokio::test]
 async fn scout_discovers_devices_at_runtime() {
     let built = Boardwalk::new()
