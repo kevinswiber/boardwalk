@@ -24,11 +24,21 @@ tokio = { version = "1", features = ["full"] }
 ## Quick start
 
 ```rust,no_run
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
-use futures::future::BoxFuture;
+use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError};
 
 #[derive(Default)]
 struct Led { on: bool }
+
+impl Led {
+    async fn turn_on(&mut self) -> Result<(), DeviceError> {
+        self.on = true;
+        Ok(())
+    }
+    async fn turn_off(&mut self) -> Result<(), DeviceError> {
+        self.on = false;
+        Ok(())
+    }
+}
 
 impl Device for Led {
     fn config(&self, cfg: &mut DeviceConfig) {
@@ -39,18 +49,10 @@ impl Device for Led {
             .monitor("state");
     }
     fn state(&self) -> &str { if self.on { "on" } else { "off" } }
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on"  => { self.on = true;  Ok(()) }
-                "turn-off" => { self.on = false; Ok(()) }
-                other      => Err(DeviceError::Invalid(other.into())),
-            }
-        })
+
+    boardwalk::transitions! {
+        "turn-on" => turn_on,
+        "turn-off" => turn_off,
     }
 }
 
