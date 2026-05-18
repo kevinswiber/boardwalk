@@ -192,6 +192,62 @@ async fn concurrent_publish_does_not_remove_subscription_before_refund() {
     let _back_3 = sub_back.rx.recv().await.expect("back receives envelope 3");
 }
 
+/// Cancellation safety: if a `publish` future is dropped while
+/// awaiting a `Lossy + Backpressure` subscriber's `send`, the claimed
+/// quota slot must be refunded so future publishes can still proceed.
+/// Without an RAII guard, the claim would leak: `remaining` stays
+/// decremented and `in_flight` stays incremented forever.
+#[tokio::test]
+async fn dropped_publish_future_refunds_claim_on_cancellation() {
+    use std::time::Duration;
+
+    let bus = EventBus::with_registry(StreamRegistry::new());
+    let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
+    // limit=2 so the prime delivery leaves the subscription alive
+    // (one slot remaining) for the cancelled publish to claim.
+    let mut sub = bus.subscribe(
+        pattern,
+        SubscribeOpts {
+            outbound_capacity: Some(1),
+            limit: Some(2),
+            stream_safety: StreamSafety::Lossy,
+            overflow_policy: OverflowPolicy::Backpressure,
+        },
+    );
+
+    // Fill the buffer so the next publish must await capacity.
+    let _ = bus.publish(envelope(0)).await.unwrap();
+
+    // Spawn a publish that will claim the (now exhausted) quota slot
+    // and then park on `send.await`. Aborting the task and awaiting
+    // the JoinHandle ensures the task's stack — including our
+    // `ClaimGuard` — has fully unwound.
+    let bus_clone = bus.clone();
+    let pending = tokio::spawn(async move { bus_clone.publish(envelope(1)).await });
+
+    // Give the spawned task a chance to reach `send.await`.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    pending.abort();
+    let _ = pending.await;
+
+    // Drain the buffer so the next publish can deliver synchronously.
+    let _ = sub.rx.recv().await.expect("primed envelope");
+
+    // Without the cancellation refund, this publish would skip the
+    // subscription (it would see `remaining == 0` left behind by the
+    // cancelled claim) and report `delivered = 0`.
+    let r = bus.publish(envelope(2)).await.unwrap();
+    assert_eq!(
+        r.delivered, 1,
+        "cancelled publish must refund its claim; r={r:?}"
+    );
+    let env2 = tokio::time::timeout(Duration::from_millis(200), sub.rx.recv())
+        .await
+        .expect("envelope 2 arrives")
+        .expect("envelope present");
+    assert_eq!(env2.sequence, 2);
+}
+
 /// `Lossy + DropNewest` events that drop on a full outbound channel
 /// must not consume the subscription's quota — matching sync
 /// `try_publish` semantics. Scenario from the review: `limit=2`,

@@ -274,20 +274,49 @@ impl EventBus {
 
         self.inner.replay_cache.record(&envelope);
 
+        // RAII guard for a claimed delivery slot. If the publish
+        // future is dropped (cancelled) before the corresponding
+        // outcome is committed, the guard's `Drop` refunds the slot:
+        // decrements `in_flight` and increments `remaining`. Each
+        // commit sets `active = false` so the Drop becomes a no-op.
+        //
+        // Cancel-safety hinges on `tokio::sync::mpsc::Sender::send`
+        // being cancel-safe: if a Backpressure publish is dropped
+        // mid-await, the envelope was not actually sent, so refunding
+        // the slot is correct (no over-delivery).
+        struct ClaimGuard {
+            inner: Arc<Inner>,
+            id: SubscriptionId,
+            active: bool,
+        }
+        impl Drop for ClaimGuard {
+            fn drop(&mut self) {
+                if self.active {
+                    let mut subs = self.inner.subs.lock().unwrap();
+                    if let Some(sub) = subs.get_mut(&self.id) {
+                        sub.in_flight = sub.in_flight.saturating_sub(1);
+                        if let Some(rem) = sub.remaining.as_mut() {
+                            *rem += 1;
+                        }
+                    }
+                }
+            }
+        }
+
         // Snapshot matching subscriptions so we can await sends
         // without holding the std::sync::Mutex across `.await`. Do
         // NOT move the slow-consumer oneshot out at snapshot time:
         // concurrent publishers must each be able to observe (and at
         // most one of them claim) a notify on lossless overflow.
         //
-        // CRITICAL: For limited subscriptions we *claim* the slot here
-        // (decrement `remaining` atomically) so two concurrent
-        // publishers cannot both observe a slot and both deliver past
-        // the configured limit. The post-send apply step refunds the
-        // slot for `Dropped` outcomes so lossy drops do not consume
-        // quota (matching sync `try_publish` semantics). For
-        // `Closed`/`DisconnectLossless` we do not refund: the
-        // subscription is being removed anyway.
+        // For limited subscriptions we *claim* the slot here
+        // (decrement `remaining`, increment `in_flight`) so two
+        // concurrent publishers cannot both observe a slot and both
+        // deliver past the configured limit. Each commit and each
+        // `ClaimGuard::drop` decrements `in_flight`; the delivered
+        // path only removes a quota-exhausted subscription when
+        // `in_flight == 0`, so a concurrent refund (cancellation or
+        // `Dropped`) cannot lose its target.
         struct Match {
             id: SubscriptionId,
             tx: mpsc::Sender<EventEnvelope>,
@@ -297,17 +326,13 @@ impl EventBus {
 
         let topic = envelope.topic();
         let mut matches: Vec<Match> = Vec::new();
+        let mut guards: Vec<ClaimGuard> = Vec::new();
         {
             let mut subs = self.inner.subs.lock().unwrap();
             for (id, sub) in subs.iter_mut() {
                 if !sub.topic.matches_event(&topic, &envelope.data) {
                     continue;
                 }
-                // Claim a delivery slot atomically. A subscription
-                // with `remaining = Some(0)` is already done; skip it.
-                // Subscriptions are not removed here so a concurrent
-                // `Dropped`-then-refund cannot resurrect a removed
-                // entry.
                 if let Some(rem) = sub.remaining.as_mut() {
                     if *rem == 0 {
                         continue;
@@ -321,6 +346,11 @@ impl EventBus {
                     stream_safety: sub.stream_safety,
                     overflow_policy: sub.overflow_policy,
                 });
+                guards.push(ClaimGuard {
+                    inner: self.inner.clone(),
+                    id: *id,
+                    active: true,
+                });
             }
         }
 
@@ -331,8 +361,14 @@ impl EventBus {
             Closed,
         }
 
-        let mut outcomes: Vec<(SubscriptionId, SendResult)> = Vec::with_capacity(matches.len());
-        for m in matches {
+        // Send and commit each match inline. Committing inline
+        // (under a brief bus-lock acquisition) means a Delivered
+        // outcome cannot be over-refunded by a subsequent cancellation:
+        // by the time we mark the guard inactive, the bookkeeping is
+        // already done. The only cancellable point inside the loop is
+        // `Sender::send.await` (cancel-safe in tokio).
+        let mut result = PublishResult::default();
+        for (i, m) in matches.iter().enumerate() {
             // Fast path: try_send first to avoid yielding when the
             // buffer has room.
             let outcome = match m.tx.try_send(envelope.clone()) {
@@ -352,25 +388,15 @@ impl EventBus {
                     }
                 }
             };
-            outcomes.push((m.id, outcome));
-        }
 
-        // Apply outcomes under the lock so the slow-consumer notify
-        // and the removal are atomic with respect to other publishers.
-        // The `remaining` decrement already happened above when we
-        // claimed the slot. Each outcome decrements the subscription's
-        // `in_flight` counter; a quota-exhausted subscription is only
-        // removed when no other concurrent publish still holds it,
-        // otherwise a still-running `Dropped` refund would race against
-        // a delivered-path removal.
-        let mut result = PublishResult::default();
-        {
-            let mut subs = self.inner.subs.lock().unwrap();
-            for (id, outcome) in outcomes {
+            // Commit this match's outcome. Synchronous from here to
+            // the guard disarm; no cancellation window.
+            {
+                let mut subs = self.inner.subs.lock().unwrap();
                 match outcome {
                     SendResult::Delivered => {
                         result.delivered += 1;
-                        let exhausted = if let Some(sub) = subs.get_mut(&id) {
+                        let exhausted = if let Some(sub) = subs.get_mut(&m.id) {
                             sub.last_delivered =
                                 Some((envelope.stream_id.clone(), envelope.sequence));
                             sub.in_flight = sub.in_flight.saturating_sub(1);
@@ -379,14 +405,14 @@ impl EventBus {
                             false
                         };
                         if exhausted {
-                            subs.remove(&id);
+                            subs.remove(&m.id);
                         }
                     }
                     SendResult::Dropped => {
                         result.dropped += 1;
                         // Refund the slot — lossy drops do not consume
                         // quota, matching sync `try_publish` semantics.
-                        if let Some(sub) = subs.get_mut(&id) {
+                        if let Some(sub) = subs.get_mut(&m.id) {
                             sub.in_flight = sub.in_flight.saturating_sub(1);
                             if let Some(rem) = sub.remaining.as_mut() {
                                 *rem += 1;
@@ -394,14 +420,7 @@ impl EventBus {
                         }
                     }
                     SendResult::DisconnectLossless => {
-                        // Fire the slow-consumer notify (if still
-                        // present) and remove. Taking the notify
-                        // under the lock prevents two concurrent
-                        // publishers from both firing it. The
-                        // subscription is going away regardless of
-                        // any other in-flight publishes — their
-                        // later `get_mut` will return `None`.
-                        if let Some(sub) = subs.get_mut(&id) {
+                        if let Some(sub) = subs.get_mut(&m.id) {
                             let last = sub.last_delivered.clone();
                             if let Some(notify) = sub.slow_consumer_notify.take() {
                                 let _ = notify.send(SlowConsumerNotice {
@@ -411,14 +430,18 @@ impl EventBus {
                                 });
                             }
                         }
-                        subs.remove(&id);
-                        result.disconnected_lossless.push(id);
+                        subs.remove(&m.id);
+                        result.disconnected_lossless.push(m.id);
                     }
                     SendResult::Closed => {
-                        subs.remove(&id);
+                        subs.remove(&m.id);
                     }
                 }
             }
+
+            // This match's bookkeeping is done; any later cancellation
+            // must not re-refund it.
+            guards[i].active = false;
         }
 
         Ok(result)
