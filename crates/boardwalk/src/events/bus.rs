@@ -45,6 +45,12 @@ struct SubscriptionInner {
     remaining: Option<u64>,
     stream_safety: StreamSafety,
     overflow_policy: OverflowPolicy,
+    /// Number of concurrent `publish` calls that have claimed a slot
+    /// on this subscription and not yet applied their outcome. A
+    /// subscription with `remaining == Some(0)` is only safe to remove
+    /// when `in_flight == 0`; otherwise a concurrent publish's later
+    /// `Dropped` refund would race against a delivered-path removal.
+    in_flight: u64,
     /// Last successfully delivered `(stream_id, sequence)`. Used to
     /// build the `SlowConsumerNotice` when a subsequent publish finds
     /// the queue full and decides to disconnect.
@@ -135,6 +141,7 @@ impl EventBus {
                 remaining: opts.limit,
                 stream_safety: opts.stream_safety,
                 overflow_policy: opts.overflow_policy,
+                in_flight: 0,
                 last_delivered: None,
                 slow_consumer_notify: Some(notify_tx),
             },
@@ -307,6 +314,7 @@ impl EventBus {
                     }
                     *rem -= 1;
                 }
+                sub.in_flight += 1;
                 matches.push(Match {
                     id: *id,
                     tx: sub.tx.clone(),
@@ -350,8 +358,11 @@ impl EventBus {
         // Apply outcomes under the lock so the slow-consumer notify
         // and the removal are atomic with respect to other publishers.
         // The `remaining` decrement already happened above when we
-        // claimed the slot — we only remove subscriptions whose quota
-        // is now exhausted.
+        // claimed the slot. Each outcome decrements the subscription's
+        // `in_flight` counter; a quota-exhausted subscription is only
+        // removed when no other concurrent publish still holds it,
+        // otherwise a still-running `Dropped` refund would race against
+        // a delivered-path removal.
         let mut result = PublishResult::default();
         {
             let mut subs = self.inner.subs.lock().unwrap();
@@ -359,29 +370,37 @@ impl EventBus {
                 match outcome {
                     SendResult::Delivered => {
                         result.delivered += 1;
-                        if let Some(sub) = subs.get_mut(&id) {
+                        let exhausted = if let Some(sub) = subs.get_mut(&id) {
                             sub.last_delivered =
                                 Some((envelope.stream_id.clone(), envelope.sequence));
-                            if sub.remaining == Some(0) {
-                                subs.remove(&id);
-                            }
+                            sub.in_flight = sub.in_flight.saturating_sub(1);
+                            sub.remaining == Some(0) && sub.in_flight == 0
+                        } else {
+                            false
+                        };
+                        if exhausted {
+                            subs.remove(&id);
                         }
                     }
                     SendResult::Dropped => {
                         result.dropped += 1;
                         // Refund the slot — lossy drops do not consume
                         // quota, matching sync `try_publish` semantics.
-                        if let Some(sub) = subs.get_mut(&id)
-                            && let Some(rem) = sub.remaining.as_mut()
-                        {
-                            *rem += 1;
+                        if let Some(sub) = subs.get_mut(&id) {
+                            sub.in_flight = sub.in_flight.saturating_sub(1);
+                            if let Some(rem) = sub.remaining.as_mut() {
+                                *rem += 1;
+                            }
                         }
                     }
                     SendResult::DisconnectLossless => {
                         // Fire the slow-consumer notify (if still
                         // present) and remove. Taking the notify
                         // under the lock prevents two concurrent
-                        // publishers from both firing it.
+                        // publishers from both firing it. The
+                        // subscription is going away regardless of
+                        // any other in-flight publishes — their
+                        // later `get_mut` will return `None`.
                         if let Some(sub) = subs.get_mut(&id) {
                             let last = sub.last_delivered.clone();
                             if let Some(notify) = sub.slow_consumer_notify.take() {

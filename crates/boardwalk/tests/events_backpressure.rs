@@ -73,6 +73,125 @@ async fn concurrent_publish_respects_subscription_limit() {
     );
 }
 
+/// Regression for a publish-vs-publish race on quota removal: two
+/// concurrent publishes against a `limit=2`, `DropNewest` subscriber
+/// could end with the subscription removed after just one delivery if
+/// the delivered path saw `remaining == 0` before the concurrent
+/// dropped path applied its refund.
+///
+/// To force the interleaving we add a second `Lossy + Backpressure`
+/// subscriber whose outbound buffer is *already full* when both
+/// publishes start. Each publish reaches the backpressure `send.await`
+/// after running its claim phase, so both publishes have claimed a
+/// slot on the limited subscription before either applies its
+/// outcome. Draining the backpressure subscriber one envelope at a
+/// time then serializes the apply phases.
+#[tokio::test]
+async fn concurrent_publish_does_not_remove_subscription_before_refund() {
+    let bus = EventBus::with_registry(StreamRegistry::new());
+    let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
+
+    // Limited DropNewest subscriber. Capacity 1 so the second
+    // outcome will be Dropped while the first is Delivered.
+    // limit=3 because the prime consumes one slot; the two
+    // concurrent publishes both claim a slot before either applies,
+    // taking `remaining` to 0 across them. Without the in-flight
+    // counter, the delivered path would remove the subscription
+    // before the dropped path's refund applied.
+    let mut sub_limited = bus.subscribe(
+        pattern.clone(),
+        SubscribeOpts {
+            outbound_capacity: Some(1),
+            limit: Some(3),
+            stream_safety: StreamSafety::Lossy,
+            overflow_policy: OverflowPolicy::DropNewest,
+        },
+    );
+
+    // Backpressure subscriber whose buffer we pre-fill so every
+    // concurrent publish must yield at `send.await`.
+    let mut sub_back = bus.subscribe(
+        pattern,
+        SubscribeOpts {
+            outbound_capacity: Some(1),
+            stream_safety: StreamSafety::Lossy,
+            overflow_policy: OverflowPolicy::Backpressure,
+            ..Default::default()
+        },
+    );
+    // Prime each subscriber once. The prime fills back's outbound
+    // buffer (capacity 1) so every subsequent publish must yield at
+    // `back.send.await`, giving the runtime an interleaving point.
+    // Draining limited restores its slot so the two concurrent
+    // publishes below can each claim one without first hitting the
+    // capacity wall on the limited buffer.
+    let prime = bus.publish(envelope(0)).await.unwrap();
+    assert_eq!(prime.delivered, 2);
+    let _ = sub_limited
+        .rx
+        .recv()
+        .await
+        .expect("primed envelope on limited sub");
+
+    // Cooperative interleaving: both publishes and the drain are
+    // polled in the same task. The drain advances each publish's
+    // `send.await` one slot at a time, so by the time either
+    // publish reaches its apply phase, the *other* publish has
+    // already claimed its slot on the limited subscription.
+    let drain = async {
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out.push(sub_back.rx.recv().await.expect("back recv"));
+        }
+        out
+    };
+    let bus_a = bus.clone();
+    let bus_b = bus.clone();
+    let (r1, r2, _drained) = tokio::join!(
+        bus_a.publish(envelope(1)),
+        bus_b.publish(envelope(2)),
+        drain,
+    );
+    let r1 = r1.unwrap();
+    let r2 = r2.unwrap();
+    let total_delivered = r1.delivered + r2.delivered;
+    let total_dropped = r1.dropped + r2.dropped;
+
+    // The limited subscriber accepts at most one envelope (capacity
+    // 1); the other publish drops on it. Both publishes deliver to
+    // the backpressure subscriber. Overall:
+    //   delivered = 1 (limited) + 2 (backpressure) = 3
+    //   dropped = 1 (limited)
+    assert_eq!(total_delivered, 3, "expected 3 deliveries across both subs");
+    assert_eq!(total_dropped, 1, "expected exactly one DropNewest drop");
+
+    // Drain the limited sub's surviving envelope.
+    let _surviving = sub_limited
+        .rx
+        .recv()
+        .await
+        .expect("limited sub received one envelope");
+
+    // Now publish a third envelope. With the broken code, the
+    // delivered path removed the limited subscription before the
+    // concurrent refund applied; the third publish would deliver
+    // only to the backpressure sub. With the in-flight counter, the
+    // refund has restored quota and the limited sub is still alive.
+    let r3 = bus.publish(envelope(3)).await.unwrap();
+    assert_eq!(
+        r3.delivered, 2,
+        "limited subscription must still exist after the race; r3={r3:?}"
+    );
+
+    // The limited sub really receives the third envelope.
+    let third = tokio::time::timeout(Duration::from_millis(200), sub_limited.rx.recv())
+        .await
+        .expect("third envelope arrives in time")
+        .expect("envelope present");
+    assert_eq!(third.sequence, 3);
+    let _back_3 = sub_back.rx.recv().await.expect("back receives envelope 3");
+}
+
 /// `Lossy + DropNewest` events that drop on a full outbound channel
 /// must not consume the subscription's quota — matching sync
 /// `try_publish` semantics. Scenario from the review: `limit=2`,
