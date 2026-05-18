@@ -5,6 +5,18 @@ account, a worker pool — as a `Device`: a typed state machine with
 named transitions, optional input fields, and optional telemetry
 streams.
 
+> **Direction:** Boardwalk is migrating toward a canonical
+> `ResourceSnapshot` projection used by render, query, and (later)
+> events. The `Device` trait stays in place as the stable authoring
+> API for v0.1. Internally, a `DeviceSnapshot` is adapted into a
+> `ResourceSnapshot` before query evaluation and rendering.
+>
+> Query predicates target the snapshot shape: `kind`, `state`,
+> `properties.*`, `labels`, `affordances.transitions.available`,
+> `affordances.streams.available`. See [caql.md](caql.md) for the
+> query language. The wire `type` keyword keeps working as a
+> compatibility alias for `kind`.
+
 ## The trait
 
 ```rust,ignore
