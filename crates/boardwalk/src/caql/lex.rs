@@ -1,4 +1,4 @@
-use super::CaqlError;
+use crate::query::QueryError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Tok {
@@ -39,7 +39,7 @@ pub(crate) struct Spanned {
     pub offset: usize,
 }
 
-pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
+pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, QueryError> {
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -116,7 +116,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                     });
                     i += 2;
                 } else {
-                    return Err(CaqlError::Parse {
+                    return Err(QueryError::Parse {
                         offset: start,
                         message: "expected `!=`".into(),
                     });
@@ -161,7 +161,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                     if b == b'\\' {
                         i += 1;
                         if i >= bytes.len() {
-                            return Err(CaqlError::Parse {
+                            return Err(QueryError::Parse {
                                 offset: start,
                                 message: "unterminated escape".into(),
                             });
@@ -193,7 +193,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                         .is_some_and(|t| matches!(t.tok, Tok::String(_) if t.offset == start))
                 {
                     let _ = str_start;
-                    return Err(CaqlError::Parse {
+                    return Err(QueryError::Parse {
                         offset: start,
                         message: "unterminated string literal".into(),
                     });
@@ -218,7 +218,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                     }
                 }
                 let s = &src[i..j];
-                let n: f64 = s.parse().map_err(|_| CaqlError::Parse {
+                let n: f64 = s.parse().map_err(|_| QueryError::Parse {
                     offset: i,
                     message: format!("invalid number `{s}`"),
                 })?;
@@ -251,7 +251,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Spanned>, CaqlError> {
                 i = j;
             }
             _ => {
-                return Err(CaqlError::Parse {
+                return Err(QueryError::Parse {
                     offset: i,
                     message: format!("unexpected character `{}`", c as char),
                 });

@@ -128,7 +128,7 @@ impl ServerHandle {
         F: FnOnce(Vec<DeviceProxy>) -> Fut + Send,
         Fut: std::future::Future<Output = Result<(), AppError>> + Send,
     {
-        let parsed: Vec<crate::caql::Query> = queries
+        let parsed: Vec<crate::query::Query> = queries
             .iter()
             .map(|q| crate::caql::parse(q))
             .collect::<Result<_, _>>()
@@ -182,7 +182,7 @@ impl ServerHandle {
         F: FnMut(Vec<DeviceProxy>) -> Fut + Send,
         Fut: std::future::Future<Output = Result<(), AppError>> + Send,
     {
-        let parsed: Vec<crate::caql::Query> = queries
+        let parsed: Vec<crate::query::Query> = queries
             .iter()
             .map(|q| crate::caql::parse(q))
             .collect::<Result<_, _>>()

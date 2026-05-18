@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::caql::Query;
+use crate::query::{Query, QueryError};
 
 #[derive(Debug, Error)]
 pub enum TopicParseError {
@@ -13,7 +13,7 @@ pub enum TopicParseError {
         source: regex::Error,
     },
     #[error("caql filter: {0}")]
-    Caql(#[from] crate::caql::CaqlError),
+    Caql(#[from] QueryError),
 }
 
 #[derive(Debug, Clone)]

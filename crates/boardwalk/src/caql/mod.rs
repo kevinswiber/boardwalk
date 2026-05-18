@@ -24,126 +24,160 @@ mod lex;
 mod parse;
 
 pub use eval::{matches, project};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum CaqlError {
-    #[error("parse error at offset {offset}: {message}")]
-    Parse { offset: usize, message: String },
-    #[error("evaluation error: {0}")]
-    Eval(String),
-}
+use crate::query::{Query, QueryError};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Query {
-    /// `None` means `select *`.
-    pub select: Option<Vec<Path>>,
-    pub predicate: Option<Predicate>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Path(pub Vec<String>);
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Predicate {
-    And(Box<Predicate>, Box<Predicate>),
-    Or(Box<Predicate>, Box<Predicate>),
-    Not(Box<Predicate>),
-    Cmp(Path, Op, Value),
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Op {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Like,
-    In,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Value {
-    String(String),
-    Number(f64),
-    Bool(bool),
-    Null,
-    List(Vec<Value>),
-}
-
-pub fn parse(input: &str) -> Result<Query, CaqlError> {
+pub fn parse(input: &str) -> Result<Query, QueryError> {
     let toks = lex::tokenize(input)?;
     parse::parse_query(&toks)
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection};
 
     #[test]
-    fn parse_where_eq() {
-        let q = parse("where type = \"led\"").unwrap();
-        assert!(q.select.is_none());
-        match q.predicate.unwrap() {
-            Predicate::Cmp(p, Op::Eq, Value::String(s)) => {
-                assert_eq!(p.0, vec!["type".to_string()]);
-                assert_eq!(s, "led");
+    fn caql_parse_returns_query_module_type() {
+        let q: query::Query = parse(r#"where type = "led""#).unwrap();
+        assert!(matches!(q.predicate, Predicate::Compare { .. }));
+    }
+
+    #[test]
+    fn caql_select_star_becomes_projection_all() {
+        let q = parse(r#"select * where state = "on""#).unwrap();
+        assert!(matches!(q.projection, Projection::All));
+    }
+
+    #[test]
+    fn caql_select_paths_becomes_projection_fields() {
+        let q = parse("select a.b, c where state = \"on\"").unwrap();
+        match q.projection {
+            Projection::Fields(paths) => {
+                assert_eq!(paths.len(), 2);
+                assert_eq!(paths[0].segments(), &["a".to_string(), "b".to_string()]);
+                assert_eq!(paths[1].segments(), &["c".to_string()]);
             }
-            _ => panic!("wrong predicate"),
+            other => panic!("expected Fields, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_and_or() {
-        let q = parse("where type = \"led\" and state = \"on\" or type = \"motion\"").unwrap();
-        // Should parse as (type=led AND state=on) OR type=motion
-        match q.predicate.unwrap() {
-            Predicate::Or(_, _) => {}
-            other => panic!("expected Or at top, got {:?}", other),
+    fn caql_in_becomes_comparison_in_set() {
+        let q = parse("where x in [1, 2]").unwrap();
+        match q.predicate {
+            Predicate::Compare { op, right, .. } => {
+                assert_eq!(op, ComparisonOp::InSet);
+                match right {
+                    Literal::Array(items) => assert_eq!(items.len(), 2),
+                    other => panic!("expected Literal::Array, got {other:?}"),
+                }
+            }
+            other => panic!("expected Compare, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_in_list() {
-        let q = parse("where type in [\"led\", \"switch\"]").unwrap();
-        match q.predicate.unwrap() {
-            Predicate::Cmp(_, Op::In, Value::List(xs)) => assert_eq!(xs.len(), 2),
-            _ => panic!(),
+    fn caql_existing_grammar_round_trips() {
+        let q = parse(r#"where a = 1 and b > 2 or not (c like "x*")"#).unwrap();
+        // Top-level should be Or.
+        match q.predicate {
+            Predicate::Or(items) => {
+                assert_eq!(items.len(), 2);
+                // First arm is And.
+                assert!(matches!(items[0], Predicate::And(_)));
+                // Second arm is Not.
+                assert!(matches!(items[1], Predicate::Not(_)));
+            }
+            other => panic!("expected Or at top, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_select_paths() {
+    fn caql_parse_returns_query_error_not_caql_error() {
+        let err = parse("where type =").unwrap_err();
+        // The error must be a query::QueryError (the assignment below
+        // would fail to compile if it were caql::CaqlError).
+        let _err: query::QueryError = err;
+    }
+
+    #[test]
+    fn caql_matches_shim_accepts_query_module_type() {
+        let q = parse(r#"where type = "led""#).unwrap();
+        let v = json!({"type": "led"});
+        assert_eq!(matches(&q, &v).unwrap(), query::matches(&q, &v).unwrap());
+    }
+
+    #[test]
+    fn caql_project_shim_accepts_query_module_type() {
+        let q = parse(r#"select data.x where data.x = 1"#).unwrap();
+        let v = json!({"data": {"x": 1, "y": 2}});
+        assert_eq!(project(&q, &v), query::project(&q, &v));
+    }
+
+    #[test]
+    fn caql_like_and_number_still_parse() {
+        let q = parse(r#"where name like "kitchen-*" and data > 12.5"#).unwrap();
+        assert!(matches!(q.predicate, Predicate::And(_)));
+    }
+
+    #[test]
+    fn caql_not_grouping_parses_to_predicate_not() {
+        let q = parse(r#"where not (state = "off")"#).unwrap();
+        assert!(matches!(q.predicate, Predicate::Not(_)));
+    }
+
+    #[test]
+    fn caql_field_path_segments_match_dotted_input() {
         let q = parse("select data.degreesC where data.degreesF > 85").unwrap();
-        let sel = q.select.unwrap();
-        assert_eq!(sel.len(), 1);
-        assert_eq!(sel[0].0, vec!["data", "degreesC"]);
+        match q.projection {
+            Projection::Fields(paths) => {
+                assert_eq!(
+                    paths[0].segments(),
+                    &["data".to_string(), "degreesC".to_string()]
+                );
+            }
+            other => panic!("expected Fields, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_select_star_implicit() {
-        let q = parse("where state = \"on\"").unwrap();
-        assert!(q.select.is_none());
+    fn caql_null_literal_parses() {
+        let q = parse("where state = null").unwrap();
+        match q.predicate {
+            Predicate::Compare {
+                right: Literal::Null,
+                ..
+            } => {}
+            other => panic!("expected Compare with Literal::Null, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_select_star_explicit() {
-        let q = parse("select * where state = \"on\"").unwrap();
-        assert!(q.select.is_none());
+    fn caql_bool_literals_parse() {
+        let q_t = parse("where on = true").unwrap();
+        match q_t.predicate {
+            Predicate::Compare {
+                right: Literal::Bool(true),
+                ..
+            } => {}
+            other => panic!("expected Compare with Literal::Bool(true), got {other:?}"),
+        }
+        let q_f = parse("where on = false").unwrap();
+        match q_f.predicate {
+            Predicate::Compare {
+                right: Literal::Bool(false),
+                ..
+            } => {}
+            other => panic!("expected Compare with Literal::Bool(false), got {other:?}"),
+        }
     }
 
-    #[test]
-    fn parse_not_grouping() {
-        let q = parse("where not (state = \"off\")").unwrap();
-        assert!(matches!(q.predicate.unwrap(), Predicate::Not(_)));
-    }
-
-    #[test]
-    fn parse_like_and_number() {
-        let q = parse("where name like \"kitchen-*\" and data > 12.5").unwrap();
-        assert!(q.predicate.is_some());
+    // Compile-time check that field paths from FieldPath are usable here.
+    #[allow(dead_code)]
+    fn _ensure_field_path_constructor() -> FieldPath {
+        FieldPath::from_segments(vec!["a".into()])
     }
 }

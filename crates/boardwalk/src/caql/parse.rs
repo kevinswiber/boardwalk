@@ -1,34 +1,32 @@
 use super::lex::{Spanned, Tok};
-use super::{CaqlError, Op, Path, Predicate, Query, Value};
+use crate::query::{ComparisonOp, FieldPath, Literal, Predicate, Projection, Query, QueryError};
 
 struct Parser<'a> {
     toks: &'a [Spanned],
     pos: usize,
 }
 
-pub(crate) fn parse_query(toks: &[Spanned]) -> Result<Query, CaqlError> {
+pub(crate) fn parse_query(toks: &[Spanned]) -> Result<Query, QueryError> {
     let mut p = Parser { toks, pos: 0 };
-    let select = if p.peek_is(&Tok::Select) {
+    let projection = if p.peek_is(&Tok::Select) {
         p.bump();
-        Some(p.parse_projection()?)
+        p.parse_projection()?
     } else {
-        None
-    };
-    let select = match select {
-        Some(None) => None, // `select *` is the same as no selection
-        Some(Some(paths)) => Some(paths),
-        None => None,
+        Projection::All
     };
     let predicate = if p.peek_is(&Tok::Where) {
         p.bump();
-        Some(p.parse_or()?)
+        p.parse_or()?
     } else {
-        None
+        Predicate::True
     };
     if p.pos < p.toks.len() {
         return Err(p.err("unexpected trailing tokens"));
     }
-    Ok(Query { select, predicate })
+    Ok(Query {
+        projection,
+        predicate,
+    })
 }
 
 impl<'a> Parser<'a> {
@@ -49,19 +47,18 @@ impl<'a> Parser<'a> {
         Some(v)
     }
 
-    fn err(&self, msg: &str) -> CaqlError {
+    fn err(&self, msg: &str) -> QueryError {
         let offset = self.toks.get(self.pos).map(|s| s.offset).unwrap_or(0);
-        CaqlError::Parse {
+        QueryError::Parse {
             offset,
             message: msg.into(),
         }
     }
 
-    /// Returns Some(None) for `*`, Some(Some(paths)) otherwise.
-    fn parse_projection(&mut self) -> Result<Option<Vec<Path>>, CaqlError> {
+    fn parse_projection(&mut self) -> Result<Projection, QueryError> {
         if matches!(self.peek(), Some(Tok::Star)) {
             self.bump();
-            return Ok(None);
+            return Ok(Projection::All);
         }
         let mut paths = Vec::new();
         paths.push(self.parse_path()?);
@@ -69,10 +66,10 @@ impl<'a> Parser<'a> {
             self.bump();
             paths.push(self.parse_path()?);
         }
-        Ok(Some(paths))
+        Ok(Projection::Fields(paths))
     }
 
-    fn parse_path(&mut self) -> Result<Path, CaqlError> {
+    fn parse_path(&mut self) -> Result<FieldPath, QueryError> {
         let mut segs = Vec::new();
         let first = match self.bump() {
             Some(s) => match &s.tok {
@@ -93,39 +90,39 @@ impl<'a> Parser<'a> {
             };
             segs.push(next);
         }
-        Ok(Path(segs))
+        Ok(FieldPath::from_segments(segs))
     }
 
-    fn parse_or(&mut self) -> Result<Predicate, CaqlError> {
+    fn parse_or(&mut self) -> Result<Predicate, QueryError> {
         let mut lhs = self.parse_and()?;
         while matches!(self.peek(), Some(Tok::Or)) {
             self.bump();
             let rhs = self.parse_and()?;
-            lhs = Predicate::Or(Box::new(lhs), Box::new(rhs));
+            lhs = Predicate::Or(vec![lhs, rhs]);
         }
         Ok(lhs)
     }
 
-    fn parse_and(&mut self) -> Result<Predicate, CaqlError> {
+    fn parse_and(&mut self) -> Result<Predicate, QueryError> {
         let mut lhs = self.parse_not()?;
         while matches!(self.peek(), Some(Tok::And)) {
             self.bump();
             let rhs = self.parse_not()?;
-            lhs = Predicate::And(Box::new(lhs), Box::new(rhs));
+            lhs = Predicate::And(vec![lhs, rhs]);
         }
         Ok(lhs)
     }
 
-    fn parse_not(&mut self) -> Result<Predicate, CaqlError> {
+    fn parse_not(&mut self) -> Result<Predicate, QueryError> {
         if matches!(self.peek(), Some(Tok::Not)) {
             self.bump();
             let inner = self.parse_not()?;
-            return Ok(Predicate::Not(Box::new(inner)));
+            return Ok(Predicate::not(inner));
         }
         self.parse_cmp()
     }
 
-    fn parse_cmp(&mut self) -> Result<Predicate, CaqlError> {
+    fn parse_cmp(&mut self) -> Result<Predicate, QueryError> {
         if matches!(self.peek(), Some(Tok::LParen)) {
             self.bump();
             let inner = self.parse_or()?;
@@ -137,33 +134,33 @@ impl<'a> Parser<'a> {
             }
             return Ok(inner);
         }
-        let path = self.parse_path()?;
+        let left = self.parse_path()?;
         let op = match self.bump() {
             Some(s) => match &s.tok {
-                Tok::Eq => Op::Eq,
-                Tok::Ne => Op::Ne,
-                Tok::Lt => Op::Lt,
-                Tok::Le => Op::Le,
-                Tok::Gt => Op::Gt,
-                Tok::Ge => Op::Ge,
-                Tok::Like => Op::Like,
-                Tok::In => Op::In,
+                Tok::Eq => ComparisonOp::Eq,
+                Tok::Ne => ComparisonOp::Ne,
+                Tok::Lt => ComparisonOp::Lt,
+                Tok::Le => ComparisonOp::Le,
+                Tok::Gt => ComparisonOp::Gt,
+                Tok::Ge => ComparisonOp::Ge,
+                Tok::Like => ComparisonOp::Like,
+                Tok::In => ComparisonOp::InSet,
                 _ => return Err(self.err("expected comparison operator")),
             },
             None => return Err(self.err("expected comparison operator")),
         };
-        let value = self.parse_value()?;
-        Ok(Predicate::Cmp(path, op, value))
+        let right = self.parse_value()?;
+        Ok(Predicate::Compare { left, op, right })
     }
 
-    fn parse_value(&mut self) -> Result<Value, CaqlError> {
+    fn parse_value(&mut self) -> Result<Literal, QueryError> {
         match self.bump() {
             Some(s) => match &s.tok {
-                Tok::String(v) => Ok(Value::String(v.clone())),
-                Tok::Number(n) => Ok(Value::Number(*n)),
-                Tok::True => Ok(Value::Bool(true)),
-                Tok::False => Ok(Value::Bool(false)),
-                Tok::Null => Ok(Value::Null),
+                Tok::String(v) => Ok(Literal::String(v.clone())),
+                Tok::Number(n) => Ok(Literal::Number(*n)),
+                Tok::True => Ok(Literal::Bool(true)),
+                Tok::False => Ok(Literal::Bool(false)),
+                Tok::Null => Ok(Literal::Null),
                 Tok::LBracket => {
                     let mut items = Vec::new();
                     if !matches!(self.peek(), Some(Tok::RBracket)) {
@@ -176,7 +173,7 @@ impl<'a> Parser<'a> {
                     match self.bump() {
                         Some(Spanned {
                             tok: Tok::RBracket, ..
-                        }) => Ok(Value::List(items)),
+                        }) => Ok(Literal::Array(items)),
                         _ => Err(self.err("expected `]`")),
                     }
                 }
