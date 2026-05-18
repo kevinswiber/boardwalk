@@ -10,6 +10,7 @@ pub mod core;
 pub mod events;
 pub mod http;
 pub mod peer;
+pub mod query;
 pub mod registry;
 pub mod server;
 pub mod siren;
