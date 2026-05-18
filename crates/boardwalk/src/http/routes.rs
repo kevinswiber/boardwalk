@@ -257,7 +257,13 @@ async fn root(
     if let Some(ql) = params.ql {
         let devices = core.list_devices().await;
         return match filter_by_ql(&devices, &ql, &core.name) {
-            Ok(filtered) => siren_response(render::render_search_results(&h, &ql, &filtered)),
+            Ok(filtered) => {
+                let snaps: Vec<_> = filtered
+                    .iter()
+                    .map(|d| d.to_resource_snapshot(&core.name))
+                    .collect();
+                siren_response(render::render_search_results(&h, &ql, &snaps))
+            }
             Err(e) => query_error_response(&ql, &e),
         };
     }
@@ -284,11 +290,21 @@ async fn server_get(
     let devices = core.list_devices().await;
     if let Some(ql) = params.ql {
         return match filter_by_ql(&devices, &ql, &core.name) {
-            Ok(filtered) => siren_response(render::render_search_results(&h, &ql, &filtered)),
+            Ok(filtered) => {
+                let snaps: Vec<_> = filtered
+                    .iter()
+                    .map(|d| d.to_resource_snapshot(&core.name))
+                    .collect();
+                siren_response(render::render_search_results(&h, &ql, &snaps))
+            }
             Err(e) => query_error_response(&ql, &e),
         };
     }
-    siren_response(render::render_server(&h, &devices))
+    let snaps: Vec<_> = devices
+        .iter()
+        .map(|d| d.to_resource_snapshot(&core.name))
+        .collect();
+    siren_response(render::render_server(&h, &snaps))
 }
 
 async fn devices_get(
@@ -303,7 +319,11 @@ async fn devices_get(
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
     let devices = core.list_devices().await;
-    siren_response(render::render_server(&h, &devices))
+    let snaps: Vec<_> = devices
+        .iter()
+        .map(|d| d.to_resource_snapshot(&core.name))
+        .collect();
+    siren_response(render::render_server(&h, &snaps))
 }
 
 async fn devices_post(
@@ -363,7 +383,8 @@ async fn devices_post(
         )
             .into_response();
     };
-    let mut resp = siren_response(render::render_device(&h, &snap));
+    let rsnap = snap.to_resource_snapshot(&state.core.name);
+    let mut resp = siren_response(render::render_device(&h, &rsnap, &snap.config));
     *resp.status_mut() = StatusCode::CREATED;
     resp
 }
@@ -384,7 +405,10 @@ async fn device_get(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid device id").into_response(),
     };
     match core.get_device(&id).await {
-        Some(d) => siren_response(render::render_device(&h, &d)),
+        Some(d) => {
+            let rsnap = d.to_resource_snapshot(&core.name);
+            siren_response(render::render_device(&h, &rsnap, &d.config))
+        }
         None => (StatusCode::NOT_FOUND, "unknown device").into_response(),
     }
 }
@@ -437,7 +461,10 @@ async fn device_post(
     };
     let input = TransitionInput { fields: map };
     match core.run_transition(&id, &action_name, input).await {
-        Ok(snap) => siren_response(render::render_device(&h, &snap)),
+        Ok(snap) => {
+            let rsnap = snap.to_resource_snapshot(&core.name);
+            siren_response(render::render_device(&h, &rsnap, &snap.config))
+        }
         Err(crate::core::DeviceError::NotAllowed(_)) => (
             StatusCode::CONFLICT,
             "transition not allowed in current state",
@@ -537,7 +564,11 @@ async fn meta_get(
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
     let devices = core.list_devices().await;
-    siren_response(render::render_meta(&h, &devices))
+    let snaps: Vec<_> = devices
+        .iter()
+        .map(|d| d.to_resource_snapshot(&core.name))
+        .collect();
+    siren_response(render::render_meta(&h, &snaps))
 }
 
 async fn meta_type_get(

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use url::Url;
 
-use super::core::{Core, DeviceSnapshot};
+use super::core::{Core, ResourceSnapshot};
+use crate::core::DeviceConfig;
 use crate::siren::{Action, EmbeddedEntity, Entity, Field, Link, SubEntity, rels};
 
 /// Url root for absolute hrefs. Computed per-request from request scheme + host.
@@ -31,7 +32,7 @@ impl Hrefs {
             ))
             .unwrap()
     }
-    pub fn device_url(&self, id: &uuid::Uuid) -> Url {
+    pub fn device_url(&self, id: &str) -> Url {
         self.http
             .join(&format!(
                 "servers/{}/devices/{}",
@@ -63,7 +64,7 @@ impl Hrefs {
     pub fn peer_management_url(&self) -> Url {
         self.http.join("peer-management").unwrap()
     }
-    pub fn stream_url(&self, ty: &str, id: &uuid::Uuid, stream: &str) -> Url {
+    pub fn stream_url(&self, ty: &str, id: &str, stream: &str) -> Url {
         let topic = format!("{}/{}/{}/{}", self.server, ty, id, stream);
         let mut u = self
             .ws
@@ -99,7 +100,7 @@ pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs, peers: &[String]) -> Ent
         )
 }
 
-pub(crate) fn render_server(h: &Hrefs, devices: &[DeviceSnapshot]) -> Entity {
+pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
     let mut e = Entity::new()
         .with_class("server")
         .with_property("name", Value::String(h.server.clone()))
@@ -117,62 +118,100 @@ pub(crate) fn render_server(h: &Hrefs, devices: &[DeviceSnapshot]) -> Entity {
                 .with_field(Field::typed("id", "text"))
                 .with_field(Field::typed("name", "text")),
         );
-    for d in devices {
-        e = e.with_sub_entity(SubEntity::Embedded(device_sub_entity(h, d)));
+    for snap in snaps {
+        e = e.with_sub_entity(SubEntity::Embedded(device_sub_entity(h, snap)));
     }
     e
 }
 
-pub(crate) fn device_sub_entity(h: &Hrefs, d: &DeviceSnapshot) -> EmbeddedEntity {
+pub(crate) fn device_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedEntity {
     let mut e = EmbeddedEntity::new([rels::DEVICE])
         .with_class("device")
-        .with_class(d.type_.clone())
-        .with_property("id", Value::String(d.id.to_string()))
-        .with_property("type", Value::String(d.type_.clone()))
-        .with_property(
-            "name",
-            d.name.clone().map(Value::String).unwrap_or(Value::Null),
-        )
-        .with_property("state", Value::String(d.state.clone()))
-        .with_link(Link::new(rels::SELF, h.device_url(&d.id)))
-        .with_link(
-            Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
-        );
-    // Pass through extra properties.
-    for (k, v) in d.properties.iter() {
+        .with_class(snap.kind.clone());
+
+    // Write user-supplied extras first, skipping any literal `type`
+    // key — the canonical `type` (= snap.kind) is the next write and
+    // must not be shadowed by user input. Property maps go through
+    // `sanitize_properties` at the snapshot layer, but `type` is
+    // intentionally not reserved there (it's only a query-time
+    // alias), so we filter it here.
+    for (k, v) in snap.properties.iter() {
+        if k == "type" {
+            continue;
+        }
         e = e.with_property(k.clone(), v.clone());
     }
-    e
-}
 
-pub(crate) fn render_device(h: &Hrefs, d: &DeviceSnapshot) -> Entity {
-    let mut e = Entity::new()
-        .with_class("device")
-        .with_class(d.type_.clone())
-        .with_property("id", Value::String(d.id.to_string()))
-        .with_property("type", Value::String(d.type_.clone()))
+    e.with_property("id", Value::String(snap.id.clone()))
+        .with_property("type", Value::String(snap.kind.clone()))
         .with_property(
             "name",
-            d.name.clone().map(Value::String).unwrap_or(Value::Null),
+            snap.name
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         )
-        .with_property("state", Value::String(d.state.clone()))
-        .with_link(Link::rels([rels::SELF, rels::EDIT], h.device_url(&d.id)))
+        .with_property(
+            "state",
+            snap.state
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        )
+        .with_link(Link::new(rels::SELF, h.device_url(&snap.id)))
+        .with_link(
+            Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
+        )
+}
+
+pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConfig) -> Entity {
+    let mut e = Entity::new()
+        .with_class("device")
+        .with_class(snap.kind.clone());
+
+    // See `device_sub_entity` for the property-write ordering rule.
+    for (k, v) in snap.properties.iter() {
+        if k == "type" {
+            continue;
+        }
+        e = e.with_property(k.clone(), v.clone());
+    }
+
+    e = e
+        .with_property("id", Value::String(snap.id.clone()))
+        .with_property("type", Value::String(snap.kind.clone()))
+        .with_property(
+            "name",
+            snap.name
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        )
+        .with_property(
+            "state",
+            snap.state
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        )
+        .with_link(Link::rels(
+            [rels::SELF, rels::EDIT],
+            h.device_url(&snap.id),
+        ))
         .with_link(
             Link::rels([rels::UP, rels::SERVER], h.server_url()).with_title(h.server.clone()),
         )
         .with_link(Link::rels(
             [rels::TYPE, "describedby"],
-            h.meta_type_url(&d.type_),
+            h.meta_type_url(&snap.kind),
         ));
 
-    for (k, v) in d.properties.iter() {
-        e = e.with_property(k.clone(), v.clone());
-    }
-
-    // Actions for currently-allowed transitions.
-    for t_name in d.config.allowed_in(&d.state) {
-        let spec = d.config.transitions.get(t_name);
-        let mut action = Action::new(t_name.clone(), "POST", h.device_url(&d.id))
+    // Actions for currently-allowed transitions. Field shapes come
+    // from DeviceConfig because the snapshot doesn't carry FieldSpec
+    // (Plan A scope).
+    for t_name in &snap.affordances.transitions.available {
+        let spec = cfg.transitions.get(t_name);
+        let mut action = Action::new(t_name.clone(), "POST", h.device_url(&snap.id))
             .with_class("transition")
             .form_urlencoded()
             .with_field(Field::hidden("action", Value::String(t_name.clone())));
@@ -187,20 +226,21 @@ pub(crate) fn render_device(h: &Hrefs, d: &DeviceSnapshot) -> Entity {
         e = e.with_action(action);
     }
 
-    // Stream links for declared streams.
-    for s in &d.config.streams {
+    // Stream links for declared streams come straight from the
+    // snapshot's affordances.
+    for name in &snap.affordances.streams.available {
         let link = Link::rels(
             [rels::MONITOR, rels::OBJECT_STREAM],
-            h.stream_url(&d.type_, &d.id, &s.name),
+            h.stream_url(&snap.kind, &snap.id, name),
         )
-        .with_title(s.name.clone());
+        .with_title(name.clone());
         e = e.with_link(link);
     }
 
     e
 }
 
-pub(crate) fn render_search_results(h: &Hrefs, ql: &str, devices: &[DeviceSnapshot]) -> Entity {
+pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapshot]) -> Entity {
     let mut self_url = h.server_url();
     self_url.query_pairs_mut().append_pair("ql", ql);
     let mut query_ws = h.events_url();
@@ -227,13 +267,13 @@ pub(crate) fn render_search_results(h: &Hrefs, ql: &str, devices: &[DeviceSnapsh
                 .form_urlencoded()
                 .with_field(Field::typed("ql", "text")),
         );
-    for d in devices {
-        e = e.with_sub_entity(SubEntity::Embedded(device_sub_entity(h, d)));
+    for snap in snaps {
+        e = e.with_sub_entity(SubEntity::Embedded(device_sub_entity(h, snap)));
     }
     e
 }
 
-pub(crate) fn render_meta(h: &Hrefs, devices: &[DeviceSnapshot]) -> Entity {
+pub(crate) fn render_meta(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
     let mut e = Entity::new()
         .with_class("metadata")
         .with_property("name", Value::String(h.server.clone()))
@@ -246,32 +286,34 @@ pub(crate) fn render_meta(h: &Hrefs, devices: &[DeviceSnapshot]) -> Entity {
         }));
 
     let mut seen = std::collections::BTreeSet::new();
-    for d in devices {
-        if !seen.insert(d.type_.clone()) {
+    for snap in snaps {
+        if !seen.insert(snap.kind.clone()) {
             continue;
         }
-        e = e.with_sub_entity(SubEntity::Embedded(meta_type_sub_entity(h, d)));
+        e = e.with_sub_entity(SubEntity::Embedded(meta_type_sub_entity(h, snap)));
     }
     e
 }
 
-pub(crate) fn meta_type_sub_entity(h: &Hrefs, d: &DeviceSnapshot) -> EmbeddedEntity {
-    let transitions: Vec<Value> = d
-        .config
+pub(crate) fn meta_type_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedEntity {
+    let transitions: Vec<Value> = snap
+        .affordances
         .transitions
-        .keys()
+        .available
+        .iter()
         .map(|n| serde_json::json!({"name": n}))
         .collect();
-    let streams: Vec<Value> = d
-        .config
+    let streams: Vec<Value> = snap
+        .affordances
         .streams
+        .available
         .iter()
-        .map(|s| Value::String(s.name.clone()))
+        .map(|s| Value::String(s.clone()))
         .collect();
 
     EmbeddedEntity::new([rels::TYPE, "item"])
         .with_class("type")
-        .with_property("type", Value::String(d.type_.clone()))
+        .with_property("type", Value::String(snap.kind.clone()))
         .with_property(
             "properties",
             Value::Array(
@@ -283,5 +325,93 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, d: &DeviceSnapshot) -> EmbeddedEnt
         )
         .with_property("streams", Value::Array(streams))
         .with_property("transitions", Value::Array(transitions))
-        .with_link(Link::new(rels::SELF, h.meta_type_url(&d.type_)))
+        .with_link(Link::new(rels::SELF, h.meta_type_url(&snap.kind)))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value as Json};
+
+    use super::*;
+    use crate::http::core::{Affordances, StreamAffordances, TransitionAffordances};
+
+    fn hrefs() -> Hrefs {
+        Hrefs {
+            http: Url::parse("http://example/").unwrap(),
+            ws: Url::parse("ws://example/").unwrap(),
+            server: "hub".into(),
+        }
+    }
+
+    fn led_snapshot() -> ResourceSnapshot {
+        ResourceSnapshot {
+            id: "abc".into(),
+            kind: "led".into(),
+            name: Some("LED".into()),
+            state: Some("off".into()),
+            node: "hub".into(),
+            properties: Map::new(),
+            labels: vec![],
+            affordances: Affordances {
+                transitions: TransitionAffordances {
+                    available: vec!["turn-on".into()],
+                },
+                streams: StreamAffordances {
+                    available: vec!["state".into()],
+                },
+            },
+            metadata: Map::new(),
+        }
+    }
+
+    #[test]
+    fn render_device_sub_entity_from_resource_snapshot_includes_kind_and_type_for_compat() {
+        let h = hrefs();
+        let snap = led_snapshot();
+        let sub = device_sub_entity(&h, &snap);
+        let v = serde_json::to_value(&sub).unwrap();
+        // Both the canonical `kind` (via class) and the compat
+        // property `type` are present.
+        let classes: Vec<&str> = v["class"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert!(classes.contains(&"led"));
+        assert_eq!(v["properties"]["type"], "led");
+    }
+
+    #[test]
+    fn render_meta_type_sub_entity_uses_kind_from_snapshot() {
+        let h = hrefs();
+        let snap = led_snapshot();
+        let sub = meta_type_sub_entity(&h, &snap);
+        let v = serde_json::to_value(&sub).unwrap();
+        assert_eq!(v["properties"]["type"], "led");
+    }
+
+    #[test]
+    fn render_user_property_named_type_does_not_overwrite_compat_alias() {
+        let h = hrefs();
+        let mut snap = led_snapshot();
+        snap.properties
+            .insert("type".into(), Json::String("shadow-led".into()));
+        snap.properties
+            .insert("color".into(), Json::String("red".into()));
+
+        let sub = device_sub_entity(&h, &snap);
+        let v = serde_json::to_value(&sub).unwrap();
+        // Canonical alias wins.
+        assert_eq!(v["properties"]["type"], "led");
+        // Other extras still present.
+        assert_eq!(v["properties"]["color"], "red");
+
+        // Same guarantee on the full device render.
+        let cfg = DeviceConfig::default();
+        let dev = render_device(&h, &snap, &cfg);
+        let v = serde_json::to_value(&dev).unwrap();
+        assert_eq!(v["properties"]["type"], "led");
+        assert_eq!(v["properties"]["color"], "red");
+    }
 }
