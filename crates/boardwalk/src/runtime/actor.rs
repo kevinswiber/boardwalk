@@ -1,19 +1,36 @@
 //! The `Actor` trait, lifecycle hooks, and transition error model.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::context::{CommandId, RequestCtx};
-use super::resource::{DynFuture, Resource};
+use super::node::Node;
+use super::resource::{DynFuture, Resource, ResourceError};
 use crate::core::{TransitionInput, TransitionOutcome};
 
 /// Per-transition context. Mints a fresh `CommandId` on construction
 /// and carries the request correlation so envelopes published in the
 /// handler can populate `causationId` and trace headers.
-#[derive(Clone, Debug)]
+///
+/// `node` is optional so test-only constructors and HTTP boundaries
+/// that have not yet wired the runtime can still build a context.
+#[derive(Clone)]
 pub struct TransitionCtx {
     command_id: CommandId,
     request: RequestCtx,
-    node: String,
+    node_id: String,
+    node: Option<Arc<Node>>,
+}
+
+impl std::fmt::Debug for TransitionCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransitionCtx")
+            .field("command_id", &self.command_id)
+            .field("request", &self.request)
+            .field("node_id", &self.node_id)
+            .field("node_attached", &self.node.is_some())
+            .finish()
+    }
 }
 
 impl TransitionCtx {
@@ -21,7 +38,20 @@ impl TransitionCtx {
         Self {
             command_id: CommandId::new(),
             request,
-            node: node.into(),
+            node_id: node.into(),
+            node: None,
+        }
+    }
+
+    /// Build a context backed by an `Arc<Node>` so
+    /// `register_actor` can route through the node's directory.
+    pub fn with_node(request: RequestCtx, node: Arc<Node>) -> Self {
+        let node_id = node.id().to_string();
+        Self {
+            command_id: CommandId::new(),
+            request,
+            node_id,
+            node: Some(node),
         }
     }
 
@@ -37,19 +67,31 @@ impl TransitionCtx {
         &self.request
     }
     pub fn node(&self) -> &str {
-        &self.node
+        &self.node_id
     }
 
     /// Register an actor-created resource on the same node and return
-    /// its newly assigned resource id. Until Task 3.1 backs this with
-    /// a real `Node` / `ResourceDirectory`, the method returns
-    /// `TransitionError::Internal` so the call shape is pinned but no
-    /// resource is yet materialized.
-    pub async fn register_actor<A: Actor>(&self, _actor: A) -> Result<String, TransitionError> {
-        Err(TransitionError::Internal(
-            "register_actor requires a Node runtime that lands in the resource-directory task"
-                .into(),
-        ))
+    /// its newly assigned resource id. Requires a context built via
+    /// `TransitionCtx::with_node`; otherwise returns `Internal`.
+    pub async fn register_actor<A: Actor>(&self, actor: A) -> Result<String, TransitionError> {
+        let Some(node) = self.node.as_ref() else {
+            return Err(TransitionError::Internal(
+                "TransitionCtx has no Node attached; build with TransitionCtx::with_node".into(),
+            ));
+        };
+        node.register_actor(actor)
+            .await
+            .map_err(TransitionError::from)
+    }
+}
+
+impl From<ResourceError> for TransitionError {
+    fn from(err: ResourceError) -> Self {
+        match err {
+            ResourceError::NotFound(id) => TransitionError::ResourceNotFound(id),
+            ResourceError::Unavailable(msg) => TransitionError::Internal(msg),
+            ResourceError::Internal(msg) => TransitionError::Internal(msg),
+        }
     }
 }
 
