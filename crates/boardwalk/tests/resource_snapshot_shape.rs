@@ -346,6 +346,38 @@ async fn adapter_populates_allowed_states_from_when() {
     );
 }
 
+/// `.transition(name, fields)` adds field metadata to a transition
+/// without dropping anything the previous `.when(...)` calls had set.
+/// Without this guarantee, `.when("off", &["turn-on"]).transition(
+/// "turn-on", ...)` would silently overwrite `allowed_states`.
+#[test]
+fn device_config_transition_preserves_allowed_states_set_by_when() {
+    use boardwalk::core::{DeviceConfig, FieldSpec};
+    let mut cfg = DeviceConfig::default();
+    cfg.when("off", &["turn-on"])
+        .when("on", &["turn-off"])
+        .transition(
+            "turn-on",
+            vec![FieldSpec {
+                name: "duration".into(),
+                type_: "text".into(),
+                title: None,
+                value: None,
+            }],
+        );
+    let turn_on = cfg.transitions.get("turn-on").expect("transition exists");
+    assert_eq!(turn_on.fields.len(), 1, "fields should be set");
+    assert_eq!(
+        turn_on.allowed_states,
+        vec!["off".to_string()],
+        "allowed_states must survive a later .transition() declaration"
+    );
+
+    // The other transition is untouched.
+    let turn_off = cfg.transitions.get("turn-off").expect("transition exists");
+    assert_eq!(turn_off.allowed_states, vec!["on".to_string()]);
+}
+
 #[tokio::test]
 async fn adapter_maps_basic_fields() {
     let core = one_device(AdapterLed::default()).await;

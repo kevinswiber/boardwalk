@@ -276,11 +276,11 @@ impl EventBus {
         // CRITICAL: For limited subscriptions we *claim* the slot here
         // (decrement `remaining` atomically) so two concurrent
         // publishers cannot both observe a slot and both deliver past
-        // the configured limit. Decrementing here means a subsequent
-        // `Closed`/`DisconnectLossless` outcome cannot refund the slot
-        // — but at that point the subscription is gone, so the
-        // accounting only matters relative to other publishers
-        // observing the same map state.
+        // the configured limit. The post-send apply step refunds the
+        // slot for `Dropped` outcomes so lossy drops do not consume
+        // quota (matching sync `try_publish` semantics). For
+        // `Closed`/`DisconnectLossless` we do not refund: the
+        // subscription is being removed anyway.
         struct Match {
             id: SubscriptionId,
             tx: mpsc::Sender<EventEnvelope>,
@@ -292,21 +292,17 @@ impl EventBus {
         let mut matches: Vec<Match> = Vec::new();
         {
             let mut subs = self.inner.subs.lock().unwrap();
-            // We may need to drop subscriptions whose quota is already
-            // exhausted; we cannot do that while iterating because the
-            // iterator borrows the map.
-            let mut quota_exhausted: Vec<SubscriptionId> = Vec::new();
             for (id, sub) in subs.iter_mut() {
                 if !sub.topic.matches_event(&topic, &envelope.data) {
                     continue;
                 }
                 // Claim a delivery slot atomically. A subscription
-                // with `remaining = Some(0)` is already done; skip it
-                // and queue it for removal so a third publisher does
-                // not even attempt it.
+                // with `remaining = Some(0)` is already done; skip it.
+                // Subscriptions are not removed here so a concurrent
+                // `Dropped`-then-refund cannot resurrect a removed
+                // entry.
                 if let Some(rem) = sub.remaining.as_mut() {
                     if *rem == 0 {
-                        quota_exhausted.push(*id);
                         continue;
                     }
                     *rem -= 1;
@@ -317,9 +313,6 @@ impl EventBus {
                     stream_safety: sub.stream_safety,
                     overflow_policy: sub.overflow_policy,
                 });
-            }
-            for id in quota_exhausted {
-                subs.remove(&id);
             }
         }
 
@@ -376,6 +369,13 @@ impl EventBus {
                     }
                     SendResult::Dropped => {
                         result.dropped += 1;
+                        // Refund the slot — lossy drops do not consume
+                        // quota, matching sync `try_publish` semantics.
+                        if let Some(sub) = subs.get_mut(&id)
+                            && let Some(rem) = sub.remaining.as_mut()
+                        {
+                            *rem += 1;
+                        }
                     }
                     SendResult::DisconnectLossless => {
                         // Fire the slow-consumer notify (if still

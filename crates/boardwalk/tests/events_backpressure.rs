@@ -73,6 +73,48 @@ async fn concurrent_publish_respects_subscription_limit() {
     );
 }
 
+/// `Lossy + DropNewest` events that drop on a full outbound channel
+/// must not consume the subscription's quota — matching sync
+/// `try_publish` semantics. Scenario from the review: `limit=2`,
+/// capacity 1, one event delivered, second dropped while buffer is
+/// full, drain, third should still be delivered.
+#[tokio::test]
+async fn lossy_dropnewest_does_not_consume_subscription_quota() {
+    let bus = EventBus::with_registry(StreamRegistry::new());
+    let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
+    let mut sub = bus.subscribe(
+        pattern,
+        SubscribeOpts {
+            outbound_capacity: Some(1),
+            limit: Some(2),
+            stream_safety: StreamSafety::Lossy,
+            overflow_policy: OverflowPolicy::DropNewest,
+        },
+    );
+
+    // 1: delivered, buffer fills.
+    let r1 = bus.publish(envelope(1)).await.unwrap();
+    assert_eq!(r1.delivered, 1);
+    assert_eq!(r1.dropped, 0);
+
+    // 2: dropped because buffer is full. Quota stays at 1.
+    let r2 = bus.publish(envelope(2)).await.unwrap();
+    assert_eq!(r2.delivered, 0);
+    assert_eq!(r2.dropped, 1);
+
+    // Drain the buffer.
+    let _ = sub.rx.recv().await.expect("first envelope");
+
+    // 3: should still deliver — the dropped event must not have
+    // burned the second slot.
+    let r3 = bus.publish(envelope(3)).await.unwrap();
+    assert_eq!(
+        r3.delivered, 1,
+        "the lossy drop must not consume quota; the third send must deliver"
+    );
+    assert_eq!(r3.dropped, 0);
+}
+
 #[tokio::test]
 async fn lossy_backpressure_awaits_capacity_instead_of_dropping() {
     let bus = EventBus::with_registry(StreamRegistry::new());

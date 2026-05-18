@@ -253,21 +253,28 @@ impl DeviceConfig {
 
     /// Declare a transition that takes additional fields (beyond the
     /// mandatory hidden `action` field). Without this call, transitions
-    /// referenced from `.when` exist with no extra fields.
+    /// referenced from `.when` exist with no extra fields. When the
+    /// transition is *already* declared (typically by an earlier
+    /// `.when(...)` call), only `fields` is replaced — `allowed_states`
+    /// and other metadata set up by `.when` survive.
     pub fn transition(
         &mut self,
         name: impl Into<TransitionName>,
         fields: Vec<FieldSpec>,
     ) -> &mut Self {
         let n: TransitionName = name.into();
-        self.transitions.insert(
-            n.clone(),
-            TransitionSpec {
-                name: n,
-                fields,
-                ..Default::default()
-            },
-        );
+        match self.transitions.entry(n.clone()) {
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                e.get_mut().fields = fields;
+            }
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(TransitionSpec {
+                    name: n,
+                    fields,
+                    ..Default::default()
+                });
+            }
+        }
         self
     }
 
