@@ -98,7 +98,7 @@ impl TopicPattern {
         }
         match &self.filter {
             None => true,
-            Some(q) => crate::caql::matches(q, payload).unwrap_or(false),
+            Some(q) => crate::query::matches(q, payload).unwrap_or(false),
         }
     }
 }
@@ -179,5 +179,33 @@ mod tests {
         assert!(p.matches_event("hub/sensor/abc/temp", &json!({"data": 90})));
         assert!(!p.matches_event("hub/sensor/abc/temp", &json!({"data": 50})));
         assert!(!p.matches_event("hub/sensor/abc/humidity", &json!({"data": 90})));
+    }
+
+    #[test]
+    fn topic_filter_field_type_is_query_query() {
+        // Compile-time check: the parsed filter is `Option<query::Query>`.
+        let p = TopicPattern::parse("hub/x?where data > 1").unwrap();
+        let _: Option<crate::query::Query> = p.filter;
+    }
+
+    #[test]
+    fn topic_filter_uses_query_evaluator_for_contains() {
+        // Build a Contains predicate programmatically — exercises the
+        // event-payload evaluation path without depending on a CaQL
+        // grammar extension.
+        use crate::query::{FieldPath, Literal, Predicate, Projection, Query};
+        let p = TopicPattern {
+            segments: vec![Segment::Literal("hub".into()), Segment::Literal("x".into())],
+            filter: Some(Query {
+                projection: Projection::All,
+                predicate: Predicate::contains(
+                    FieldPath::parse("labels"),
+                    Literal::String("urgent".into()),
+                ),
+            }),
+            raw: "hub/x".into(),
+        };
+        assert!(p.matches_event("hub/x", &json!({"labels": ["urgent", "cron"]})));
+        assert!(!p.matches_event("hub/x", &json!({"labels": ["cron"]})));
     }
 }

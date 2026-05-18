@@ -119,6 +119,11 @@ impl<'a> Parser<'a> {
             let inner = self.parse_not()?;
             return Ok(Predicate::not(inner));
         }
+        if matches!(self.peek(), Some(Tok::Exists)) {
+            self.bump();
+            let path = self.parse_path()?;
+            return Ok(Predicate::exists(path));
+        }
         self.parse_cmp()
     }
 
@@ -135,6 +140,15 @@ impl<'a> Parser<'a> {
             return Ok(inner);
         }
         let left = self.parse_path()?;
+        // `path contains value` lowers to Predicate::Contains.
+        if matches!(self.peek(), Some(Tok::Contains)) {
+            self.bump();
+            let right = self.parse_value()?;
+            if matches!(right, Literal::Array(_)) {
+                return Err(self.err("`contains` rhs must be a single literal, not an array"));
+            }
+            return Ok(Predicate::contains(left, right));
+        }
         let op = match self.bump() {
             Some(s) => match &s.tok {
                 Tok::Eq => ComparisonOp::Eq,

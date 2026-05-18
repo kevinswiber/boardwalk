@@ -1,5 +1,9 @@
 //! CaQL — Calypso Query Language.
 //!
+//! CaQL is a textual syntax that compiles into [`crate::query::Query`];
+//! it does not own its own AST or evaluator. Use [`crate::query::matches`]
+//! and [`crate::query::project`] to evaluate parsed queries.
+//!
 //! Grammar (informal):
 //!
 //! ```text
@@ -19,13 +23,14 @@
 
 #![forbid(unsafe_code)]
 
-mod eval;
 mod lex;
 mod parse;
 
-pub use eval::{matches, project};
-
 use crate::query::{Query, QueryError};
+
+/// Backwards-compatible alias. New code should refer to
+/// [`crate::query::QueryError`].
+pub type CaqlError = QueryError;
 
 pub fn parse(input: &str) -> Result<Query, QueryError> {
     let toks = lex::tokenize(input)?;
@@ -82,13 +87,10 @@ mod tests {
     #[test]
     fn caql_existing_grammar_round_trips() {
         let q = parse(r#"where a = 1 and b > 2 or not (c like "x*")"#).unwrap();
-        // Top-level should be Or.
         match q.predicate {
             Predicate::Or(items) => {
                 assert_eq!(items.len(), 2);
-                // First arm is And.
                 assert!(matches!(items[0], Predicate::And(_)));
-                // Second arm is Not.
                 assert!(matches!(items[1], Predicate::Not(_)));
             }
             other => panic!("expected Or at top, got {other:?}"),
@@ -98,23 +100,66 @@ mod tests {
     #[test]
     fn caql_parse_returns_query_error_not_caql_error() {
         let err = parse("where type =").unwrap_err();
-        // The error must be a query::QueryError (the assignment below
-        // would fail to compile if it were caql::CaqlError).
         let _err: query::QueryError = err;
     }
 
     #[test]
-    fn caql_matches_shim_accepts_query_module_type() {
-        let q = parse(r#"where type = "led""#).unwrap();
-        let v = json!({"type": "led"});
-        assert_eq!(matches(&q, &v).unwrap(), query::matches(&q, &v).unwrap());
+    fn caql_error_alias_is_query_error() {
+        // Backwards-compat: `caql::CaqlError` resolves to `query::QueryError`.
+        let _: CaqlError = QueryError::InvalidPath("x".into());
+    }
+
+    // ---- Parse + evaluate round trips ----
+
+    #[test]
+    fn caql_parse_then_eval_eq_and_or() {
+        let q = parse(r#"where type = "led" or type = "motion""#).unwrap();
+        assert!(query::matches(&q, &json!({"kind": "led"})).unwrap());
+        assert!(query::matches(&q, &json!({"kind": "motion"})).unwrap());
+        assert!(!query::matches(&q, &json!({"kind": "switch"})).unwrap());
     }
 
     #[test]
-    fn caql_project_shim_accepts_query_module_type() {
-        let q = parse(r#"select data.x where data.x = 1"#).unwrap();
-        let v = json!({"data": {"x": 1, "y": 2}});
-        assert_eq!(project(&q, &v), query::project(&q, &v));
+    fn caql_parse_then_eval_like() {
+        let q = parse(r#"where name like "kitchen-*""#).unwrap();
+        assert!(query::matches(&q, &json!({"name": "kitchen-led"})).unwrap());
+        assert!(query::matches(&q, &json!({"name": "kitchen-"})).unwrap());
+        assert!(!query::matches(&q, &json!({"name": "living-led"})).unwrap());
+    }
+
+    #[test]
+    fn caql_parse_then_eval_in() {
+        let q = parse(r#"where kind in ["led", "switch"]"#).unwrap();
+        assert!(query::matches(&q, &json!({"kind": "led"})).unwrap());
+        assert!(query::matches(&q, &json!({"kind": "switch"})).unwrap());
+        assert!(!query::matches(&q, &json!({"kind": "motion"})).unwrap());
+    }
+
+    #[test]
+    fn caql_parse_then_eval_nested_path() {
+        let q = parse("where data.degreesF > 85").unwrap();
+        assert!(query::matches(&q, &json!({"data": {"degreesF": 100}})).unwrap());
+        assert!(!query::matches(&q, &json!({"data": {"degreesF": 70}})).unwrap());
+    }
+
+    #[test]
+    fn caql_parse_then_eval_missing_path() {
+        let q = parse(r#"where missing.field = "x""#).unwrap();
+        assert!(!query::matches(&q, &json!({"other": 1})).unwrap());
+    }
+
+    #[test]
+    fn caql_parse_then_project_single_path() {
+        let q = parse("select data.degreesC where data.degreesF > 85").unwrap();
+        let v = query::project(&q, &json!({"data": {"degreesC": 30, "degreesF": 90}}));
+        assert_eq!(v, json!({"data": {"degreesC": 30}}));
+    }
+
+    #[test]
+    fn caql_parse_then_project_star() {
+        let q = parse(r#"where state = "on""#).unwrap();
+        let v = query::project(&q, &json!({"state": "on", "other": 1}));
+        assert_eq!(v, json!({"state": "on", "other": 1}));
     }
 
     #[test]
@@ -158,24 +203,115 @@ mod tests {
     #[test]
     fn caql_bool_literals_parse() {
         let q_t = parse("where on = true").unwrap();
-        match q_t.predicate {
+        assert!(matches!(
+            q_t.predicate,
             Predicate::Compare {
                 right: Literal::Bool(true),
                 ..
-            } => {}
-            other => panic!("expected Compare with Literal::Bool(true), got {other:?}"),
-        }
+            }
+        ));
         let q_f = parse("where on = false").unwrap();
-        match q_f.predicate {
+        assert!(matches!(
+            q_f.predicate,
             Predicate::Compare {
                 right: Literal::Bool(false),
                 ..
-            } => {}
-            other => panic!("expected Compare with Literal::Bool(false), got {other:?}"),
+            }
+        ));
+    }
+
+    // ---- contains / exists grammar ----
+
+    #[test]
+    fn caql_contains_string_literal_against_array_field() {
+        let q = parse(r#"where labels contains "urgent""#).unwrap();
+        match q.predicate {
+            Predicate::Contains { path, value } => {
+                assert_eq!(path.segments(), &["labels".to_string()]);
+                assert_eq!(value, Literal::String("urgent".into()));
+            }
+            other => panic!("expected Contains, got {other:?}"),
         }
     }
 
-    // Compile-time check that field paths from FieldPath are usable here.
+    #[test]
+    fn caql_contains_number_against_array_field() {
+        let q = parse("where seats contains 4").unwrap();
+        match q.predicate {
+            Predicate::Contains {
+                value: Literal::Number(n),
+                ..
+            } => assert_eq!(n, 4.0),
+            other => panic!("expected Contains with number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caql_exists_top_level_path() {
+        let q = parse("where exists name").unwrap();
+        match q.predicate {
+            Predicate::Exists(path) => assert_eq!(path.segments(), &["name".to_string()]),
+            other => panic!("expected Exists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caql_exists_nested_path() {
+        let q = parse("where exists properties.owner").unwrap();
+        match q.predicate {
+            Predicate::Exists(path) => assert_eq!(
+                path.segments(),
+                &["properties".to_string(), "owner".to_string()]
+            ),
+            other => panic!("expected Exists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caql_exists_inside_boolean_tree() {
+        let q = parse(r#"where exists labels and kind = "job""#).unwrap();
+        match q.predicate {
+            Predicate::And(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(items[0], Predicate::Exists(_)));
+                assert!(matches!(items[1], Predicate::Compare { .. }));
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caql_not_exists_via_not_keyword() {
+        let q = parse("where not exists properties.owner").unwrap();
+        match q.predicate {
+            Predicate::Not(inner) => {
+                assert!(matches!(*inner, Predicate::Exists(_)));
+            }
+            other => panic!("expected Not(Exists(_)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caql_contains_evaluates_correctly_via_query_eval() {
+        let q = parse(r#"where labels contains "urgent""#).unwrap();
+        assert!(query::matches(&q, &json!({"labels": ["a", "urgent"]})).unwrap());
+        assert!(!query::matches(&q, &json!({"labels": ["a"]})).unwrap());
+    }
+
+    #[test]
+    fn caql_exists_evaluates_against_present_field_including_null() {
+        let q = parse("where exists name").unwrap();
+        assert!(query::matches(&q, &json!({"name": null})).unwrap());
+        assert!(query::matches(&q, &json!({"name": "led"})).unwrap());
+        assert!(!query::matches(&q, &json!({})).unwrap());
+    }
+
+    #[test]
+    fn caql_contains_with_array_rhs_is_an_error() {
+        // `contains` rhs must be a single literal.
+        assert!(parse(r#"where labels contains ["a", "b"]"#).is_err());
+    }
+
     #[allow(dead_code)]
     fn _ensure_field_path_constructor() -> FieldPath {
         FieldPath::from_segments(vec!["a".into()])
