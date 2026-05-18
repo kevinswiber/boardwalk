@@ -247,6 +247,156 @@ impl EventBus {
     pub fn active_subscriptions(&self) -> usize {
         self.inner.subs.lock().unwrap().len()
     }
+
+    /// Async publish that respects `OverflowPolicy::Backpressure` by
+    /// awaiting subscriber queue capacity instead of dropping. For
+    /// every other policy/safety combination the behavior matches
+    /// `try_publish` exactly.
+    pub async fn publish(&self, envelope: EventEnvelope) -> Result<PublishResult, PublishError> {
+        let limit = self.inner.max_event_size.load(Ordering::Relaxed);
+        let size = serde_json::to_vec(&envelope).map(|v| v.len()).unwrap_or(0);
+        if size > limit {
+            tracing::warn!(
+                limit,
+                size,
+                stream = %envelope.stream_id.as_str(),
+                "event exceeds max size; rejected"
+            );
+            self.inner.registry.evict(&envelope.event_id);
+            return Err(PublishError::TooLarge { limit });
+        }
+
+        self.inner.replay_cache.record(&envelope);
+
+        // Snapshot matching subscriptions so we can await sends
+        // without holding the std::sync::Mutex across `.await`.
+        struct Match {
+            id: SubscriptionId,
+            tx: mpsc::Sender<EventEnvelope>,
+            stream_safety: StreamSafety,
+            overflow_policy: OverflowPolicy,
+            slow_consumer_notify: Option<tokio::sync::oneshot::Sender<SlowConsumerNotice>>,
+            last_delivered: Option<(StreamId, u64)>,
+            remaining_was_one: bool,
+        }
+
+        let topic = envelope.topic();
+        let mut matches: Vec<Match> = Vec::new();
+        {
+            let mut subs = self.inner.subs.lock().unwrap();
+            for (id, sub) in subs.iter_mut() {
+                if !sub.topic.matches_event(&topic, &envelope.data) {
+                    continue;
+                }
+                // Move the slow-consumer oneshot out of the
+                // subscription. If the delivery succeeds we put a
+                // fresh `None` back; if the lossless path disconnects
+                // we use the sender.
+                let notify = sub.slow_consumer_notify.take();
+                matches.push(Match {
+                    id: *id,
+                    tx: sub.tx.clone(),
+                    stream_safety: sub.stream_safety,
+                    overflow_policy: sub.overflow_policy,
+                    slow_consumer_notify: notify,
+                    last_delivered: sub.last_delivered.clone(),
+                    remaining_was_one: sub.remaining == Some(1),
+                });
+            }
+        }
+
+        let mut result = PublishResult::default();
+        let mut to_remove: Vec<SubscriptionId> = Vec::new();
+        let mut delivered_updates: Vec<(SubscriptionId, StreamId, u64, bool)> = Vec::new();
+        for m in matches {
+            // Fast path: try_send first to avoid yielding when the
+            // buffer has room.
+            match m.tx.try_send(envelope.clone()) {
+                Ok(()) => {
+                    result.delivered += 1;
+                    delivered_updates.push((
+                        m.id,
+                        envelope.stream_id.clone(),
+                        envelope.sequence,
+                        m.remaining_was_one,
+                    ));
+                    self.return_notify(m.id, m.slow_consumer_notify);
+                    continue;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    to_remove.push(m.id);
+                    continue;
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+            }
+
+            match (m.stream_safety, m.overflow_policy) {
+                (StreamSafety::Lossy, OverflowPolicy::Backpressure) => {
+                    if m.tx.send(envelope.clone()).await.is_ok() {
+                        result.delivered += 1;
+                        delivered_updates.push((
+                            m.id,
+                            envelope.stream_id.clone(),
+                            envelope.sequence,
+                            m.remaining_was_one,
+                        ));
+                        self.return_notify(m.id, m.slow_consumer_notify);
+                    } else {
+                        to_remove.push(m.id);
+                    }
+                }
+                (StreamSafety::Lossy, OverflowPolicy::DropNewest) => {
+                    result.dropped += 1;
+                    self.return_notify(m.id, m.slow_consumer_notify);
+                }
+                (StreamSafety::Lossless, _) => {
+                    if let Some(notify) = m.slow_consumer_notify {
+                        let _ = notify.send(SlowConsumerNotice {
+                            stream_id: m.last_delivered.as_ref().map(|(s, _)| s.clone()),
+                            last_delivered_sequence: m.last_delivered.as_ref().map(|(_, n)| *n),
+                            reason: REASON_SLOW_CONSUMER,
+                        });
+                    }
+                    to_remove.push(m.id);
+                    result.disconnected_lossless.push(m.id);
+                }
+            }
+        }
+
+        // Apply counter + removal updates under the lock.
+        {
+            let mut subs = self.inner.subs.lock().unwrap();
+            for (id, stream_id, seq, was_one) in delivered_updates {
+                if let Some(sub) = subs.get_mut(&id) {
+                    sub.last_delivered = Some((stream_id, seq));
+                    if let Some(rem) = sub.remaining.as_mut() {
+                        *rem = rem.saturating_sub(1);
+                        if *rem == 0 || was_one {
+                            to_remove.push(id);
+                        }
+                    }
+                }
+            }
+            for id in &to_remove {
+                subs.remove(id);
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn return_notify(
+        &self,
+        id: SubscriptionId,
+        notify: Option<tokio::sync::oneshot::Sender<SlowConsumerNotice>>,
+    ) {
+        if let Some(notify) = notify {
+            let mut subs = self.inner.subs.lock().unwrap();
+            if let Some(sub) = subs.get_mut(&id) {
+                sub.slow_consumer_notify = Some(notify);
+            }
+        }
+    }
 }
 
 impl Default for EventBus {
