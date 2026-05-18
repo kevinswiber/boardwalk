@@ -13,13 +13,28 @@
 //! predicate = orExpr
 //! orExpr    = andExpr ("or" andExpr)*
 //! andExpr   = notExpr ("and" notExpr)*
-//! notExpr   = ["not"] cmpExpr
-//! cmpExpr   = path op value | "(" predicate ")"
+//! notExpr   = ["not"] primary
+//! primary   = "exists" path
+//!           | path "contains" value
+//!           | path op value
+//!           | "(" predicate ")"
 //! op        = "=" | "!=" | "<" | "<=" | ">" | ">=" | "like" | "in"
 //! value     = string | number | bool | "null" | "[" (value ("," value)*)? "]"
 //! ```
 //!
-//! `like` is glob ( `*` and `?` ). `in` requires a list value.
+//! - `like` is glob (`*` and `?`).
+//! - `in` requires an array value.
+//! - `contains` tests array membership for a single scalar literal;
+//!   `path contains v` is true when `path` resolves to an array and
+//!   any element equals `v`. Array RHS is rejected.
+//! - `exists` tests path resolution; `exists p` is true when every
+//!   segment of `p` resolves, including when the final value is
+//!   `null`.
+//!
+//! The evaluator treats `type` as a root-segment alias for `kind` so
+//! `where type = "led"` keeps working under the canonical
+//! `ResourceSnapshot` projection. See [`docs/caql.md`] in the repo
+//! for the full user-facing reference.
 
 #![forbid(unsafe_code)]
 

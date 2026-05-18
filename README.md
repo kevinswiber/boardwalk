@@ -112,7 +112,8 @@ Submodules expose lower-level surface for embedders:
 | ---------------------- | ------------------------------------------------------------------- |
 | `boardwalk::core`      | `Device`, `Scout`, `App` traits, transitions, streams               |
 | `boardwalk::siren`     | Siren entity / action / link / field types + serde                  |
-| `boardwalk::caql`      | Calypso Query Language — parser + evaluator                         |
+| `boardwalk::query`     | Runtime-owned query AST + evaluator (`Query`, `Predicate`, …)       |
+| `boardwalk::caql`      | Calypso Query Language — text syntax that parses into `query::Query` |
 | `boardwalk::events`    | Event bus, topic matching, multiplex WebSocket protocol             |
 | `boardwalk::registry`  | redb-backed persistent device + peer registries                     |
 | `boardwalk::http`      | axum router emitting Siren; WS endpoint; peer upgrade route         |
