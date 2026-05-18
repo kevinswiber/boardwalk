@@ -1,12 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// A published event.
-#[derive(Debug, Clone)]
-pub struct Event {
-    pub topic: String,
-    pub timestamp_ms: i64,
-    pub data: serde_json::Value,
-}
+use super::envelope::{EventId, NodeId, StreamId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -16,6 +10,8 @@ pub enum InboundMessage {
         topic: String,
         #[serde(default)]
         limit: Option<u64>,
+        #[serde(default, rename = "outboundCapacity")]
+        outbound_capacity: Option<usize>,
     },
     #[serde(rename = "unsubscribe")]
     Unsubscribe {
@@ -31,6 +27,7 @@ pub enum InboundMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // Event carries the optional envelope mirror; boxing would obscure the wire shape.
 pub enum OutboundMessage {
     #[serde(rename = "subscribe-ack")]
     SubscribeAck {
@@ -52,6 +49,26 @@ pub enum OutboundMessage {
         subscription_id: SubscriptionRef,
         timestamp: i64,
         data: serde_json::Value,
+        #[serde(rename = "eventId", skip_serializing_if = "Option::is_none")]
+        event_id: Option<EventId>,
+        #[serde(rename = "streamId", skip_serializing_if = "Option::is_none")]
+        stream_id: Option<StreamId>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sequence: Option<u64>,
+        #[serde(rename = "nodeId", skip_serializing_if = "Option::is_none")]
+        node_id: Option<NodeId>,
+        #[serde(rename = "resourceId", skip_serializing_if = "Option::is_none")]
+        resource_id: Option<String>,
+        #[serde(rename = "resourceKind", skip_serializing_if = "Option::is_none")]
+        resource_kind: Option<String>,
+        #[serde(rename = "payloadKind", skip_serializing_if = "Option::is_none")]
+        payload_kind: Option<String>,
+        #[serde(rename = "payloadVersion", skip_serializing_if = "Option::is_none")]
+        payload_version: Option<u32>,
+        #[serde(rename = "envelopeVersion", skip_serializing_if = "Option::is_none")]
+        envelope_version: Option<u8>,
+        #[serde(rename = "isoTimestamp", skip_serializing_if = "Option::is_none")]
+        iso_timestamp: Option<String>,
     },
     #[serde(rename = "pong")]
     Pong {
@@ -67,6 +84,21 @@ pub enum OutboundMessage {
         message: Option<String>,
         #[serde(rename = "subscriptionId", skip_serializing_if = "Option::is_none")]
         subscription_id: Option<u64>,
+    },
+    #[serde(rename = "stream-gap")]
+    StreamGap {
+        timestamp: i64,
+        #[serde(rename = "subscriptionId")]
+        subscription_id: u64,
+        #[serde(rename = "streamId", skip_serializing_if = "Option::is_none")]
+        stream_id: Option<StreamId>,
+        #[serde(
+            rename = "lastDeliveredSequence",
+            skip_serializing_if = "Option::is_none"
+        )]
+        last_delivered_sequence: Option<u64>,
+        reason: String,
+        terminated: bool,
     },
 }
 

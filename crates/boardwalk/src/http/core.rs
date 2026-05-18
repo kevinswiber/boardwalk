@@ -7,13 +7,18 @@ use uuid::Uuid;
 use crate::core::{
     Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink, TransitionInput,
 };
-use crate::events::{Event, EventBus};
+use crate::events::{ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry};
 
 /// Runtime owned by the HTTP layer (and reused by the peer tunnel
 /// handler). Holds the registered devices and the event bus.
 pub struct Core {
     pub name: String,
     pub bus: EventBus,
+    /// The single shared `StreamRegistry`. `bus.stream_registry()` and
+    /// every `BusSink` reference the same `Arc` inner — without that
+    /// sharing, the replay cache's `evict` hook would prune a
+    /// different map than minting populated.
+    pub stream_registry: StreamRegistry,
     devices: RwLock<Vec<DeviceHandle>>,
     /// Fires once per `register_device`. Subscribers see one tick per
     /// new device. Used by `ServerHandle::observe`.
@@ -76,20 +81,31 @@ impl CoreBuilder {
     }
 
     pub fn build(self) -> Arc<Core> {
+        self.build_with_replay_capacity(crate::events::DEFAULT_REPLAY_CAPACITY)
+    }
+
+    /// Test-only: build a `Core` with a custom per-stream replay
+    /// capacity. The shared `StreamRegistry` is constructed the same
+    /// way as in `build()`; only the replay cache differs.
+    pub fn build_with_replay_capacity(self, replay_capacity: usize) -> Arc<Core> {
         let (device_changes, _) = tokio::sync::broadcast::channel(64);
-        let bus = EventBus::new();
+        let stream_registry = StreamRegistry::new();
+        let bus =
+            EventBus::with_registry_and_replay_capacity(stream_registry.clone(), replay_capacity);
+        let node_id = NodeId::new(self.name.clone());
         let mut handles = Vec::with_capacity(self.pending.len());
         for p in self.pending {
-            let type_ = p.config.type_.clone().unwrap_or_else(|| "unknown".into());
+            let resource_kind = p.config.type_.clone().unwrap_or_else(|| "unknown".into());
             let sink: Arc<dyn StreamSink> = Arc::new(BusSink {
                 bus: bus.clone(),
-                server: self.name.clone(),
-                type_: type_.clone(),
-                id: p.id,
+                registry: stream_registry.clone(),
+                node_id: node_id.clone(),
+                resource_kind: resource_kind.clone(),
+                resource_id: p.id.to_string(),
             });
             let ctx = DeviceCtx {
                 id: p.id,
-                type_,
+                type_: resource_kind,
                 publish: sink,
             };
             p.device.on_start(ctx);
@@ -102,28 +118,51 @@ impl CoreBuilder {
         Arc::new(Core {
             name: self.name,
             bus,
+            stream_registry,
             devices: RwLock::new(handles),
             device_changes,
         })
     }
 }
 
-/// `StreamSink` impl backed by the event bus.
+/// `StreamSink` impl backed by the event bus. Mints an [`EventEnvelope`]
+/// per publish via the shared [`StreamRegistry`].
 struct BusSink {
     bus: EventBus,
-    server: String,
-    type_: String,
-    id: DeviceId,
+    registry: StreamRegistry,
+    node_id: NodeId,
+    resource_kind: String,
+    resource_id: String,
 }
 
 impl StreamSink for BusSink {
     fn publish(&self, stream: &str, data: serde_json::Value) {
-        let topic = format!("{}/{}/{}/{}", self.server, self.type_, self.id, stream);
-        self.bus.publish(Event {
-            topic,
-            timestamp_ms: now_ms(),
+        let stream_id = StreamId::for_resource(&self.node_id, &self.resource_id, stream);
+        let allocated = self.registry.allocate(&stream_id);
+        let env = EventEnvelope {
+            envelope_version: ENVELOPE_VERSION,
+            event_id: allocated.event_id,
+            node_id: self.node_id.clone(),
+            resource_id: self.resource_id.clone(),
+            resource_kind: self.resource_kind.clone(),
+            // TODO(plan-c): wire kind versioning.
+            resource_version: 1,
+            stream_id,
+            stream: stream.to_string(),
+            sequence: allocated.sequence,
+            timestamp: time::OffsetDateTime::from_unix_timestamp_nanos(
+                (now_ms() as i128) * 1_000_000,
+            )
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH),
+            payload_kind: "resource.stream.data".to_string(),
+            payload_version: 1,
+            payload_schema: None,
+            correlation_id: None,
+            causation_id: None,
+            trace_context: None,
             data,
-        });
+        };
+        let _ = self.bus.try_publish(env);
     }
 }
 
@@ -136,16 +175,17 @@ impl Core {
         config: DeviceConfig,
         device: Box<dyn Device>,
     ) {
-        let type_ = config.type_.clone().unwrap_or_else(|| "unknown".into());
+        let resource_kind = config.type_.clone().unwrap_or_else(|| "unknown".into());
         let sink: Arc<dyn StreamSink> = Arc::new(BusSink {
             bus: self.bus.clone(),
-            server: self.name.clone(),
-            type_: type_.clone(),
-            id,
+            registry: self.stream_registry.clone(),
+            node_id: NodeId::new(self.name.clone()),
+            resource_kind: resource_kind.clone(),
+            resource_id: id.to_string(),
         });
         let ctx = DeviceCtx {
             id,
-            type_,
+            type_: resource_kind,
             publish: sink,
         };
         device.on_start(ctx);
@@ -258,12 +298,32 @@ impl Core {
         };
 
         if prior_state != new_state && handle.config.monitored.iter().any(|m| m == "state") {
-            let topic = format!("{}/{}/{}/state", self.name, handle.type_(), handle.id);
-            self.bus.publish(Event {
-                topic,
-                timestamp_ms: now_ms(),
+            let node_id = NodeId::new(self.name.clone());
+            let resource_id = handle.id.to_string();
+            let resource_kind = handle.type_().to_string();
+            let stream_id = StreamId::for_resource(&node_id, &resource_id, "state");
+            let allocated = self.stream_registry.allocate(&stream_id);
+            let env = EventEnvelope {
+                envelope_version: ENVELOPE_VERSION,
+                event_id: allocated.event_id,
+                node_id,
+                resource_id,
+                resource_kind,
+                // TODO(plan-c): wire kind versioning.
+                resource_version: 1,
+                stream_id,
+                stream: "state".to_string(),
+                sequence: allocated.sequence,
+                timestamp: time::OffsetDateTime::now_utc(),
+                payload_kind: "resource.state.changed".to_string(),
+                payload_version: 1,
+                payload_schema: None,
+                correlation_id: None,
+                causation_id: None,
+                trace_context: None,
                 data: JsonValue::String(new_state),
-            });
+            };
+            let _ = self.bus.try_publish(env);
         }
 
         Ok(snapshot)

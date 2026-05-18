@@ -40,3 +40,29 @@ fn devices_docs_mention_resource_snapshot() {
         "devices.md should mention the canonical `kind` field"
     );
 }
+
+#[test]
+fn docs_event_envelope_documents_envelope_version_and_policies() {
+    let s = read("docs/event-envelope.md");
+    assert!(s.contains("envelopeVersion"));
+    assert!(s.contains("eventId"));
+    assert!(s.contains("sequence"));
+    assert!(s.contains("Lossless"));
+    assert!(s.contains("DropNewest"));
+    assert!(s.contains("stream-gap"));
+    assert!(s.contains("broadcast_lag"));
+    assert!(
+        !s.contains("`Coalesce`") || s.contains("deferred"),
+        "`Coalesce` must only appear in deferral context"
+    );
+}
+
+#[test]
+fn docs_events_documents_envelope_fields_and_stream_gap() {
+    let s = read("docs/events.md");
+    assert!(s.contains("eventId"));
+    assert!(s.contains("streamId"));
+    assert!(s.contains("sequence"));
+    assert!(s.contains("stream-gap"));
+    assert!(s.contains("slow_consumer"));
+}

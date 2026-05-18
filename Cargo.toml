@@ -61,7 +61,7 @@ redb = "2"
 # Utilities
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 url = { version = "2", features = ["serde"] }
-time = { version = "0.3", features = ["serde", "macros", "formatting"] }
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
 regex = "1"
 backon = "1"
 

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
-use super::core::Core;
+use super::core::{Core, now_ms};
 use super::render::{self, Hrefs};
 use crate::core::TransitionInput;
 use crate::siren::SIREN_CONTENT_TYPE;
@@ -480,6 +480,8 @@ async fn device_post(
 #[derive(Debug, Deserialize)]
 struct EventsQuery {
     topic: Option<String>,
+    #[serde(rename = "outboundCapacity")]
+    outbound_capacity: Option<usize>,
 }
 
 /// `POST /servers/{name}/events/unsubscribe` — protocol-parity route.
@@ -525,22 +527,84 @@ async fn server_events_stream(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("topic: {e}")).into_response(),
     };
-    let sub = state
-        .core
-        .bus
-        .subscribe(pattern, crate::events::SubscribeOpts::default());
+    let sub = state.core.bus.subscribe(
+        pattern,
+        crate::events::SubscribeOpts {
+            outbound_capacity: q.outbound_capacity,
+            ..Default::default()
+        },
+    );
+    let bus_for_guard = state.core.bus.clone();
+    let sub_id = sub.id;
     let mut rx = sub.rx;
+    let mut slow_consumer_rx = sub.slow_consumer_rx;
+    // Drop guard: when the response body is dropped (client
+    // disconnect, axum tear-down, etc.), `_guard.drop()` runs and
+    // eagerly calls `bus.unsubscribe(id)`. Without this, the bus
+    // only prunes the subscription on the next `try_publish` that
+    // notices the closed receiver.
+    struct UnsubOnDrop {
+        bus: crate::events::EventBus,
+        id: crate::events::SubscriptionId,
+    }
+    impl Drop for UnsubOnDrop {
+        fn drop(&mut self) {
+            self.bus.unsubscribe(self.id);
+        }
+    }
     let stream = async_stream::stream! {
-        while let Some(ev) = rx.recv().await {
-            let line = match serde_json::to_string(&serde_json::json!({
-                "topic": ev.topic,
-                "timestamp": ev.timestamp_ms,
-                "data": ev.data,
-            })) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
+        let _guard = UnsubOnDrop { bus: bus_for_guard, id: sub_id };
+        loop {
+            tokio::select! {
+                biased;
+                // A `Lossless` overflow on the bus side fires this
+                // notice. Emit a final structured `stream-gap` line and
+                // close the response so the client sees the contract
+                // (a gap with the cause) instead of an unexplained EOF.
+                notice = &mut slow_consumer_rx => {
+                    if let Ok(n) = notice {
+                        let line = serde_json::to_string(&serde_json::json!({
+                            "type": "stream-gap",
+                            "timestamp": now_ms(),
+                            "streamId": n.stream_id.as_ref().map(|s| s.as_str()),
+                            "lastDeliveredSequence": n.last_delivered_sequence,
+                            "reason": n.reason,
+                            "terminated": true,
+                        }))
+                        .unwrap_or_default();
+                        if !line.is_empty() {
+                            yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
+                        }
+                    }
+                    break;
+                }
+                env = rx.recv() => {
+                    let Some(ev) = env else { break };
+                    let iso = ev
+                        .timestamp
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .ok();
+                    let line = match serde_json::to_string(&serde_json::json!({
+                        "topic": ev.topic(),
+                        "timestamp": ev.timestamp_ms(),
+                        "data": ev.data,
+                        "eventId": ev.event_id.as_str(),
+                        "streamId": ev.stream_id.as_str(),
+                        "sequence": ev.sequence,
+                        "nodeId": ev.node_id.as_str(),
+                        "resourceId": ev.resource_id,
+                        "resourceKind": ev.resource_kind,
+                        "payloadKind": ev.payload_kind,
+                        "payloadVersion": ev.payload_version,
+                        "envelopeVersion": ev.envelope_version,
+                        "isoTimestamp": iso,
+                    })) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
+                }
+            }
         }
     };
     let body = Body::from_stream(stream);

@@ -3,9 +3,23 @@
 #![forbid(unsafe_code)]
 
 mod bus;
+mod envelope;
+mod policy;
+mod replay;
+mod sequencer;
 mod topic;
 mod wire;
 
-pub use bus::{EventBus, SubscribeOpts, Subscription, SubscriptionId};
+pub use bus::{EventBus, REASON_SLOW_CONSUMER, SlowConsumerNotice, Subscription, SubscriptionId};
+pub use envelope::{
+    CausationId, CorrelationId, ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId,
+    TraceContext,
+};
+pub use policy::{
+    DEFAULT_MAX_EVENT_SIZE_BYTES, DEFAULT_OUTBOUND_CAPACITY, OverflowPolicy, PublishError,
+    PublishResult, StreamSafety, SubscribeOpts,
+};
+pub use replay::{DEFAULT_REPLAY_CAPACITY, StreamReplayCache};
+pub use sequencer::{Allocated, StreamRegistry};
 pub use topic::{Segment, TopicParseError, TopicPattern};
-pub use wire::{Event, InboundMessage, OutboundMessage, SubscriptionRef};
+pub use wire::{InboundMessage, OutboundMessage, SubscriptionRef};

@@ -92,6 +92,29 @@ impl PeerStreamHub {
     pub async fn active_streams(&self) -> usize {
         self.inner.lock().await.len()
     }
+
+    /// Refcount for a specific `(peer, topic)` stream. `None` if no
+    /// stream is registered. Test-only — callers should not depend on
+    /// the exact number outside tests.
+    pub async fn refcount(&self, peer: &str, topic: &str) -> Option<usize> {
+        let map = self.inner.lock().await;
+        map.get(&(peer.to_string(), topic.to_string()))
+            .map(|e| e.refcount.load(Ordering::SeqCst))
+    }
+
+    /// Test-only accessor that hands out a clone of the broadcast
+    /// sender. Lets tests inject events directly without going through
+    /// the hub's NDJSON ingest path, which is how lag can be forced
+    /// deterministically.
+    pub async fn broadcast_sender(
+        &self,
+        peer: &str,
+        topic: &str,
+    ) -> Option<broadcast::Sender<Arc<Json>>> {
+        let map = self.inner.lock().await;
+        map.get(&(peer.to_string(), topic.to_string()))
+            .map(|e| e.sender.clone())
+    }
 }
 
 async fn run_stream(

@@ -80,7 +80,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio-tungstenite.workspace = true
 rustls = { workspace = true, default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
 tokio-rustls = { workspace = true, default-features = false, features = ["aws-lc-rs", "tls12"] }
