@@ -272,6 +272,15 @@ impl EventBus {
         // NOT move the slow-consumer oneshot out at snapshot time:
         // concurrent publishers must each be able to observe (and at
         // most one of them claim) a notify on lossless overflow.
+        //
+        // CRITICAL: For limited subscriptions we *claim* the slot here
+        // (decrement `remaining` atomically) so two concurrent
+        // publishers cannot both observe a slot and both deliver past
+        // the configured limit. Decrementing here means a subsequent
+        // `Closed`/`DisconnectLossless` outcome cannot refund the slot
+        // — but at that point the subscription is gone, so the
+        // accounting only matters relative to other publishers
+        // observing the same map state.
         struct Match {
             id: SubscriptionId,
             tx: mpsc::Sender<EventEnvelope>,
@@ -282,10 +291,25 @@ impl EventBus {
         let topic = envelope.topic();
         let mut matches: Vec<Match> = Vec::new();
         {
-            let subs = self.inner.subs.lock().unwrap();
-            for (id, sub) in subs.iter() {
+            let mut subs = self.inner.subs.lock().unwrap();
+            // We may need to drop subscriptions whose quota is already
+            // exhausted; we cannot do that while iterating because the
+            // iterator borrows the map.
+            let mut quota_exhausted: Vec<SubscriptionId> = Vec::new();
+            for (id, sub) in subs.iter_mut() {
                 if !sub.topic.matches_event(&topic, &envelope.data) {
                     continue;
+                }
+                // Claim a delivery slot atomically. A subscription
+                // with `remaining = Some(0)` is already done; skip it
+                // and queue it for removal so a third publisher does
+                // not even attempt it.
+                if let Some(rem) = sub.remaining.as_mut() {
+                    if *rem == 0 {
+                        quota_exhausted.push(*id);
+                        continue;
+                    }
+                    *rem -= 1;
                 }
                 matches.push(Match {
                     id: *id,
@@ -293,6 +317,9 @@ impl EventBus {
                     stream_safety: sub.stream_safety,
                     overflow_policy: sub.overflow_policy,
                 });
+            }
+            for id in quota_exhausted {
+                subs.remove(&id);
             }
         }
 
@@ -327,9 +354,11 @@ impl EventBus {
             outcomes.push((m.id, outcome));
         }
 
-        // Apply outcomes under the lock so the counter decrement, the
-        // slow-consumer notify, and the removal are atomic with
-        // respect to other publishers.
+        // Apply outcomes under the lock so the slow-consumer notify
+        // and the removal are atomic with respect to other publishers.
+        // The `remaining` decrement already happened above when we
+        // claimed the slot — we only remove subscriptions whose quota
+        // is now exhausted.
         let mut result = PublishResult::default();
         {
             let mut subs = self.inner.subs.lock().unwrap();
@@ -340,13 +369,7 @@ impl EventBus {
                         if let Some(sub) = subs.get_mut(&id) {
                             sub.last_delivered =
                                 Some((envelope.stream_id.clone(), envelope.sequence));
-                            let should_remove = if let Some(rem) = sub.remaining.as_mut() {
-                                *rem = rem.saturating_sub(1);
-                                *rem == 0
-                            } else {
-                                false
-                            };
-                            if should_remove {
+                            if sub.remaining == Some(0) {
                                 subs.remove(&id);
                             }
                         }

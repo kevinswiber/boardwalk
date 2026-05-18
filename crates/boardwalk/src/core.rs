@@ -196,7 +196,8 @@ pub enum TransitionOutcome {
 }
 
 /// Resource kind name (e.g. `"led"`, `"job"`). Currently a string;
-/// Plan D may swap this for a richer type without renaming usage.
+/// A future revision may swap this for a richer type without
+/// renaming usage.
 pub type ResourceKind = String;
 
 /// Builder accepted by `Device::config`.
@@ -230,14 +231,21 @@ impl DeviceConfig {
     pub fn when(&mut self, state: impl Into<StateName>, allow: &[&str]) -> &mut Self {
         let s = state.into();
         let names: Vec<String> = allow.iter().map(|s| s.to_string()).collect();
-        // Ensure transitions are also recorded as known.
+        // Ensure every transition referenced from `.when` exists in
+        // the spec map, and that its `allowed_states` includes `s` so
+        // the snapshot/render layer can answer "which states permit
+        // this transition?" from `TransitionSpec` alone.
         for t in &names {
-            self.transitions
+            let entry = self
+                .transitions
                 .entry(t.clone())
                 .or_insert_with(|| TransitionSpec {
                     name: t.clone(),
                     ..Default::default()
                 });
+            if !entry.allowed_states.contains(&s) {
+                entry.allowed_states.push(s.clone());
+            }
         }
         self.state_transitions.insert(s, names);
         self

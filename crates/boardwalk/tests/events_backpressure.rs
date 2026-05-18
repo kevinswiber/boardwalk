@@ -32,6 +32,47 @@ fn envelope(seq: u64) -> EventEnvelope {
     }
 }
 
+/// With `limit: Some(1)`, two concurrent publishers must not both
+/// enqueue an envelope into the subscription's outbound channel. The
+/// slot is claimed under the bus lock, so at most one publisher
+/// wins; the other observes the exhausted quota and skips.
+#[tokio::test]
+async fn concurrent_publish_respects_subscription_limit() {
+    let bus = EventBus::with_registry(StreamRegistry::new());
+    let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
+    let sub = bus.subscribe(
+        pattern,
+        SubscribeOpts {
+            outbound_capacity: Some(16),
+            limit: Some(1),
+            ..Default::default()
+        },
+    );
+
+    let bus_a = bus.clone();
+    let bus_b = bus.clone();
+    let (a, b) = tokio::join!(
+        async move { bus_a.publish(envelope(1)).await },
+        async move { bus_b.publish(envelope(2)).await },
+    );
+
+    let total_delivered = a.unwrap().delivered + b.unwrap().delivered;
+    assert_eq!(
+        total_delivered, 1,
+        "limit=1 must permit exactly one delivery across concurrent publishers"
+    );
+
+    // Drain the subscriber's mpsc channel; it should hold one
+    // envelope and nothing else.
+    let mut rx = sub.rx;
+    let first = rx.try_recv().expect("one envelope was delivered");
+    assert!(matches!(first.sequence, 1 | 2));
+    assert!(
+        rx.try_recv().is_err(),
+        "no second envelope should have leaked past the limit"
+    );
+}
+
 #[tokio::test]
 async fn lossy_backpressure_awaits_capacity_instead_of_dropping() {
     let bus = EventBus::with_registry(StreamRegistry::new());

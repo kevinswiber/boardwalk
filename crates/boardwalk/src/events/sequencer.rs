@@ -77,8 +77,8 @@ impl StreamRegistry {
             .cloned()
     }
 
-    /// Drop a reverse-index entry. Called by the replay cache (Task
-    /// 6.1) when the corresponding envelope is evicted from its ring.
+    /// Drop a reverse-index entry. Called by the replay cache when
+    /// the corresponding envelope is evicted from its ring.
     pub fn evict(&self, event_id: &EventId) {
         self.inner.by_event_id.lock().unwrap().remove(event_id);
     }

@@ -193,8 +193,8 @@ pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot, cfg: &DeviceConf
         ));
 
     // Actions for currently-allowed transitions. Field shapes come
-    // from DeviceConfig because the snapshot doesn't carry FieldSpec
-    // (Plan A scope).
+    // from `DeviceConfig` because the snapshot does not yet carry
+    // `FieldSpec`.
     for t_name in snap
         .transitions
         .iter()

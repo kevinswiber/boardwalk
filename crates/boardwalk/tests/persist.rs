@@ -83,8 +83,8 @@ impl Device for NamedLed {
 /// Pins today's persistent identity key: `(type, name)`. Two devices
 /// of the same type but different names get two distinct stable ids,
 /// and each restart reuses the same id only for its matching name.
-/// Plan E owns repository expansion beyond this identity; this snapshot
-/// must update when the key changes.
+/// A future repository expansion may change the key beyond
+/// `(type, name)`; this snapshot must update when that happens.
 #[tokio::test]
 async fn current_registry_identity_is_type_and_name() {
     let dir = tempfile::tempdir().unwrap();

@@ -319,6 +319,33 @@ async fn one_device(led: AdapterLed) -> Arc<boardwalk::http::Core> {
     b.build()
 }
 
+/// Pins that `DeviceConfig::when(state, &[transitions])` propagates
+/// each declaring state onto the transition's `allowed_states`, so the
+/// snapshot's `allowedStates` array agrees with the state-gating
+/// table. Without this, the legacy `when` path silently rendered
+/// `allowedStates: []`.
+#[tokio::test]
+async fn adapter_populates_allowed_states_from_when() {
+    let core = one_device(AdapterLed::default()).await;
+    let d = core.list_devices().await.into_iter().next().unwrap();
+    let snap = d.to_resource_snapshot("hub");
+
+    let v = snap.to_query_value();
+    let transitions = v["transitions"].as_array().expect("transitions array");
+    let by_name: std::collections::BTreeMap<&str, &Json> = transitions
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t))
+        .collect();
+    assert_eq!(
+        by_name["turn-on"]["allowedStates"],
+        serde_json::json!(["off"])
+    );
+    assert_eq!(
+        by_name["turn-off"]["allowedStates"],
+        serde_json::json!(["on"])
+    );
+}
+
 #[tokio::test]
 async fn adapter_maps_basic_fields() {
     let core = one_device(AdapterLed::default()).await;

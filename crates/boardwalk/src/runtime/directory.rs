@@ -42,7 +42,7 @@ impl ResourceDirectory {
         &self.entries
     }
 
-    #[allow(dead_code)] // used by phase 5 resource routes
+    #[allow(dead_code)] // wired in by the resource HTTP routes
     pub(crate) fn get_by_id(&self, id: &str) -> Option<Arc<Entry>> {
         self.by_id.get(id).map(|i| self.entries[*i].clone())
     }
