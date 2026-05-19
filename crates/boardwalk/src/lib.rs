@@ -19,7 +19,7 @@ pub mod server;
 pub mod siren;
 pub mod tunnel;
 
-pub use boardwalk_macros::{device, transition};
+pub use boardwalk_macros::{actor, device, transition};
 
 // Curated re-exports — the surface most users want at the crate root.
 pub use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};

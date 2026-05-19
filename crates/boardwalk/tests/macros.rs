@@ -1,4 +1,7 @@
-//! Smoke test for the #[device] macro.
+//! Smoke test for the legacy `#[device]` macro.
+//!
+//! New code should prefer `#[actor]`; see `tests/actor_macros.rs`. This
+//! file pins the legacy surface until the public Device API is deleted.
 
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 
