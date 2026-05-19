@@ -12,7 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 boardwalk = { path = "../../crates/boardwalk" }
-boardwalk-mock-led = { path = "../../drivers/boardwalk-mock-led" }
+boardwalk-mock-led = { path = "boardwalk-mock-led" }
 tokio.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

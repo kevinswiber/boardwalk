@@ -39,7 +39,7 @@ impl PeerStreamHub {
     }
 
     /// Subscribe to (peer, topic) on the shared stream. Spawns the
-    /// per-(peer, topic) driver task if it doesn't already exist.
+    /// per-(peer, topic) upstream stream task if it doesn't already exist.
     pub async fn subscribe(
         &self,
         peer: &str,
@@ -70,7 +70,7 @@ impl PeerStreamHub {
     }
 
     /// Decrement the refcount for (peer, topic). When it hits zero,
-    /// abort the driver task and forget the stream.
+    /// abort the upstream stream task and forget the stream.
     pub async fn unsubscribe(&self, peer: &str, topic: &str) {
         let key = (peer.to_string(), topic.to_string());
         let mut map = self.inner.lock().await;

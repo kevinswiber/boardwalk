@@ -3,9 +3,9 @@ resolver = "3"
 members = [
     "crates/boardwalk",
     "crates/boardwalk-macros",
-    "drivers/boardwalk-mock-led",
-    "examples/tunnel-poc",
     "examples/hello-led",
+    "examples/hello-led/boardwalk-mock-led",
+    "examples/tunnel-poc",
 ]
 
 [workspace.package]
@@ -17,7 +17,7 @@ authors = ["Kevin Swiber <kevin@swiber.dev>"]
 homepage = "https://github.com/kevinswiber/boardwalk"
 repository = "https://github.com/kevinswiber/boardwalk"
 # Workspace default. Each library crate that ships flips this on
-# explicitly with `publish = true`. Examples, drivers, and other
+# explicitly with `publish = true`. Examples, fixtures, and other
 # in-tree-only members inherit `publish = false` and stay unpublished.
 publish = false
 

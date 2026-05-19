@@ -12,7 +12,7 @@ use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use serde_json::json;
 use uuid::Uuid;
 
-/// Test driver that publishes `n` events to one stream the moment
+/// Test device implementation that publishes `n` events to one stream the moment
 /// `on_start` is invoked.
 struct TestPublishOnStart {
     type_: String,
@@ -64,7 +64,7 @@ fn empty_core() -> Arc<Core> {
 }
 
 #[tokio::test]
-async fn driver_published_event_carries_envelope_minted_at_source() {
+async fn device_published_event_carries_envelope_minted_at_source() {
     let core = empty_core();
     let mut sub = core.bus.subscribe(
         TopicPattern::parse("hub/test-device/*/telemetry").unwrap(),

@@ -1,6 +1,6 @@
 [package]
 name = "boardwalk-macros"
-description = "Proc macros for ergonomic Boardwalk drivers"
+description = "Proc macros for ergonomic Boardwalk actors and legacy devices"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

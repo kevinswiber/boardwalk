@@ -2,7 +2,7 @@
 //!
 //! This crate defines the abstract building blocks (Device, Scout, App,
 //! transitions, streams) without committing to any transport or storage
-//! backend. Drivers depend only on this crate.
+//! backend. Device implementations depend only on this crate.
 
 #![forbid(unsafe_code)]
 
@@ -51,7 +51,7 @@ impl TransitionInput {
     }
 }
 
-/// What a driver implements. Real wiring happens via `DeviceConfig`.
+/// What a legacy device implementation provides. Real wiring happens via `DeviceConfig`.
 pub trait Device: Send + Sync + 'static {
     /// Called once at registration. Sets type, initial state, allowed
     /// transitions per state, and stream metadata.
@@ -75,9 +75,9 @@ pub trait Device: Send + Sync + 'static {
         input: TransitionInput,
     ) -> BoxFuture<'a, Result<(), DeviceError>>;
 
-    /// Called once after registration. Drivers spawn background tasks
+    /// Called once after registration. Device implementations spawn background tasks
     /// here (e.g. periodic telemetry) using `ctx.publish` to push to
-    /// declared streams. `&self` — drivers needing mutable state
+    /// declared streams. `&self` — implementations needing mutable state
     /// during these background tasks use interior mutability.
     fn on_start(&self, _ctx: DeviceCtx) {}
 }
@@ -344,7 +344,7 @@ pub struct DeviceProperties {
 
 // -- Future-pin helper -----------------------------------------------------
 
-/// `BoxFuture` re-export so drivers don't need a futures dependency.
+/// `BoxFuture` re-export so device implementations don't need a futures dependency.
 pub type DynFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// Build a `transition` method body that dispatches to inherent

@@ -1294,7 +1294,7 @@ mod tests {
         let err = job
             .transition("advance", empty_input())
             .await
-            .expect_err("advance is only a direct test driver");
+            .expect_err("advance is only a direct test helper");
         match err {
             TransitionError::NotAllowed(message) => assert!(message.contains("advance")),
             other => panic!("expected NotAllowed, got {other:?}"),

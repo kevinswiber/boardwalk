@@ -23,53 +23,12 @@ tokio = { version = "1", features = ["full"] }
 
 ## Quick start
 
-```rust,no_run
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError};
-
-#[derive(Default)]
-struct Led { on: bool }
-
-impl Led {
-    async fn turn_on(&mut self) -> Result<(), DeviceError> {
-        self.on = true;
-        Ok(())
-    }
-    async fn turn_off(&mut self) -> Result<(), DeviceError> {
-        self.on = false;
-        Ok(())
-    }
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
-    fn state(&self) -> &str { if self.on { "on" } else { "off" } }
-
-    boardwalk::transitions! {
-        "turn-on" => turn_on,
-        "turn-off" => turn_off,
-    }
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Boardwalk::new()
-        .name("hub")
-        .use_device(Led::default())
-        .listen("127.0.0.1:1337".parse()?)
-        .await
-}
-```
+From this workspace, the LED example is a small resource/actor fixture.
+It registers an actor, queries it through the runtime handle, invokes a
+transition, and prints the explicitly published state event.
 
 ```sh
-curl http://127.0.0.1:1337/servers/hub
-DEV=$(curl -s http://127.0.0.1:1337/servers/hub | jq -r '.entities[0].properties.id')
-curl -d 'action=turn-on' http://127.0.0.1:1337/servers/hub/devices/$DEV
+cargo run -p hello-led
 ```
 
 ## What's in the box
@@ -133,7 +92,7 @@ live alongside non-macro code) and are re-exported by `boardwalk`.
 ## Docs
 
 - [Getting started](docs/getting-started.md) — install, write a
-  driver, run the server, talk to it.
+  device implementation, run the server, talk to it.
 - [Devices](docs/devices.md) — `Device` trait, properties, streams,
   scouts, persistence.
 - [Peers](docs/peers.md) — reverse-tunnel hub ↔ cloud setup.

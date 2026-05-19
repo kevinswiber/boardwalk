@@ -13,7 +13,7 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-## A minimal driver
+## A minimal device
 
 A device is a state machine plus a name, type, and a set of transitions
 allowed per state. The `Device` trait below is everything you need to
