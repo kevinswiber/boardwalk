@@ -8,5 +8,6 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "127.0.0.1:4000".into())
         .parse::<SocketAddr>()?;
 
+    tracing::info!(%addr, "job runner example listening");
     boardwalk_job_runner_example::serve(addr).await
 }

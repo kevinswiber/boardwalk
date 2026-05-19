@@ -1,8 +1,13 @@
+//! Runnable job-runner example built on Boardwalk's resource and actor runtime.
+//!
+//! The example owns a tiny HTTP adapter so the flow can be exercised end to end.
+//! Jobs are advanced by a spawned task and short `tokio::time::sleep` intervals;
+//! production schedulers should use an explicit queue, tick, and shutdown boundary.
+
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -15,8 +20,11 @@ use boardwalk::core::{
     Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSpec, StreamKind, StreamSpec,
     TransitionInput, TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
-use boardwalk::events::{EventEnvelope, NodeId, StreamId, SubscribeOpts, TopicPattern};
+use boardwalk::events::{
+    EventEnvelope, NodeId, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern,
+};
 use boardwalk::http::{ResourceSnapshot, StreamSpec as SnapshotStreamSpec, TransitionAffordance};
+use boardwalk::query::FieldPath;
 use boardwalk::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, NodeHandle, Resource, ResourceCtx,
     ResourceError, ResourceProxy, TransitionCtx, TransitionError,
@@ -33,8 +41,7 @@ const NODE_NAME: &str = "runner";
 const FIXED_SUBMITTED_AT: &str = "2026-01-01T00:00:00Z";
 const FIXED_STARTED_AT: &str = "2026-01-01T00:00:01Z";
 const FIXED_FINISHED_AT: &str = "2026-01-01T00:00:02Z";
-
-static SHELL_COMMAND_EXECUTIONS: AtomicUsize = AtomicUsize::new(0);
+const STREAM_OUTBOUND_CAPACITY: usize = 16;
 
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
     let node = build_node().await?;
@@ -43,6 +50,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[doc(hidden)]
 pub async fn spawn_test_server() -> anyhow::Result<RunningExample> {
     let node = build_node().await?;
     let app = router(node.clone());
@@ -55,16 +63,14 @@ pub async fn spawn_test_server() -> anyhow::Result<RunningExample> {
     Ok(RunningExample { addr, server })
 }
 
-pub fn shell_command_execution_count() -> usize {
-    SHELL_COMMAND_EXECUTIONS.load(Ordering::SeqCst)
-}
-
+#[doc(hidden)]
 pub struct RunningExample {
     addr: SocketAddr,
     server: JoinHandle<()>,
 }
 
 impl RunningExample {
+    #[doc(hidden)]
     pub fn url(&self, path: &str) -> String {
         if path.starts_with('/') {
             format!("http://{}{}", self.addr, path)
@@ -73,7 +79,8 @@ impl RunningExample {
         }
     }
 
-    pub fn encoded_queue_id(&self) -> &'static str {
+    #[doc(hidden)]
+    pub fn queue_id(&self) -> &'static str {
         QUEUE_ID
     }
 }
@@ -85,7 +92,6 @@ impl Drop for RunningExample {
 }
 
 async fn build_node() -> anyhow::Result<Arc<Node>> {
-    SHELL_COMMAND_EXECUTIONS.store(0, Ordering::SeqCst);
     let node = Arc::new(NodeBuilder::new(NODE_NAME).build());
     node.register_with_id(QUEUE_ID.into(), JobQueue::new(QUEUE_NAME))
         .await
@@ -188,7 +194,7 @@ async fn resource_stream_get(
         Ok(topic) => state
             .node
             .events()
-            .subscribe(topic, SubscribeOpts::default()),
+            .subscribe(topic, stream_subscribe_opts(&stream)),
         Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
     };
 
@@ -207,6 +213,21 @@ async fn resource_stream_get(
         HeaderValue::from_static("application/x-ndjson"),
     );
     response
+}
+
+fn stream_subscribe_opts(stream: &str) -> SubscribeOpts {
+    let slow_consumer_policy = match stream {
+        "progress" => SlowConsumerPolicy::Coalesce {
+            key_path: FieldPath::parse("data.coalesceKey"),
+        },
+        "logs" | "lifecycle" => SlowConsumerPolicy::Backpressure,
+        _ => SlowConsumerPolicy::Disconnect,
+    };
+    SubscribeOpts {
+        limit: None,
+        outbound_capacity: Some(STREAM_OUTBOUND_CAPACITY),
+        slow_consumer_policy,
+    }
 }
 
 async fn snapshot(node: &Arc<Node>, id: &str) -> Result<ResourceSnapshot, StatusCode> {
@@ -299,7 +320,7 @@ fn event_line(event: &EventEnvelope) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum FakeCommand {
+enum FakeCommand {
     SuccessAfterTicks { ticks: u32 },
     FailAtStep { step: u32 },
 }
@@ -346,23 +367,23 @@ impl JobState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubmitJob {
-    pub command: FakeCommand,
+struct SubmitJob {
+    command: FakeCommand,
     #[serde(default)]
-    pub labels: BTreeMap<String, String>,
+    labels: BTreeMap<String, String>,
     #[serde(default)]
-    pub owner: Option<String>,
+    owner: Option<String>,
     #[serde(default)]
-    pub priority: u8,
+    priority: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JobHandle {
-    pub job_id: String,
-    pub href: String,
-    pub state: String,
-    pub streams: JobStreams,
+struct JobHandle {
+    job_id: String,
+    href: String,
+    state: String,
+    streams: JobStreams,
 }
 
 impl JobHandle {
@@ -387,10 +408,10 @@ impl JobHandle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JobStreams {
-    pub lifecycle: String,
-    pub progress: String,
-    pub logs: String,
+struct JobStreams {
+    lifecycle: String,
+    progress: String,
+    logs: String,
 }
 
 impl JobStreams {
@@ -990,5 +1011,46 @@ fn retry_spec() -> TransitionSpec {
 #[derive(Debug, Default, Deserialize)]
 struct RetryJob {
     #[allow(dead_code)]
+    #[serde(default)]
     reset_logs: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_starts() {
+        let runner = spawn_test_server()
+            .await
+            .expect("test server should bind and build node");
+        assert_eq!(runner.queue_id(), QUEUE_ID);
+        assert!(runner.url("/resources").starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn stream_subscribe_opts_pin_slow_consumer_policy() {
+        let progress = stream_subscribe_opts("progress");
+        assert_eq!(progress.limit, None);
+        assert_eq!(progress.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
+        assert!(matches!(
+            progress.slow_consumer_policy,
+            SlowConsumerPolicy::Coalesce { ref key_path }
+                if key_path == &FieldPath::parse("data.coalesceKey")
+        ));
+
+        let logs = stream_subscribe_opts("logs");
+        assert_eq!(logs.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
+        assert!(matches!(
+            logs.slow_consumer_policy,
+            SlowConsumerPolicy::Backpressure
+        ));
+
+        let lifecycle = stream_subscribe_opts("lifecycle");
+        assert_eq!(lifecycle.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
+        assert!(matches!(
+            lifecycle.slow_consumer_policy,
+            SlowConsumerPolicy::Backpressure
+        ));
+    }
 }
