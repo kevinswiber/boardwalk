@@ -104,6 +104,23 @@ impl ResourceProxy {
             .transition_with_ctx(ctx, name, input)
             .await
     }
+
+    /// Variant of `transition` that lets callers carry their own
+    /// `TransitionCtx`. Apps that have already lifted `RequestCtx`
+    /// from an inbound request (e.g. the HTTP boundary) use this so
+    /// emitted envelopes pick up the request's `traceparent` /
+    /// `x-request-id` and the context's minted `CommandId`.
+    pub async fn transition_with_ctx(
+        &self,
+        ctx: TransitionCtx,
+        name: &str,
+        input: TransitionInput,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        self.entry
+            .handle
+            .transition_with_ctx(ctx, name, input)
+            .await
+    }
 }
 
 /// Alias kept for symmetry with the trait split: an `ActorProxy` is a

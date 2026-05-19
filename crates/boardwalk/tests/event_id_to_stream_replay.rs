@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::{Core, CoreBuilder};
+use boardwalk::runtime::RequestCtx;
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use uuid::Uuid;
@@ -68,9 +69,14 @@ async fn event_id_resolves_to_stream_via_registry() {
         SubscribeOpts::default(),
     );
 
-    core.run_transition(&id, "turn-on", TransitionInput::default())
-        .await
-        .unwrap();
+    core.run_transition(
+        &id,
+        "turn-on",
+        TransitionInput::default(),
+        RequestCtx::default(),
+    )
+    .await
+    .unwrap();
 
     let env = sub.rx.recv().await.expect("envelope delivered");
     assert_eq!(
@@ -87,9 +93,14 @@ async fn event_id_then_replay_cache_returns_origin_envelope() {
         SubscribeOpts::default(),
     );
 
-    core.run_transition(&id, "turn-on", TransitionInput::default())
-        .await
-        .unwrap();
+    core.run_transition(
+        &id,
+        "turn-on",
+        TransitionInput::default(),
+        RequestCtx::default(),
+    )
+    .await
+    .unwrap();
 
     let env = sub.rx.recv().await.unwrap();
     let stream_id = core

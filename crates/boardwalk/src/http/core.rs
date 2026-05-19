@@ -8,7 +8,10 @@ use uuid::Uuid;
 use crate::core::{
     Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink, TransitionInput,
 };
-use crate::events::{ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry};
+use crate::events::{
+    ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry, TraceContext,
+};
+use crate::runtime::{CommandId, EmissionContext, EnvelopePlan, RequestCtx, publish_envelope};
 
 /// Runtime owned by the HTTP layer (and reused by the peer tunnel
 /// handler). Holds the registered devices and the event bus.
@@ -237,12 +240,16 @@ impl Core {
 
     /// Run a transition. Validates that the transition is allowed in the
     /// current state, dispatches, and publishes a state event if the
-    /// state changed (and the device monitors `state`).
+    /// state changed (and the device monitors `state`). `request`
+    /// carries the request's W3C trace context and `x-request-id` so
+    /// the resulting envelope can populate `correlationId`,
+    /// `causationId` (from a fresh `CommandId`), and `traceContext`.
     pub async fn run_transition(
         &self,
         id: &DeviceId,
         name: &str,
         input: TransitionInput,
+        request: RequestCtx,
     ) -> Result<DeviceSnapshot, DeviceError> {
         let guard = self.devices.read().await;
         let handle = guard
@@ -270,6 +277,7 @@ impl Core {
             )));
         }
 
+        let command_id = CommandId::new();
         if let Err(e) = dev.transition(name, input).await {
             tracing::warn!(
                 device = %handle.id,
@@ -302,29 +310,29 @@ impl Core {
             let node_id = NodeId::new(self.name.clone());
             let resource_id = handle.id.to_string();
             let resource_kind = handle.type_().to_string();
-            let stream_id = StreamId::for_resource(&node_id, &resource_id, "state");
-            let allocated = self.stream_registry.allocate(&stream_id);
-            let env = EventEnvelope {
-                envelope_version: ENVELOPE_VERSION,
-                event_id: allocated.event_id,
-                node_id,
-                resource_id,
-                resource_kind,
-                // Resource versioning is not yet wired in; emitted as 1 for now.
-                resource_version: 1,
-                stream_id,
-                stream: "state".to_string(),
-                sequence: allocated.sequence,
-                timestamp: time::OffsetDateTime::now_utc(),
-                payload_kind: "resource.state.changed".to_string(),
-                payload_version: 1,
-                payload_schema: None,
-                correlation_id: None,
-                causation_id: None,
-                trace_context: None,
-                data: JsonValue::String(new_state),
-            };
-            let _ = self.bus.try_publish(env);
+            let trace = request.traceparent().map(|tp| TraceContext {
+                traceparent: tp.to_string(),
+                tracestate: request.tracestate().map(String::from),
+            });
+            let _ = publish_envelope(
+                &self.bus,
+                &self.stream_registry,
+                EnvelopePlan {
+                    node_id: &node_id,
+                    resource_id: &resource_id,
+                    resource_kind: &resource_kind,
+                    stream: "state",
+                    payload_kind: "resource.state.changed",
+                    payload_version: 1,
+                    data: JsonValue::String(new_state),
+                },
+                EmissionContext {
+                    correlation: request.request_id(),
+                    causation: Some(command_id.as_str()),
+                    trace,
+                },
+            )
+            .await;
         }
 
         Ok(snapshot)

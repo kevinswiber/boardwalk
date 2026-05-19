@@ -154,8 +154,8 @@ async fn post_disallowed_transition_returns_409() {
     assert_eq!(resp.status(), 409);
 }
 
-/// Survivor characterization for the current form-url-encoded
-/// transition path and the envelope it mints.
+/// Survivor characterization for the form-url-encoded transition
+/// path and the envelope it mints.
 ///
 /// Pins three rules together so each is renamed deliberately later:
 ///   * `POST /servers/hub/devices/{id}` with
@@ -164,9 +164,9 @@ async fn post_disallowed_transition_returns_409() {
 ///   * the bus emits one envelope with `payloadKind ==
 ///     "resource.state.changed"`, `stream == "state"`, and the legacy
 ///     topic `hub/led/{id}/state`,
-///   * `correlationId`, `causationId`, and `traceContext` are all
-///     absent — the context-publish work that populates them will
-///     flip this snapshot.
+///   * `causationId` is always populated (a fresh `CommandId` is
+///     minted per call) while `correlationId` and `traceContext`
+///     remain absent when no request headers were sent.
 #[tokio::test]
 async fn current_form_transition_returns_device_siren_and_state_event() {
     let (addr, core, _h) = boot().await;
@@ -207,15 +207,19 @@ async fn current_form_transition_returns_device_siren_and_state_event() {
     assert_eq!(env.topic(), topic);
     assert!(
         env.correlation_id.is_none(),
-        "correlationId is unpopulated today; the context-publish work will fill it"
+        "correlationId should be absent when no x-request-id was sent"
     );
+    let causation = env
+        .causation_id
+        .as_ref()
+        .expect("causationId is minted per form-route call");
     assert!(
-        env.causation_id.is_none(),
-        "causationId is unpopulated today; the context-publish work will fill it"
+        !causation.0.is_empty(),
+        "causation_id carries the minted CommandId"
     );
     assert!(
         env.trace_context.is_none(),
-        "traceContext is unpopulated today; the context-publish work will fill it"
+        "traceContext should be absent when no traceparent was sent"
     );
 }
 

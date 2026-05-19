@@ -15,6 +15,7 @@ mod resource;
 
 pub use actor::{Actor, ActorCtx, ActorError, TransitionCtx, TransitionError};
 pub use context::{CommandId, RequestCtx};
+pub(crate) use context::{EmissionContext, EnvelopePlan, publish_envelope};
 pub use directory::ResourceDirectory;
 pub use executor::{ActorHandle, NodePolicy, PendingTransition};
 pub use handle::{ActorProxy, NodeHandle, NodeHandleError, ResourceProxy};

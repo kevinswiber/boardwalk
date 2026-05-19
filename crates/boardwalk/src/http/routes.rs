@@ -15,6 +15,7 @@ use uuid::Uuid;
 use super::core::{Core, now_ms};
 use super::render::{self, Hrefs};
 use crate::core::TransitionInput;
+use crate::runtime::RequestCtx;
 use crate::siren::SIREN_CONTENT_TYPE;
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
@@ -460,7 +461,11 @@ async fn device_post(
         None => return (StatusCode::BAD_REQUEST, "missing `action` field").into_response(),
     };
     let input = TransitionInput { fields: map };
-    match core.run_transition(&id, &action_name, input).await {
+    let request_ctx = RequestCtx::from_headers(&headers);
+    match core
+        .run_transition(&id, &action_name, input, request_ctx)
+        .await
+    {
         Ok(snap) => {
             let rsnap = snap.to_resource_snapshot(&core.name);
             siren_response(render::render_device(&h, &rsnap, &snap.config))

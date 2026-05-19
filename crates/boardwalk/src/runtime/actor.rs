@@ -3,10 +3,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::context::{CommandId, RequestCtx};
+use serde_json::Value as JsonValue;
+
+use super::context::{CommandId, EmissionContext, EnvelopePlan, Publisher, RequestCtx};
 use super::node::Node;
 use super::resource::{DynFuture, Resource, ResourceError};
 use crate::core::{TransitionInput, TransitionOutcome};
+use crate::events::{NodeId, PublishError, TraceContext};
 
 /// Per-transition context. Mints a fresh `CommandId` on construction
 /// and carries the request correlation so envelopes published in the
@@ -20,6 +23,10 @@ pub struct TransitionCtx {
     request: RequestCtx,
     node_id: String,
     node: Option<Arc<Node>>,
+    /// Identity of the actor servicing this transition. The executor
+    /// populates it before calling `Actor::transition` so the handler
+    /// can `publish` without rebuilding the resource address itself.
+    actor: Option<ActorCtx>,
 }
 
 impl std::fmt::Debug for TransitionCtx {
@@ -29,6 +36,7 @@ impl std::fmt::Debug for TransitionCtx {
             .field("request", &self.request)
             .field("node_id", &self.node_id)
             .field("node_attached", &self.node.is_some())
+            .field("actor", &self.actor)
             .finish()
     }
 }
@@ -40,6 +48,7 @@ impl TransitionCtx {
             request,
             node_id: node.into(),
             node: None,
+            actor: None,
         }
     }
 
@@ -52,12 +61,21 @@ impl TransitionCtx {
             request,
             node_id,
             node: Some(node),
+            actor: None,
         }
     }
 
     /// Test-only constructor used by trait-shape compile tests.
     pub fn new_test() -> Self {
         Self::new(RequestCtx::default(), "test")
+    }
+
+    /// Attach actor identity so `publish` can build envelopes addressed
+    /// to the resource servicing this transition. Crate-private: only
+    /// the executor calls this on its way to invoking the handler.
+    pub(crate) fn with_actor(mut self, actor: ActorCtx) -> Self {
+        self.actor = Some(actor);
+        self
     }
 
     pub fn command_id(&self) -> &CommandId {
@@ -83,6 +101,55 @@ impl TransitionCtx {
             .await
             .map_err(TransitionError::from)
     }
+
+    /// Publish an envelope on `stream` for this transition's resource.
+    /// Populates `correlationId` from the inbound `x-request-id`,
+    /// `causationId` from the minted `CommandId`, and `traceContext`
+    /// from `traceparent` / `tracestate`. Returns `Internal` if the
+    /// executor did not attach actor identity (only possible on
+    /// test-only contexts that bypass the runtime).
+    pub async fn publish(
+        &self,
+        stream: &str,
+        payload_kind: &str,
+        payload_version: u32,
+        data: JsonValue,
+    ) -> Result<(), TransitionError> {
+        let actor = self.actor.as_ref().ok_or_else(|| {
+            TransitionError::Internal("TransitionCtx has no actor identity".into())
+        })?;
+        let publisher = actor.publisher.as_ref().ok_or_else(|| {
+            TransitionError::Internal("ActorCtx has no publisher attached".into())
+        })?;
+        let trace = self.request.traceparent().map(|tp| TraceContext {
+            traceparent: tp.to_string(),
+            tracestate: self.request.tracestate().map(String::from),
+        });
+        let node_id = NodeId::new(actor.node.clone());
+        publisher
+            .publish(
+                EnvelopePlan {
+                    node_id: &node_id,
+                    resource_id: &actor.resource_id,
+                    resource_kind: &actor.resource_kind,
+                    stream,
+                    payload_kind,
+                    payload_version,
+                    data,
+                },
+                EmissionContext {
+                    correlation: self.request.request_id(),
+                    causation: Some(self.command_id.as_str()),
+                    trace,
+                },
+            )
+            .await
+            .map_err(transition_publish_error)
+    }
+}
+
+fn transition_publish_error(err: PublishError) -> TransitionError {
+    TransitionError::Internal(format!("publish failed: {err}"))
 }
 
 impl From<ResourceError> for TransitionError {
@@ -98,12 +165,29 @@ impl From<ResourceError> for TransitionError {
 /// Per-actor lifecycle context. Carries the node id, the resource id
 /// assigned by the runtime, the kind, and the labels so the actor can
 /// reason about its identity without reaching into HTTP state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ActorCtx {
-    node: String,
-    resource_id: String,
-    resource_kind: String,
-    labels: BTreeMap<String, String>,
+    pub(crate) node: String,
+    pub(crate) resource_id: String,
+    pub(crate) resource_kind: String,
+    pub(crate) labels: BTreeMap<String, String>,
+    /// Bus + registry attached by the runtime so `publish` can mint
+    /// envelopes through the shared `StreamRegistry`. `None` for
+    /// hand-built contexts (test fixtures); `publish` returns
+    /// `Internal` in that case.
+    pub(crate) publisher: Option<Publisher>,
+}
+
+impl std::fmt::Debug for ActorCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorCtx")
+            .field("node", &self.node)
+            .field("resource_id", &self.resource_id)
+            .field("resource_kind", &self.resource_kind)
+            .field("labels", &self.labels)
+            .field("publisher_attached", &self.publisher.is_some())
+            .finish()
+    }
 }
 
 impl ActorCtx {
@@ -118,7 +202,17 @@ impl ActorCtx {
             resource_id: resource_id.into(),
             resource_kind: resource_kind.into(),
             labels,
+            publisher: None,
         }
+    }
+
+    /// Attach a publisher so `publish` (and `TransitionCtx::publish`
+    /// for any clone of this context) can mint envelopes through the
+    /// shared registry. Crate-private: only the node sets this when
+    /// spawning the actor.
+    pub(crate) fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     /// Test-only constructor used by lifecycle-shape compile tests.
@@ -137,6 +231,39 @@ impl ActorCtx {
     }
     pub fn labels(&self) -> &BTreeMap<String, String> {
         &self.labels
+    }
+
+    /// Publish an envelope on `stream` for this actor. Lifecycle
+    /// emissions have no inbound request, so `correlationId`,
+    /// `causationId`, and `traceContext` are all left `None`. Returns
+    /// `Internal` if the runtime did not attach a publisher.
+    pub async fn publish(
+        &self,
+        stream: &str,
+        payload_kind: &str,
+        payload_version: u32,
+        data: JsonValue,
+    ) -> Result<(), ActorError> {
+        let publisher = self
+            .publisher
+            .as_ref()
+            .ok_or_else(|| ActorError::Internal("ActorCtx has no publisher attached".into()))?;
+        let node_id = NodeId::new(self.node.clone());
+        publisher
+            .publish(
+                EnvelopePlan {
+                    node_id: &node_id,
+                    resource_id: &self.resource_id,
+                    resource_kind: &self.resource_kind,
+                    stream,
+                    payload_kind,
+                    payload_version,
+                    data,
+                },
+                EmissionContext::default(),
+            )
+            .await
+            .map_err(|e| ActorError::Internal(format!("publish failed: {e}")))
     }
 }
 

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::core::Core;
 use crate::core::{Device, DeviceConfig, DeviceError, DeviceId, TransitionInput};
+use crate::runtime::RequestCtx;
 
 pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -251,7 +252,7 @@ impl DeviceProxy {
     /// allowed in the current state.
     pub async fn call(&self, transition: &str, input: TransitionInput) -> Result<(), DeviceError> {
         self.core
-            .run_transition(&self.id, transition, input)
+            .run_transition(&self.id, transition, input, RequestCtx::default())
             .await
             .map(|_| ())
     }

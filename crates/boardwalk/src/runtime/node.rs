@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::actor::{Actor, ActorCtx};
+use super::context::Publisher;
 use super::directory::ResourceDirectory;
 use super::executor::ActorHandle;
 use super::resource::{ResourceCtx, ResourceError};
@@ -97,7 +98,9 @@ impl Node {
         let spec = actor.spec();
         let kind = spec.kind.clone();
         let labels = spec.labels.clone();
-        let actor_ctx = ActorCtx::new(self.id.clone(), id.clone(), kind.clone(), labels);
+        let publisher = Publisher::new(self.bus.clone(), self.stream_registry.clone());
+        let actor_ctx = ActorCtx::new(self.id.clone(), id.clone(), kind.clone(), labels)
+            .with_publisher(publisher);
 
         // Hold the write lock across spawn so the uniqueness check and
         // the entry insertion are atomic. Spawning is cheap (channel +
