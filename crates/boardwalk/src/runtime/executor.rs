@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use serde_json::Value as JsonValue;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -108,13 +107,8 @@ impl ActorHandle {
                         ctx,
                         reply,
                     } => {
-                        let prior_state = Resource::snapshot(&actor, ResourceCtx::new_test())
-                            .await
-                            .ok()
-                            .and_then(|s| s.state);
                         let enriched = (*ctx).with_actor(actor_ctx.clone());
-                        let outcome = actor.transition(enriched.clone(), &name, input).await;
-                        emit_state_change_if_any(&enriched, prior_state, &outcome).await;
+                        let outcome = actor.transition(enriched, &name, input).await;
                         let _ = reply.send(outcome);
                     }
                     Command::Snapshot { ctx, reply } => {
@@ -238,38 +232,6 @@ impl ActorHandle {
                 }
             })?;
         Ok(PendingTransition { rx: rrx })
-    }
-}
-
-/// Emit `resource.state.changed` through `ctx.publish` when the actor's
-/// `state` projection changed across a successful transition. Mirrors
-/// the legacy `Core::run_transition` rule but routes the emission
-/// through the carrying context so `correlationId`, `causationId`, and
-/// `traceContext` are populated from the transition's request.
-async fn emit_state_change_if_any(
-    ctx: &TransitionCtx,
-    prior_state: Option<String>,
-    outcome: &Result<TransitionOutcome, TransitionError>,
-) {
-    let Ok(TransitionOutcome::Completed { snapshot, .. }) = outcome else {
-        return;
-    };
-    let Some(new_state) = snapshot.state.clone() else {
-        return;
-    };
-    if prior_state.as_deref() == Some(new_state.as_str()) {
-        return;
-    }
-    if let Err(e) = ctx
-        .publish(
-            "state",
-            "resource.state.changed",
-            1,
-            JsonValue::String(new_state),
-        )
-        .await
-    {
-        tracing::warn!(error = ?e, "state-change publish failed");
     }
 }
 

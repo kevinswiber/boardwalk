@@ -308,7 +308,7 @@ impl Resource for Led {
 impl Actor for Led {
     fn transition<'a>(
         &'a mut self,
-        _ctx: TransitionCtx,
+        ctx: TransitionCtx,
         name: &'a str,
         _input: TransitionInput,
     ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
@@ -316,6 +316,14 @@ impl Actor for Led {
             match name {
                 "turn-on" => {
                     self.on = true;
+                    ctx.publish(
+                        "state",
+                        "resource.state.changed",
+                        1,
+                        serde_json::Value::String("on".into()),
+                    )
+                    .await
+                    .expect("explicit state publish");
                     Ok(TransitionOutcome::Completed {
                         output: None,
                         snapshot: self.snapshot_value(),
@@ -323,6 +331,14 @@ impl Actor for Led {
                 }
                 "turn-off" => {
                     self.on = false;
+                    ctx.publish(
+                        "state",
+                        "resource.state.changed",
+                        1,
+                        serde_json::Value::String("off".into()),
+                    )
+                    .await
+                    .expect("explicit state publish");
                     Ok(TransitionOutcome::Completed {
                         output: None,
                         snapshot: self.snapshot_value(),
