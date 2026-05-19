@@ -173,23 +173,6 @@ impl TransitionCtx {
             .await
             .map_err(transition_publish_error)
     }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_actor(
-        mut self,
-        node: &Node,
-        resource_id: impl Into<String>,
-        resource_kind: impl Into<String>,
-        labels: BTreeMap<String, String>,
-    ) -> Self {
-        let publisher = Publisher::new(node.events().clone(), node.stream_registry().clone());
-        self.node_id = node.id().to_string();
-        self.actor = Some(
-            ActorCtx::new(node.id().to_string(), resource_id, resource_kind, labels)
-                .with_publisher(publisher),
-        );
-        self
-    }
 }
 
 fn transition_publish_error(err: PublishError) -> TransitionError {

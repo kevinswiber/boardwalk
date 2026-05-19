@@ -230,6 +230,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "boardwalk-job-runner-example"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "boardwalk",
+ "bytes",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "boardwalk-macros"
 version = "0.2.0"
 dependencies = [
