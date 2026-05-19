@@ -204,6 +204,30 @@ async fn old_device_routes_return_404_after_resource_switch() {
 }
 
 #[tokio::test]
+async fn unknown_server_routes_do_not_fall_through_to_local() {
+    let (addr, core, _h) = boot().await;
+    let id = core.list_devices().await[0].id;
+    let topic = urlencoding::encode(&format!("hub/led/{id}/state")).to_string();
+    let paths = [
+        "/servers/other".to_string(),
+        "/servers/other/resources".to_string(),
+        format!("/servers/other/resources/{id}"),
+        "/servers/other/meta".to_string(),
+        "/servers/other/meta/led".to_string(),
+        format!("/servers/other/events?topic={topic}"),
+    ];
+
+    for path in paths {
+        let resp = reqwest::get(format!("http://{addr}{path}")).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            404,
+            "unknown server path {path:?} should not render local content"
+        );
+    }
+}
+
+#[tokio::test]
 async fn root_advertises_self_server_peer_management_events_links() {
     let (addr, _core, _h) = boot().await;
     let body: Json = reqwest::get(format!("http://{addr}/"))
@@ -293,6 +317,10 @@ async fn server_renders_resource_actions_and_resource_entities() {
         .collect();
     assert!(action_names.contains(&"query-resources"));
     assert!(action_names.contains(&"register-resource"));
+    assert!(
+        find_link_with_rels(&body, &["monitor"]).is_none(),
+        "server view should not advertise an unfiltered monitor link"
+    );
 
     let entities = body["entities"].as_array().expect("entities present");
     assert_eq!(entities.len(), 1, "expected one embedded resource entity");

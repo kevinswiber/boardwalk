@@ -114,7 +114,6 @@ pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
         .with_property("name", Value::String(h.server.clone()))
         .with_link(Link::new(rels::SELF, h.server_url()))
         .with_link(Link::new(rels::RESOURCES, h.resources_url()))
-        .with_link(Link::new(rels::MONITOR, h.events_url()))
         .with_action(
             Action::new("query-resources", "GET", h.resources_url())
                 .form_urlencoded()
@@ -288,6 +287,9 @@ pub(crate) fn render_meta(h: &Hrefs, types: &[KindMeta]) -> Entity {
             u
         }));
 
+    // Until resource-kind registration is explicit, multiple resources
+    // of the same kind should expose the same ActorSpec. If they drift,
+    // keep the first stable projection rather than emitting duplicates.
     let mut seen = std::collections::BTreeSet::new();
     for ty in types {
         if !seen.insert(ty.spec.resource.kind.clone()) {

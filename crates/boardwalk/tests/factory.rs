@@ -173,6 +173,26 @@ async fn unknown_type_returns_400() {
 }
 
 #[tokio::test]
+async fn json_registration_returns_415() {
+    let boardwalk = Boardwalk::new()
+        .name("hub")
+        .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
+    let addr = serve(boardwalk).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/resources"))
+        .header("content-type", "application/json")
+        .body(r#"{"type":"led"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 415);
+    let body: Json = resp.json().await.unwrap();
+    assert_eq!(body["error"], "unsupported-media-type");
+    assert_eq!(body["field"], "content-type");
+}
+
+#[tokio::test]
 async fn no_factories_returns_501() {
     let addr = serve(Boardwalk::new().name("hub")).await;
     let client = reqwest::Client::new();

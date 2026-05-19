@@ -488,10 +488,9 @@ pub const RESERVED_FIELDS: &[&str] = &[
     "metadata",
 ];
 
-/// Strips reserved top-level field names from a properties map. Emits
-/// a `tracing::debug!` line listing the offenders if any were
-/// removed. Adapters that build a `ResourceSnapshot` from
-/// device-supplied properties should call this before assigning.
+/// Strips reserved top-level field names from a properties map. Adapters
+/// that build a `ResourceSnapshot` from device-supplied properties
+/// should call this before assigning.
 pub fn sanitize_properties(
     mut props: serde_json::Map<String, JsonValue>,
 ) -> serde_json::Map<String, JsonValue> {
@@ -501,7 +500,7 @@ pub fn sanitize_properties(
         .copied()
         .collect();
     if !offenders.is_empty() {
-        tracing::debug!(
+        tracing::trace!(
             ?offenders,
             "reserved field collision in resource properties; stripped"
         );

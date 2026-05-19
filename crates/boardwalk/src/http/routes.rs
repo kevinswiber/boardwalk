@@ -130,9 +130,14 @@ pub(crate) fn router_with(state: AppState) -> Router {
         .with_state(state)
 }
 
+fn unknown_server_response() -> Response {
+    (StatusCode::NOT_FOUND, "unknown server").into_response()
+}
+
 /// Either dispatch locally or forward to a connected peer by name.
-/// Returns `None` if the name matches the local server (caller serves);
-/// returns `Some(resp)` if forwarding (or 404'ing).
+/// Returns `None` only if the name matches the local server (caller
+/// serves); returns a response for forwarded requests, unknown peers, or
+/// forwarding failures.
 async fn maybe_forward_or_404(
     state: &AppState,
     target_name: &str,
@@ -144,8 +149,12 @@ async fn maybe_forward_or_404(
     if target_name == state.core.name {
         return None;
     }
-    let senders = state.peer_senders.as_ref()?;
-    let mut sender = senders.sender(target_name).await?;
+    let Some(senders) = state.peer_senders.as_ref() else {
+        return Some(unknown_server_response());
+    };
+    let Some(mut sender) = senders.sender(target_name).await else {
+        return Some(unknown_server_response());
+    };
     let path_and_query = uri
         .path_and_query()
         .map(|p| p.as_str())
@@ -485,6 +494,14 @@ async fn resources_post(
         )
             .into_response();
     };
+    if !is_form_content_type(&headers) {
+        return problem_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-media-type",
+            "resource registration must be application/x-www-form-urlencoded",
+            Some("content-type"),
+        );
+    }
     let pairs: Vec<(String, String)> = match serde_urlencoded::from_bytes(&body_bytes) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("bad form: {e}")).into_response(),
@@ -667,6 +684,21 @@ fn transition_outcome_response(outcome: TransitionOutcome) -> Response {
                 StatusCode::ACCEPTED
             };
             let location = job.location.clone();
+            let location_header = if status == StatusCode::CREATED {
+                match HeaderValue::from_str(&location) {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        return problem_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "invalid-job-location",
+                            "accepted job returned an invalid Location header",
+                            Some("job.location"),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             let body = serde_json::json!({
                 "output": output,
                 "job": {
@@ -676,12 +708,9 @@ fn transition_outcome_response(outcome: TransitionOutcome) -> Response {
                 },
             });
             let mut resp = (status, Json(body)).into_response();
-            if status == StatusCode::CREATED {
-                resp.headers_mut().insert(
-                    http::header::LOCATION,
-                    HeaderValue::from_str(&location)
-                        .unwrap_or_else(|_| HeaderValue::from_static("/")),
-                );
+            if let Some(location_header) = location_header {
+                resp.headers_mut()
+                    .insert(http::header::LOCATION, location_header);
             }
             resp
         }
@@ -698,6 +727,20 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
                 .next()
                 .map(str::trim)
                 .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
+        })
+        .unwrap_or(false)
+}
+
+fn is_form_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .map(str::trim)
+                .is_some_and(|mime| mime.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
         })
         .unwrap_or(false)
 }
@@ -1095,6 +1138,24 @@ mod tests {
         let body = response_json(resp).await;
         assert_eq!(body["job"]["location"], "/resources/job-1");
         assert_eq!(body["output"], JsonValue::Null);
+    }
+
+    #[tokio::test]
+    async fn accepted_created_transition_rejects_invalid_location_header() {
+        let resp = transition_outcome_response(TransitionOutcome::Accepted {
+            job: JobHandle {
+                id: "job-1".into(),
+                kind: "job".into(),
+                location: "/resources/job-1\nx".into(),
+                created: true,
+            },
+            output: None,
+        });
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_json(resp).await;
+        assert_eq!(body["error"], "invalid-job-location");
+        assert_eq!(body["field"], "job.location");
     }
 
     async fn response_json(resp: Response) -> JsonValue {
