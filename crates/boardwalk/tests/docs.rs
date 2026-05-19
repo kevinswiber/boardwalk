@@ -52,8 +52,16 @@ fn docs_event_envelope_documents_envelope_version_and_policies() {
     assert!(s.contains("stream-gap"));
     assert!(s.contains("broadcast_lag"));
     assert!(
-        !s.contains("`Coalesce`") || s.contains("deferred"),
-        "`Coalesce` must only appear in deferral context"
+        s.contains("Coalesce { key_path }"),
+        "event-envelope.md should describe the shipped Coalesce policy with its `key_path` parameter"
+    );
+    assert!(
+        s.contains("non-coalescible"),
+        "event-envelope.md should pin the missing-key contract (envelopes whose key path does not resolve are non-coalescible)"
+    );
+    assert!(
+        !s.contains("intentionally deferred"),
+        "event-envelope.md still describes Coalesce as deferred even though it ships now"
     );
 }
 
