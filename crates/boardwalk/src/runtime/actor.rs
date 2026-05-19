@@ -122,6 +122,29 @@ impl TransitionCtx {
         let actor = self.actor.as_ref().ok_or_else(|| {
             TransitionError::Internal("TransitionCtx has no actor identity".into())
         })?;
+        self.publish_for_resource(
+            &actor.resource_id,
+            &actor.resource_kind,
+            stream,
+            payload_kind,
+            payload_version,
+            data,
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_for_resource(
+        &self,
+        resource_id: &str,
+        resource_kind: &str,
+        stream: &str,
+        payload_kind: &str,
+        payload_version: u32,
+        data: JsonValue,
+    ) -> Result<(), TransitionError> {
+        let actor = self.actor.as_ref().ok_or_else(|| {
+            TransitionError::Internal("TransitionCtx has no actor identity".into())
+        })?;
         let publisher = actor.publisher.as_ref().ok_or_else(|| {
             TransitionError::Internal("ActorCtx has no publisher attached".into())
         })?;
@@ -134,8 +157,8 @@ impl TransitionCtx {
             .publish(
                 EnvelopePlan {
                     node_id: &node_id,
-                    resource_id: &actor.resource_id,
-                    resource_kind: &actor.resource_kind,
+                    resource_id,
+                    resource_kind,
                     stream,
                     payload_kind,
                     payload_version,
@@ -149,6 +172,23 @@ impl TransitionCtx {
             )
             .await
             .map_err(transition_publish_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_actor(
+        mut self,
+        node: &Node,
+        resource_id: impl Into<String>,
+        resource_kind: impl Into<String>,
+        labels: BTreeMap<String, String>,
+    ) -> Self {
+        let publisher = Publisher::new(node.events().clone(), node.stream_registry().clone());
+        self.node_id = node.id().to_string();
+        self.actor = Some(
+            ActorCtx::new(node.id().to_string(), resource_id, resource_kind, labels)
+                .with_publisher(publisher),
+        );
+        self
     }
 }
 

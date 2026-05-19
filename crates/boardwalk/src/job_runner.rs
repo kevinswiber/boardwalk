@@ -281,6 +281,21 @@ impl Actor for JobQueue {
                     self.submitted += 1;
 
                     let handle = JobHandle::for_job(id, "queued");
+                    let submitted = LifecycleEvent {
+                        job_id: handle.job_id.clone(),
+                        attempt: 1,
+                        state: "queued".into(),
+                        reason: Some("submitted".into()),
+                    };
+                    publish_json_for_resource(
+                        &ctx,
+                        &handle.job_id,
+                        "job",
+                        "lifecycle",
+                        "job.lifecycle",
+                        submitted,
+                    )
+                    .await?;
                     let output = serde_json::to_value(&handle)
                         .map_err(|err| TransitionError::Internal(err.to_string()))?;
                     Ok(TransitionOutcome::Accepted {
@@ -374,8 +389,8 @@ impl Job {
                 self.logs.clear();
             }
             JobState::Running | JobState::Cancelling => {
-                self.step = self.step.max(1);
-                self.progress = self.progress.max(1);
+                self.step = 0;
+                self.progress = 0;
                 self.started_at = Some(FIXED_STARTED_AT.into());
                 self.finished_at = None;
                 self.result = None;
@@ -398,17 +413,10 @@ impl Job {
                     code: "command_failed".into(),
                     message: "fake command failed".into(),
                 });
-                if self.logs.is_empty() {
-                    self.logs.push(LogEvent {
-                        job_id: "job/pending".into(),
-                        attempt: self.attempt,
-                        level: "error".into(),
-                        line: "fake command failed".into(),
-                    });
-                }
             }
             JobState::Cancelled => {
-                self.step = self.step.max(1);
+                self.step = 0;
+                self.progress = 0;
                 self.started_at = Some(FIXED_STARTED_AT.into());
                 self.finished_at = Some(FIXED_FINISHED_AT.into());
                 self.result = None;
@@ -428,7 +436,7 @@ impl Job {
                 key_path: FieldPath::parse("data.coalesceKey"),
             },
             "logs" | "lifecycle" => SlowConsumerPolicy::Backpressure,
-            _ => SlowConsumerPolicy::Disconnect,
+            other => panic!("unknown job stream `{other}`"),
         };
         SubscribeOpts {
             limit: None,
@@ -437,7 +445,8 @@ impl Job {
         }
     }
 
-    pub fn advance(&mut self) -> Result<(), TransitionError> {
+    #[cfg(test)]
+    fn advance(&mut self) -> Result<(), TransitionError> {
         match self.state {
             JobState::Queued => {
                 self.state = JobState::Running;
@@ -479,6 +488,7 @@ impl Job {
         }
     }
 
+    #[cfg(test)]
     async fn advance_with_ctx(&mut self, ctx: &TransitionCtx) -> Result<(), TransitionError> {
         let job_id = ctx_resource_id(ctx)?;
         match self.state {
@@ -527,7 +537,8 @@ impl Job {
             JobState::Cancelling => {
                 self.state = JobState::Cancelled;
                 self.finished_at = Some(FIXED_FINISHED_AT.into());
-                self.publish_lifecycle(ctx, &job_id, None).await?;
+                self.publish_lifecycle(ctx, &job_id, Some("user_cancelled"))
+                    .await?;
                 Ok(())
             }
             JobState::Succeeded | JobState::Failed | JobState::Cancelled => Err(
@@ -568,7 +579,7 @@ impl Job {
     ) -> Result<CancelOutput, TransitionError> {
         let output = self.cancel()?;
         let job_id = ctx_resource_id(ctx)?;
-        self.publish_lifecycle(ctx, &job_id, Some("cancelled"))
+        self.publish_lifecycle(ctx, &job_id, Some("user_cancelled"))
             .await?;
         Ok(output)
     }
@@ -619,7 +630,7 @@ impl Job {
 
     fn snapshot_value(&self) -> ResourceSnapshot {
         ResourceSnapshot {
-            id: "job/pending".into(),
+            id: String::new(),
             kind: "job".into(),
             name: None,
             state: Some(self.state.as_str().into()),
@@ -631,6 +642,15 @@ impl Job {
             revision: None,
             metadata: Map::new(),
         }
+    }
+
+    fn snapshot_for_transition(&self, ctx: &TransitionCtx) -> ResourceSnapshot {
+        let mut snapshot = self.snapshot_value();
+        if let Some(resource_id) = ctx.resource_id() {
+            snapshot.id = resource_id.to_string();
+            snapshot.node = ctx.node().to_string();
+        }
+        snapshot
     }
 
     fn properties(&self) -> Map<String, Value> {
@@ -687,6 +707,7 @@ impl Job {
         ]
     }
 
+    #[cfg(test)]
     fn finish_success(&mut self) {
         self.state = JobState::Succeeded;
         self.progress = 100;
@@ -695,6 +716,7 @@ impl Job {
         self.error = None;
     }
 
+    #[cfg(test)]
     fn fail(&mut self, code: &str, message: &str) {
         self.state = JobState::Failed;
         self.finished_at = Some(FIXED_FINISHED_AT.into());
@@ -702,12 +724,6 @@ impl Job {
         self.error = Some(JobErrorInfo {
             code: code.into(),
             message: message.into(),
-        });
-        self.logs.push(LogEvent {
-            job_id: "job/pending".into(),
-            attempt: self.attempt,
-            level: "error".into(),
-            line: message.into(),
         });
     }
 
@@ -726,6 +742,7 @@ impl Job {
         publish_json(ctx, "lifecycle", "job.lifecycle", event).await
     }
 
+    #[cfg(test)]
     async fn publish_progress(
         &self,
         ctx: &TransitionCtx,
@@ -744,6 +761,7 @@ impl Job {
         publish_json(ctx, "progress", "job.progress", event).await
     }
 
+    #[cfg(test)]
     async fn publish_log(
         &mut self,
         ctx: &TransitionCtx,
@@ -810,7 +828,7 @@ impl Actor for Job {
                         .map_err(|err| TransitionError::Internal(err.to_string()))?;
                     Ok(TransitionOutcome::Completed {
                         output: Some(output),
-                        snapshot: self.snapshot_value(),
+                        snapshot: self.snapshot_for_transition(&ctx),
                     })
                 }
                 "retry" => {
@@ -821,13 +839,6 @@ impl Actor for Job {
                     Ok(TransitionOutcome::Accepted {
                         job: handle.to_outcome_handle(false),
                         output: Some(output),
-                    })
-                }
-                "advance" => {
-                    self.advance_with_ctx(&ctx).await?;
-                    Ok(TransitionOutcome::Completed {
-                        output: None,
-                        snapshot: self.snapshot_value(),
                     })
                 }
                 other => Err(TransitionError::NotAllowed(format!(
@@ -863,6 +874,7 @@ fn option_json(value: Option<&str>) -> Value {
     value.map(Value::from).unwrap_or(Value::Null)
 }
 
+#[cfg(test)]
 fn progress_percent(step: u32, total: u32) -> u8 {
     ((step.saturating_mul(100)) / total.max(1)).min(99) as u8
 }
@@ -882,6 +894,20 @@ async fn publish_json<T: Serialize>(
     let data =
         serde_json::to_value(event).map_err(|err| TransitionError::Internal(err.to_string()))?;
     ctx.publish(stream, payload_kind, 1, data).await
+}
+
+async fn publish_json_for_resource<T: Serialize>(
+    ctx: &TransitionCtx,
+    resource_id: &str,
+    resource_kind: &str,
+    stream: &str,
+    payload_kind: &str,
+    event: T,
+) -> Result<(), TransitionError> {
+    let data =
+        serde_json::to_value(event).map_err(|err| TransitionError::Internal(err.to_string()))?;
+    ctx.publish_for_resource(resource_id, resource_kind, stream, payload_kind, 1, data)
+        .await
 }
 
 fn job_streams() -> Vec<crate::http::StreamSpec> {
@@ -936,5 +962,275 @@ fn retry_spec() -> TransitionSpec {
         effect: Effect::Unsafe,
         required_scopes: vec![],
         fields: vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::events::{EventEnvelope, TopicPattern};
+    use crate::runtime::{Node, NodeBuilder, RequestCtx};
+
+    fn test_ctx(node: &Node, id: &str) -> TransitionCtx {
+        TransitionCtx::new(RequestCtx::default(), node.id()).with_test_actor(
+            node,
+            id,
+            "job",
+            example_labels(),
+        )
+    }
+
+    async fn recv(sub: &mut crate::events::Subscription) -> EventEnvelope {
+        tokio::time::timeout(Duration::from_secs(1), sub.rx.recv())
+            .await
+            .expect("event should arrive")
+            .expect("subscription should remain open")
+    }
+
+    #[test]
+    fn success_after_ticks_reaches_succeeded_with_progress_100() {
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
+
+        assert_eq!(
+            job.snapshot_value().state.as_deref(),
+            Some(JobState::Queued.as_str())
+        );
+
+        job.advance().expect("first tick starts the job");
+        assert_eq!(
+            job.snapshot_value().state.as_deref(),
+            Some(JobState::Running.as_str())
+        );
+
+        for _ in 0..3 {
+            job.advance().expect("tick succeeds");
+        }
+
+        let snapshot = job.snapshot_value();
+        assert_eq!(
+            snapshot.state.as_deref(),
+            Some(JobState::Succeeded.as_str())
+        );
+        assert_eq!(
+            snapshot.properties.get("progress"),
+            Some(&serde_json::json!(100))
+        );
+        assert_eq!(
+            snapshot.properties.get("result"),
+            Some(&serde_json::json!({ "status": "ok" }))
+        );
+    }
+
+    #[test]
+    fn fail_at_step_reaches_failed_with_error() {
+        let mut job = Job::new("default", FakeCommand::FailAtStep { step: 2 });
+
+        job.advance().expect("first tick starts the job");
+        job.advance().expect("first work tick runs");
+        job.advance().expect("second work tick fails");
+
+        let snapshot = job.snapshot_value();
+        assert_eq!(snapshot.state.as_deref(), Some(JobState::Failed.as_str()));
+        assert_eq!(
+            snapshot
+                .properties
+                .get("error")
+                .and_then(|error| error.get("code")),
+            Some(&serde_json::json!("command_failed"))
+        );
+        assert_ne!(
+            snapshot.properties.get("finished_at"),
+            Some(&serde_json::Value::Null)
+        );
+
+        let retry = snapshot
+            .transitions
+            .iter()
+            .find(|transition| transition.name() == "retry")
+            .expect("retry transition");
+        assert!(retry.available);
+        assert!(retry.unavailable_reason.is_none());
+    }
+
+    #[test]
+    fn cancel_running_job_moves_through_cancelling_then_cancelled() {
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
+        job.advance().expect("first tick starts running");
+
+        let output = job.cancel().expect("running cancel is accepted");
+        assert!(output.accepted);
+        assert_eq!(output.state, JobState::Cancelling.as_str());
+        assert_eq!(
+            job.snapshot_value().state.as_deref(),
+            Some(JobState::Cancelling.as_str())
+        );
+
+        job.advance().expect("next tick settles cancellation");
+        assert_eq!(
+            job.snapshot_value().state.as_deref(),
+            Some(JobState::Cancelled.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn job_progress_and_logs_are_streamed_with_envelopes() {
+        let node = NodeBuilder::new("runner").build();
+        let id = "job-1";
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
+
+        let mut lifecycle = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/lifecycle")).unwrap(),
+            Job::stream_subscribe_opts("lifecycle", 4),
+        );
+        let mut progress = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/progress")).unwrap(),
+            Job::stream_subscribe_opts("progress", 4),
+        );
+        let mut logs = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/logs")).unwrap(),
+            Job::stream_subscribe_opts("logs", 4),
+        );
+
+        job.advance_with_ctx(&test_ctx(&node, id))
+            .await
+            .expect("start tick succeeds");
+        job.advance_with_ctx(&test_ctx(&node, id))
+            .await
+            .expect("progress tick succeeds");
+
+        let lifecycle = recv(&mut lifecycle).await;
+        assert_eq!(lifecycle.resource_id, id);
+        assert_eq!(lifecycle.resource_kind, "job");
+        assert_eq!(lifecycle.stream, "lifecycle");
+        assert_eq!(lifecycle.payload_kind, "job.lifecycle");
+        assert!(lifecycle.causation_id.is_some());
+
+        let progress = recv(&mut progress).await;
+        assert_eq!(progress.resource_id, id);
+        assert_eq!(progress.payload_kind, "job.progress");
+        assert!(!progress.event_id.as_str().is_empty());
+        assert!(progress.sequence >= 1);
+        assert!(progress.causation_id.is_some());
+
+        let logs = recv(&mut logs).await;
+        assert_eq!(logs.resource_id, id);
+        assert_eq!(logs.payload_kind, "job.log");
+        assert!(logs.causation_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn progress_stream_coalesces_latest_progress_per_job() {
+        let node = NodeBuilder::new("runner").build();
+        let id = "job-1";
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 5 });
+
+        let mut sub = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/progress")).unwrap(),
+            Job::stream_subscribe_opts("progress", 1),
+        );
+
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        for _ in 0..3 {
+            job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        }
+
+        let event = recv(&mut sub).await;
+        assert_eq!(event.payload_kind, "job.progress");
+        assert_eq!(event.data["jobId"], id);
+        assert_eq!(event.data["attempt"], 1);
+        assert_eq!(event.data["step"], 3);
+    }
+
+    #[tokio::test]
+    async fn success_job_emits_lifecycle_progress_logs_and_reaches_succeeded() {
+        let node = NodeBuilder::new("runner").build();
+        let id = "job-1";
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 2 });
+
+        let mut lifecycle = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/lifecycle")).unwrap(),
+            Job::stream_subscribe_opts("lifecycle", 8),
+        );
+        let mut progress = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/progress")).unwrap(),
+            Job::stream_subscribe_opts("progress", 8),
+        );
+        let mut logs = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/logs")).unwrap(),
+            Job::stream_subscribe_opts("logs", 8),
+        );
+
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+
+        let started = recv(&mut lifecycle).await;
+        let succeeded = recv(&mut lifecycle).await;
+        assert_eq!(started.data["state"], "running");
+        assert_eq!(succeeded.data["state"], "succeeded");
+        assert!(started.causation_id.is_some());
+        assert!(succeeded.causation_id.is_some());
+
+        let progress = recv(&mut progress).await;
+        assert_eq!(progress.data["percent"], 50);
+        assert!(progress.causation_id.is_some());
+
+        let log = recv(&mut logs).await;
+        assert_eq!(log.payload_kind, "job.log");
+        assert!(log.causation_id.is_some());
+
+        let snapshot = job.snapshot_value();
+        assert_eq!(snapshot.state.as_deref(), Some("succeeded"));
+        assert_eq!(
+            snapshot.properties.get("progress"),
+            Some(&serde_json::json!(100))
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_job_records_one_failure_log_with_real_job_id() {
+        let node = NodeBuilder::new("runner").build();
+        let id = "job-1";
+        let mut job = Job::new("default", FakeCommand::FailAtStep { step: 1 });
+        let mut logs = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/logs")).unwrap(),
+            Job::stream_subscribe_opts("logs", 8),
+        );
+
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+
+        let started = recv(&mut logs).await;
+        let failed = recv(&mut logs).await;
+        assert_eq!(started.data["jobId"], id);
+        assert_eq!(started.data["level"], "info");
+        assert_eq!(failed.data["jobId"], id);
+        assert_eq!(failed.data["level"], "error");
+        assert_eq!(job.logs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn running_cancel_uses_consistent_lifecycle_reason() {
+        let node = NodeBuilder::new("runner").build();
+        let id = "job-1";
+        let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
+        let mut lifecycle = node.events().subscribe(
+            TopicPattern::parse(&format!("runner/job/{id}/lifecycle")).unwrap(),
+            Job::stream_subscribe_opts("lifecycle", 8),
+        );
+
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        job.cancel_with_ctx(&test_ctx(&node, id)).await.unwrap();
+        job.advance_with_ctx(&test_ctx(&node, id)).await.unwrap();
+
+        let _running = recv(&mut lifecycle).await;
+        let cancelling = recv(&mut lifecycle).await;
+        let cancelled = recv(&mut lifecycle).await;
+        assert_eq!(cancelling.data["state"], "cancelling");
+        assert_eq!(cancelling.data["reason"], "user_cancelled");
+        assert_eq!(cancelled.data["state"], "cancelled");
+        assert_eq!(cancelled.data["reason"], "user_cancelled");
     }
 }

@@ -203,67 +203,6 @@ async fn submit_returns_typed_job_handle_and_creates_discoverable_job_resource()
 }
 
 #[tokio::test]
-async fn success_after_ticks_reaches_succeeded_with_progress_100() {
-    let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
-
-    assert_eq!(
-        snapshot_of(&job).await.state.as_deref(),
-        Some(JobState::Queued.as_str())
-    );
-
-    job.advance().expect("first tick starts the job");
-    assert_eq!(
-        snapshot_of(&job).await.state.as_deref(),
-        Some(JobState::Running.as_str())
-    );
-
-    for _ in 0..3 {
-        job.advance().expect("tick succeeds");
-    }
-
-    let snapshot = snapshot_of(&job).await;
-    assert_eq!(
-        snapshot.state.as_deref(),
-        Some(JobState::Succeeded.as_str())
-    );
-    assert_eq!(
-        snapshot.properties.get("progress"),
-        Some(&serde_json::json!(100))
-    );
-    assert_eq!(
-        snapshot.properties.get("result"),
-        Some(&serde_json::json!({ "status": "ok" }))
-    );
-}
-
-#[tokio::test]
-async fn fail_at_step_reaches_failed_with_error() {
-    let mut job = Job::new("default", FakeCommand::FailAtStep { step: 2 });
-
-    job.advance().expect("first tick starts the job");
-    job.advance().expect("first work tick runs");
-    job.advance().expect("second work tick fails");
-
-    let snapshot = snapshot_of(&job).await;
-    assert_eq!(snapshot.state.as_deref(), Some(JobState::Failed.as_str()));
-    assert_eq!(
-        snapshot
-            .properties
-            .get("error")
-            .and_then(|error| error.get("code")),
-        Some(&serde_json::json!("command_failed"))
-    );
-    assert_ne!(
-        snapshot.properties.get("finished_at"),
-        Some(&serde_json::Value::Null)
-    );
-
-    let retry = transition(&snapshot, "retry");
-    assert!(retry.available);
-    assert!(retry.unavailable_reason.is_none());
-}
-
-#[tokio::test]
 async fn cancel_queued_job_moves_directly_to_cancelled() {
     let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
 
@@ -277,26 +216,6 @@ async fn cancel_queued_job_moves_directly_to_cancelled() {
         Some(JobState::Cancelled.as_str())
     );
     assert!(!transition(&snapshot, "cancel").available);
-}
-
-#[tokio::test]
-async fn cancel_running_job_moves_through_cancelling_then_cancelled() {
-    let mut job = Job::new("default", FakeCommand::SuccessAfterTicks { ticks: 3 });
-    job.advance().expect("first tick starts running");
-
-    let output = job.cancel().expect("running cancel is accepted");
-    assert!(output.accepted);
-    assert_eq!(output.state, JobState::Cancelling.as_str());
-    assert_eq!(
-        snapshot_of(&job).await.state.as_deref(),
-        Some(JobState::Cancelling.as_str())
-    );
-
-    job.advance().expect("next tick settles cancellation");
-    assert_eq!(
-        snapshot_of(&job).await.state.as_deref(),
-        Some(JobState::Cancelled.as_str())
-    );
 }
 
 #[tokio::test]
@@ -332,6 +251,81 @@ async fn cancel_unavailable_after_succeeded() {
         TransitionError::Conflict(message) => assert!(message.contains("succeeded")),
         other => panic!("expected Conflict, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn completed_transition_snapshot_uses_assigned_resource_identity() {
+    let node = Arc::new(NodeBuilder::new("runner").build());
+    let id = node
+        .register_actor(Job::new(
+            "default",
+            FakeCommand::SuccessAfterTicks { ticks: 1 },
+        ))
+        .await
+        .expect("job registers");
+
+    let handle = NodeHandle::new(node);
+    let job = handle
+        .query("where kind = \"job\"")
+        .await
+        .expect("query parses")
+        .into_iter()
+        .find(|resource| resource.id() == id)
+        .expect("job is discoverable");
+
+    let outcome = job
+        .transition("cancel", empty_input())
+        .await
+        .expect("queued cancel succeeds");
+    let TransitionOutcome::Completed { snapshot, .. } = outcome else {
+        panic!("cancel should complete synchronously");
+    };
+    assert_eq!(snapshot.id, id);
+    assert_eq!(snapshot.kind, "job");
+    assert_eq!(snapshot.node, "runner");
+    assert_eq!(
+        snapshot.state.as_deref(),
+        Some(JobState::Cancelled.as_str())
+    );
+}
+
+#[tokio::test]
+async fn advance_is_not_a_runtime_transition() {
+    let node = Arc::new(NodeBuilder::new("runner").build());
+    let id = node
+        .register_actor(Job::new(
+            "default",
+            FakeCommand::SuccessAfterTicks { ticks: 1 },
+        ))
+        .await
+        .expect("job registers");
+
+    let handle = NodeHandle::new(node);
+    let job = handle
+        .query("where kind = \"job\"")
+        .await
+        .expect("query parses")
+        .into_iter()
+        .find(|resource| resource.id() == id)
+        .expect("job is discoverable");
+
+    let err = job
+        .transition("advance", empty_input())
+        .await
+        .expect_err("advance is only a direct test driver");
+    match err {
+        TransitionError::NotAllowed(message) => assert!(message.contains("advance")),
+        other => panic!("expected NotAllowed, got {other:?}"),
+    }
+
+    let snapshot = job.snapshot().await.expect("job snapshot");
+    assert_eq!(snapshot.state.as_deref(), Some(JobState::Queued.as_str()));
+    assert!(
+        snapshot
+            .transitions
+            .iter()
+            .all(|transition| transition.name() != "advance")
+    );
 }
 
 #[tokio::test]
