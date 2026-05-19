@@ -58,19 +58,20 @@ A subscription has a `StreamSafety` mode. The default is `Lossless`:
 For `Lossy` subscriptions, `OverflowPolicy` selects the dropping
 strategy:
 
-- **Backpressure** — currently equivalent to `DropNewest`. The sync
-  `BusSink::publish` lift point cannot await, so backpressure is not
-  expressible end-to-end yet. A future async publish path will make
-  this real.
+- **Backpressure** — the async `EventBus::publish` path awaits
+  subscriber queue capacity rather than dropping. The synchronous
+  `try_publish` path cannot await, so under `Backpressure` it behaves
+  identically to `DropNewest`.
 - **DropNewest** — drop the incoming envelope when the queue is full.
-
-`Coalesce` is **intentionally deferred** and not shipped. A truthful
-implementation requires a sidecar queue + iterable replace that `mpsc`
-doesn't provide, and shipping a dishonest `Coalesce` that behaves
-identically to `DropNewest` would lie to API consumers. The variant
-will land alongside real coalescing once a stream whose expected
-emission rate makes `DropNewest` lose user-meaningful signal motivates
-it.
+- **Coalesce { key_path }** — a real coalesce policy backed by a
+  per-subscription sidecar queue. The bus extracts a key from the
+  incoming envelope using `FieldPath::extract(&envelope_json)`; if a
+  queued envelope has the same key, the queued slot is overwritten
+  and `PublishResult.coalesced` increments. Envelopes whose key path
+  does not resolve are non-coalescible — they take a fresh slot or
+  fall back to drop-newest, but never collapse onto each other.
+  `Lossless + Coalesce` is permitted but the safety contract wins:
+  the subscription is disconnected on overflow rather than replaced.
 
 ## Slow-consumer disconnect protocol
 

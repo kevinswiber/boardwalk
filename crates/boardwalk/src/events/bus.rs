@@ -78,6 +78,19 @@ impl SubscriptionRx {
     }
 }
 
+impl Drop for SubscriptionRx {
+    fn drop(&mut self) {
+        // The mpsc-backed variant signals receiver-closure through the
+        // channel itself (the next `try_send` returns
+        // `TrySendError::Closed`); the coalesce path needs an explicit
+        // flag so the bus can reap the subscription on its next
+        // publish, matching the mpsc path's lazy cleanup.
+        if let SubscriptionRxInner::Coalesce(state) = &self.inner {
+            state.mark_receiver_dropped();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TryRecvError {
     Empty,
@@ -331,6 +344,14 @@ impl EventBus {
                                 // backs Lossy subscriptions.
                                 result.dropped += 1;
                             }
+                            CoalescePushOutcome::ReceiverGone => {
+                                // Mirrors the mpsc path's
+                                // `TrySendError::Closed`: the
+                                // consumer side has been dropped, so
+                                // reap the subscription on this
+                                // publish.
+                                to_remove.push(*id);
+                            }
                         }
                     }
                 }
@@ -473,6 +494,9 @@ impl EventBus {
                         }
                         CoalescePushOutcome::Dropped => {
                             result.dropped += 1;
+                        }
+                        CoalescePushOutcome::ReceiverGone => {
+                            to_remove.push(*id);
                         }
                     },
                     Outbound::Mpsc(tx) => {

@@ -20,7 +20,8 @@ use super::envelope::EventEnvelope;
 use crate::query::FieldPath;
 
 /// Outcome of a coalesce push. The bus translates this into the
-/// matching counter on `PublishResult`.
+/// matching counter on `PublishResult` (or removes the subscription
+/// when the receiver side has been dropped).
 pub(crate) enum CoalescePushOutcome {
     /// Envelope appended to the queue (no same-key match was found and
     /// the queue had room).
@@ -31,6 +32,10 @@ pub(crate) enum CoalescePushOutcome {
     /// The queue was full and no same-key match existed; the incoming
     /// envelope was dropped (drop-newest fallback).
     Dropped,
+    /// The consumer-side `SubscriptionRx` has been dropped. The bus
+    /// treats this like an `mpsc::TrySendError::Closed`: the
+    /// subscription is removed lazily on the next publish.
+    ReceiverGone,
 }
 
 pub(crate) struct CoalesceState {
@@ -38,7 +43,12 @@ pub(crate) struct CoalesceState {
     capacity: usize,
     key_path: FieldPath,
     notify: Notify,
+    /// Sender-side close (`unsubscribe` or quota-exhausted removal).
+    /// Setting this drains the queue and steers waiters to `None`.
     closed: AtomicBool,
+    /// Receiver-side drop. The `SubscriptionRx` flips this on `Drop`
+    /// so the bus can reap the subscription lazily.
+    receiver_dropped: AtomicBool,
 }
 
 impl CoalesceState {
@@ -50,19 +60,31 @@ impl CoalesceState {
             key_path,
             notify: Notify::new(),
             closed: AtomicBool::new(false),
+            receiver_dropped: AtomicBool::new(false),
         }
     }
 
+    /// Push an envelope. Envelopes whose `key_path` does not resolve
+    /// (extracted key is `None`) are non-coalescible: they never
+    /// replace a queued entry and are not replaced by later
+    /// key-missing envelopes. They take a fresh slot if one is
+    /// available; otherwise the push falls back to drop-newest.
     pub(crate) fn push(&self, env: EventEnvelope) -> CoalescePushOutcome {
+        if self.receiver_dropped.load(Ordering::Acquire) {
+            return CoalescePushOutcome::ReceiverGone;
+        }
         let incoming_key = extract_key(&env, &self.key_path);
         let mut q = self.queue.lock().unwrap();
-        for slot in q.iter_mut() {
-            let slot_key = extract_key(slot, &self.key_path);
-            if slot_key == incoming_key {
-                *slot = env;
-                drop(q);
-                self.notify.notify_one();
-                return CoalescePushOutcome::Replaced;
+        if let Some(incoming) = &incoming_key {
+            for slot in q.iter_mut() {
+                if let Some(slot_key) = extract_key(slot, &self.key_path)
+                    && &slot_key == incoming
+                {
+                    *slot = env;
+                    drop(q);
+                    self.notify.notify_one();
+                    return CoalescePushOutcome::Replaced;
+                }
             }
         }
         if q.len() < self.capacity {
@@ -76,9 +98,15 @@ impl CoalesceState {
     }
 
     /// Block until the queue has an item to deliver or the sender side
-    /// signals close.
+    /// signals close. Uses `Notified::enable` to register intent
+    /// before the queue-empty / closed-flag check so a concurrent
+    /// `close()` lands at most one cycle later: the registered future
+    /// captures the wake and re-checks `closed` on the next loop.
     pub(crate) async fn recv(&self) -> Option<EventEnvelope> {
         loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
                 let mut q = self.queue.lock().unwrap();
                 if let Some(env) = q.pop_front() {
@@ -88,7 +116,7 @@ impl CoalesceState {
                     return None;
                 }
             }
-            self.notify.notified().await;
+            notified.await;
         }
     }
 
@@ -104,7 +132,22 @@ impl CoalesceState {
         }
     }
 
+    /// Sender-side close. Sets the `closed` flag and wakes any
+    /// pending waiter so it observes the flag on its next loop. The
+    /// `recv` future's enable-before-check pattern guarantees that
+    /// even if `close` races with a waiter that just unlocked the
+    /// queue, the next `notified.await` resolves immediately.
     pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    /// Receiver-side drop signal. Flips the `receiver_dropped` flag
+    /// so the next `push` reports `ReceiverGone`. Also wakes any
+    /// pending waiter (the receiver is gone by definition, but a
+    /// stray clone of the recv future should not hang).
+    pub(crate) fn mark_receiver_dropped(&self) {
+        self.receiver_dropped.store(true, Ordering::Release);
         self.closed.store(true, Ordering::Release);
         self.notify.notify_waiters();
     }
@@ -212,6 +255,60 @@ mod tests {
         assert!(matches!(
             state.push(env("b", 20)),
             CoalescePushOutcome::Dropped
+        ));
+    }
+
+    /// `recv` must surface `None` even when `close()` lands in the
+    /// gap between the queue-empty check and the notify await. Before
+    /// the fix, `notify_waiters()` would wake zero pending waiters
+    /// (the future had not yet registered), and the receiver would
+    /// hang forever on a closed subscription.
+    #[tokio::test]
+    async fn recv_returns_none_when_close_races_with_await() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let state = Arc::new(CoalesceState::new(1, FieldPath::parse("data.jobId")));
+        let receiver = {
+            let state = state.clone();
+            tokio::spawn(async move { state.recv().await })
+        };
+        // Give the receiver enough time to clear the queue check and
+        // start (or be near) the notify await.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        state.close();
+        let result = tokio::time::timeout(Duration::from_secs(2), receiver)
+            .await
+            .expect("recv must observe close within timeout")
+            .expect("task did not panic");
+        assert!(result.is_none(), "closed subscription must yield None");
+    }
+
+    /// Envelopes whose `key_path` does not resolve are non-coalescible:
+    /// they must not collapse into one slot just because both extract
+    /// to `None`.
+    #[tokio::test]
+    async fn missing_keys_are_not_collapsed() {
+        let state = CoalesceState::new(2, FieldPath::parse("data.absent"));
+        assert!(matches!(
+            state.push(env("a", 10)),
+            CoalescePushOutcome::Pushed
+        ));
+        assert!(matches!(
+            state.push(env("b", 20)),
+            CoalescePushOutcome::Pushed
+        ));
+    }
+
+    /// Marking the receiver as dropped causes `push` to refuse further
+    /// envelopes so the bus can reap the dead subscription.
+    #[tokio::test]
+    async fn push_reports_receiver_gone_after_drop_signal() {
+        let state = CoalesceState::new(2, FieldPath::parse("data.jobId"));
+        state.mark_receiver_dropped();
+        assert!(matches!(
+            state.push(env("a", 10)),
+            CoalescePushOutcome::ReceiverGone
         ));
     }
 }

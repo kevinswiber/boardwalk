@@ -186,3 +186,53 @@ fn publish_result_carries_coalesced_field() {
     let r = PublishResult::default();
     assert_eq!(r.coalesced, 0);
 }
+
+/// When the configured `key_path` does not resolve in an envelope,
+/// that envelope is non-coalescible: it must not match other
+/// key-missing envelopes (which would otherwise all collapse into a
+/// single slot because `None == None`). A capacity-2 queue receiving
+/// two distinct-but-key-missing envelopes must drain both.
+#[tokio::test]
+async fn coalesce_does_not_collapse_envelopes_missing_the_key() {
+    let bus = EventBus::new();
+    let pattern = TopicPattern::parse("hub/job/queue-1/progress").unwrap();
+    let mut sub = bus.subscribe(pattern, coalesce_opts(2, FieldPath::parse("data.absent")));
+
+    bus.try_publish(progress_envelope("job-1", 1, 10, 1))
+        .expect("publish first ok");
+    bus.try_publish(progress_envelope("job-2", 1, 20, 1))
+        .expect("publish second ok");
+
+    let first = sub.rx.recv().await.expect("first envelope arrives");
+    let second = sub.rx.recv().await.expect("second envelope arrives");
+    let ids: Vec<&str> = [&first, &second]
+        .iter()
+        .map(|e| e.data["jobId"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"job-1"));
+    assert!(ids.contains(&"job-2"));
+}
+
+/// Dropping the receiver side of a Coalesce subscription must cause
+/// the bus to drop the subscription on the next publish, mirroring the
+/// mpsc path's lazy cleanup via `TrySendError::Closed`.
+#[tokio::test]
+async fn coalesce_drops_subscription_after_receiver_is_dropped() {
+    let bus = EventBus::new();
+    let pattern = TopicPattern::parse("hub/job/queue-1/progress").unwrap();
+    let sub = bus.subscribe(pattern, coalesce_opts(4, FieldPath::parse("data.jobId")));
+    assert_eq!(bus.active_subscriptions(), 1);
+
+    drop(sub);
+
+    let res = bus
+        .try_publish(progress_envelope("job-1", 1, 10, 1))
+        .expect("publish ok");
+    assert_eq!(res.delivered, 0);
+    assert_eq!(res.coalesced, 0);
+    assert_eq!(
+        bus.active_subscriptions(),
+        0,
+        "bus must reap a Coalesce subscription whose receiver was dropped"
+    );
+}
