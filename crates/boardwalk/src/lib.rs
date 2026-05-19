@@ -9,7 +9,8 @@ pub mod caql;
 pub mod core;
 pub mod events;
 pub mod http;
-pub mod job_runner;
+#[cfg(test)]
+mod job_runner;
 pub mod peer;
 pub mod query;
 pub mod registry;
