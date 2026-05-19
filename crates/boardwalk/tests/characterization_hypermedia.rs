@@ -544,8 +544,8 @@ async fn current_resource_siren_crawl_is_byte_stable() {
                 "properties": ["id", "kind", "type", "node", "state"],
                 "streams": [{"name": "state", "kind": "object"}],
                 "transitions": [
-                    {"name": "turn-off", "allowedStates": ["on"], "result": "sync", "idempotency": "none", "safety": "unsafe", "requiredScopes": []},
-                    {"name": "turn-on", "allowedStates": ["off"], "result": "sync", "idempotency": "none", "safety": "unsafe", "requiredScopes": []}
+                    {"name": "turn-off", "allowedStates": ["on"], "result": "sync", "idempotency": "none", "effect": "unsafe", "requiredScopes": []},
+                    {"name": "turn-on", "allowedStates": ["off"], "result": "sync", "idempotency": "none", "effect": "unsafe", "requiredScopes": []}
                 ]
             },
             "links": [

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use boardwalk::core::{Idempotency, Safety, TransitionResultKind};
+use boardwalk::core::{Effect, Idempotency, TransitionResultKind};
 use boardwalk::http::{Core, CoreBuilder, router};
 use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use serde_json::{Value as Json, json};
@@ -24,7 +24,7 @@ impl Device for SchemaLed {
         turn_on.output_schema = Some(json!({"type": "object"}));
         turn_on.result = TransitionResultKind::Sync;
         turn_on.idempotency = Idempotency::Supported;
-        turn_on.safety = Safety::Idempotent;
+        turn_on.effect = Effect::UnsafeIdempotent;
         turn_on.required_scopes = vec!["transition.invoke".into()];
     }
 
@@ -85,7 +85,7 @@ async fn metadata_lists_kind_transitions_streams_and_schemas_from_resource_spec(
     assert_eq!(transition["outputSchema"], json!({"type": "object"}));
     assert_eq!(transition["result"], "sync");
     assert_eq!(transition["idempotency"], "supported");
-    assert_eq!(transition["safety"], "idempotent");
+    assert_eq!(transition["effect"], "unsafe-idempotent");
     assert_eq!(transition["requiredScopes"], json!(["transition.invoke"]));
 
     assert_eq!(

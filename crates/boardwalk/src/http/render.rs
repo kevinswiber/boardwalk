@@ -4,7 +4,7 @@ use serde_json::Value;
 use url::Url;
 
 use super::core::{Core, ResourceSnapshot};
-use crate::core::{ActorSpec, Idempotency, Safety, StreamKind, TransitionResultKind};
+use crate::core::{ActorSpec, Effect, Idempotency, StreamKind, TransitionResultKind};
 use crate::siren::{Action, EmbeddedEntity, Entity, Field, Link, SubEntity, rels};
 
 /// Url root for absolute hrefs. Computed per-request from request scheme + host.
@@ -379,10 +379,10 @@ fn transition_spec_json(spec: &crate::core::TransitionSpec) -> Value {
             Idempotency::Supported => "supported",
             Idempotency::Required => "required",
         },
-        "safety": match spec.safety {
-            Safety::Safe => "safe",
-            Safety::Idempotent => "idempotent",
-            Safety::Unsafe => "unsafe",
+        "effect": match spec.effect {
+            Effect::Safe => "safe",
+            Effect::UnsafeIdempotent => "unsafe-idempotent",
+            Effect::Unsafe => "unsafe",
         },
         "requiredScopes": spec.required_scopes,
     });
