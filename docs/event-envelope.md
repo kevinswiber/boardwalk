@@ -41,23 +41,16 @@ topic = "{node}/{kind}/{resource}/{stream}"
 `streamId` is the canonical reference for replay; `topic` is the
 publish/subscribe pattern surface.
 
-## Stream safety
+## Slow-consumer policy
 
-A subscription has a `StreamSafety` mode. The default is `Lossless`:
+A subscription has a `SlowConsumerPolicy`. Its default is `Disconnect`.
 
-- **Lossless** — when the per-subscriber bounded queue fills, the bus
+Variants:
+
+- **Disconnect** — when the per-subscriber bounded queue fills, the bus
   emits a `stream-gap` (see below) over an out-of-band terminal
   channel and removes the subscription. The publisher is never told to
   slow down; the slow consumer is dropped.
-- **Lossy** — when the queue fills, the bus increments
-  `PublishResult.dropped` and the subscription stays alive. The
-  consumer may observe gaps in `sequence`.
-
-## Overflow policy
-
-For `Lossy` subscriptions, `OverflowPolicy` selects the dropping
-strategy:
-
 - **Backpressure** — the async `EventBus::publish` path awaits
   subscriber queue capacity rather than dropping. The synchronous
   `try_publish` path cannot await, so under `Backpressure` it behaves
@@ -70,16 +63,14 @@ strategy:
   and `PublishResult.coalesced` increments. Envelopes whose key path
   does not resolve are non-coalescible — they take a fresh slot or
   fall back to drop-newest, but never collapse onto each other.
-  `Lossless + Coalesce` is permitted but the safety contract wins:
-  the subscription is disconnected on overflow rather than replaced.
 
 ## Slow-consumer disconnect protocol
 
-When a `Lossless` subscription overflows, two things happen at the
+When a `Disconnect` subscription overflows, two things happen at the
 bus:
 
 1. The next `try_publish` returns `Result::Ok(PublishResult)` with the
-   subscription id in `disconnected_lossless`.
+   subscription id in `disconnected_slow_consumers`.
 2. A `SlowConsumerNotice` fires on the `Subscription::slow_consumer_rx`
    oneshot, carrying the last delivered `(streamId, sequence)`.
 

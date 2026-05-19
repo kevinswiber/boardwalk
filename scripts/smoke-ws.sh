@@ -13,7 +13,7 @@
 #   - Opens a WS to /events and subscribes with outboundCapacity=1
 #   - Reads the subscribe-ack, then *stops reading* for several seconds
 #   - Bursts background transitions so the bus's bounded subscription
-#     overflows under Lossless safety
+#     overflows under the Disconnect slow-consumer policy
 #   - Resumes reading and prints the stream-gap that the WS forwarder
 #     emits over its out-of-band terminal channel
 #
@@ -151,7 +151,7 @@ sub_id = ack.get("subscriptionId")
 
 # Stop reading. The background curl bursts are firing transitions
 # during this window; the bus's bounded subscription overflows under
-# Lossless and arms slow_consumer_notify.
+# the default Disconnect slow-consumer policy and arms slow_consumer_notify.
 print("\npausing the reader for 5s so the bus subscription overflows...")
 time.sleep(5.0)
 

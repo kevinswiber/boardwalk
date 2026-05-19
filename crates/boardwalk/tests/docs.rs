@@ -47,7 +47,8 @@ fn docs_event_envelope_documents_envelope_version_and_policies() {
     assert!(s.contains("envelopeVersion"));
     assert!(s.contains("eventId"));
     assert!(s.contains("sequence"));
-    assert!(s.contains("Lossless"));
+    assert!(s.contains("SlowConsumerPolicy"));
+    assert!(s.contains("Disconnect"));
     assert!(s.contains("DropNewest"));
     assert!(s.contains("stream-gap"));
     assert!(s.contains("broadcast_lag"));

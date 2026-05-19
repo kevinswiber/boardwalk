@@ -1,17 +1,12 @@
-//! `OverflowPolicy::Coalesce` performs iterable replace-by-key in a
-//! per-subscription sidecar queue. It is a real policy, not a synonym
-//! for `DropNewest`: when the queue contains an entry whose
+//! `SlowConsumerPolicy::Coalesce` performs iterable replace-by-key in
+//! a per-subscription sidecar queue. It is a real policy, not a
+//! synonym for `DropNewest`: when the queue contains an entry whose
 //! `key_path`-extracted key matches the incoming envelope, the old
 //! entry is replaced in place and `PublishResult.coalesced` increments.
-//! Lossless safety overrides Coalesce (still disconnects on overflow).
-//!
-//! These tests are the failing pins for the task that introduces
-//! `OverflowPolicy::Coalesce`. Until that variant exists they fail to
-//! compile, which is the intended red signal.
 
 use boardwalk::events::{
-    ENVELOPE_VERSION, EventBus, EventEnvelope, EventId, NodeId, OverflowPolicy, PublishResult,
-    StreamId, StreamSafety, SubscribeOpts, TopicPattern,
+    ENVELOPE_VERSION, EventBus, EventEnvelope, EventId, NodeId, PublishResult, SlowConsumerPolicy,
+    StreamId, SubscribeOpts, TopicPattern,
 };
 use boardwalk::query::FieldPath;
 use serde_json::json;
@@ -50,8 +45,7 @@ fn progress_envelope(job_id: &str, attempt: u32, percent: u32, step: u32) -> Eve
 fn coalesce_opts(capacity: usize, key_path: FieldPath) -> SubscribeOpts {
     SubscribeOpts {
         outbound_capacity: Some(capacity),
-        stream_safety: StreamSafety::Lossy,
-        overflow_policy: OverflowPolicy::Coalesce { key_path },
+        slow_consumer_policy: SlowConsumerPolicy::Coalesce { key_path },
         ..Default::default()
     }
 }
@@ -125,37 +119,6 @@ async fn coalesce_reports_coalesced_count() {
         .expect("publish 30 ok");
     assert_eq!(third.coalesced, 1);
     assert_eq!(third.dropped, 0);
-}
-
-#[tokio::test]
-async fn coalesce_requires_lossy_stream_safety() {
-    let bus = EventBus::new();
-    let pattern = TopicPattern::parse("hub/job/queue-1/progress").unwrap();
-    let sub = bus.subscribe(
-        pattern,
-        SubscribeOpts {
-            outbound_capacity: Some(1),
-            stream_safety: StreamSafety::Lossless,
-            overflow_policy: OverflowPolicy::Coalesce {
-                key_path: FieldPath::parse("data.jobId"),
-            },
-            ..Default::default()
-        },
-    );
-    let id = sub.id;
-    let _hold = sub;
-
-    bus.try_publish(progress_envelope("job-1", 1, 10, 1))
-        .expect("first publish lands");
-    let res = bus
-        .try_publish(progress_envelope("job-1", 1, 20, 2))
-        .expect("second publish ok");
-    assert_eq!(
-        res.coalesced, 0,
-        "lossless must not collapse events under Coalesce"
-    );
-    assert_eq!(res.disconnected_lossless, vec![id]);
-    assert_eq!(bus.active_subscriptions(), 0);
 }
 
 #[tokio::test]

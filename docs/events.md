@@ -76,7 +76,7 @@ consumer disconnect, peer broadcast lag, oversized event, etc.):
 Reason values today:
 
 - `slow_consumer` — the per-subscriber bounded queue filled while the
-  subscription's `streamSafety` was `Lossless`.
+  subscription's slow-consumer policy was `Disconnect`.
 - `broadcast_lag(<n>)` — the cloud-side peer-broadcast channel
   evicted `n` events from this subscription's receiver.
 

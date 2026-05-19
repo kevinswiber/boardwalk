@@ -220,7 +220,7 @@ async fn slow_ws_reader_receives_stream_gap_and_disconnects() {
     // Stop reading from the WS, then publish directly through the
     // bus in a tight loop. With outboundCapacity=1 and the WS reader
     // not draining, the second publish finds the bus queue full and
-    // fires the Lossless disconnect.
+    // fires the slow-consumer disconnect.
     for i in 0..50 {
         let _ = core.bus.try_publish(led_state_envelope(
             &id,

@@ -7,8 +7,7 @@ use tokio::sync::mpsc;
 use super::coalesce::{CoalescePushOutcome, CoalesceState};
 use super::envelope::{EventEnvelope, StreamId};
 use super::policy::{
-    DEFAULT_MAX_EVENT_SIZE_BYTES, OverflowPolicy, PublishError, PublishResult, StreamSafety,
-    SubscribeOpts,
+    DEFAULT_MAX_EVENT_SIZE_BYTES, PublishError, PublishResult, SlowConsumerPolicy, SubscribeOpts,
 };
 use super::replay::{DEFAULT_REPLAY_CAPACITY, StreamReplayCache};
 use super::sequencer::StreamRegistry;
@@ -16,7 +15,7 @@ use super::topic::TopicPattern;
 
 pub const REASON_SLOW_CONSUMER: &str = "slow_consumer";
 
-/// Notice delivered out-of-band when a `Lossless` subscriber is
+/// Notice delivered out-of-band when a `Disconnect` subscriber is
 /// disconnected because its bounded queue filled up. WS / NDJSON
 /// forwarders use it to emit a final `stream-gap` to the client over
 /// their own out-of-band channel (the regular `rx` is full and cannot
@@ -34,7 +33,7 @@ pub struct Subscription {
     pub id: SubscriptionId,
     pub topic: TopicPattern,
     pub rx: SubscriptionRx,
-    /// Resolves once when a `Lossless` subscription's queue overflows;
+    /// Resolves once when a `Disconnect` subscription's queue overflows;
     /// fires *before* the bus removes the entry. WebSocket and HTTP
     /// NDJSON forwarders `select!` on this alongside `rx.recv()` so
     /// they can emit a final `stream-gap` frame on the out-of-band
@@ -106,12 +105,7 @@ struct SubscriptionInner {
     topic: TopicPattern,
     outbound: Outbound,
     remaining: Option<u64>,
-    stream_safety: StreamSafety,
-    /// Overflow policy as the subscriber requested it. `Coalesce` is
-    /// only honored when the subscription is `Outbound::Coalesce`-
-    /// backed; the mpsc path treats it as `DropNewest` (e.g. for
-    /// `Lossless + Coalesce`, where lossless safety overrides).
-    overflow_policy: OverflowPolicy,
+    slow_consumer_policy: SlowConsumerPolicy,
     /// Number of concurrent `publish` calls that have claimed a slot
     /// on this subscription and not yet applied their outcome. A
     /// subscription with `remaining == Some(0)` is only safe to remove
@@ -198,11 +192,8 @@ impl EventBus {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let capacity = opts.resolved_outbound_capacity();
         let (notify_tx, notify_rx) = tokio::sync::oneshot::channel::<SlowConsumerNotice>();
-        // Coalesce only applies under Lossy safety. Lossless + Coalesce
-        // falls through to the mpsc path so the lossless disconnect
-        // contract still wins on overflow.
-        let (outbound, rx_inner) = match (&opts.overflow_policy, opts.stream_safety) {
-            (OverflowPolicy::Coalesce { key_path }, StreamSafety::Lossy) => {
+        let (outbound, rx_inner) = match &opts.slow_consumer_policy {
+            SlowConsumerPolicy::Coalesce { key_path } => {
                 let state = Arc::new(CoalesceState::new(capacity, key_path.clone()));
                 (
                     Outbound::Coalesce(state.clone()),
@@ -221,8 +212,7 @@ impl EventBus {
                 topic: topic.clone(),
                 outbound,
                 remaining: opts.limit,
-                stream_safety: opts.stream_safety,
-                overflow_policy: opts.overflow_policy.clone(),
+                slow_consumer_policy: opts.slow_consumer_policy.clone(),
                 in_flight: 0,
                 last_delivered: None,
                 slow_consumer_notify: Some(notify_tx),
@@ -302,20 +292,24 @@ impl EventBus {
                                 }
                             }
                         }
-                        Err(mpsc::error::TrySendError::Full(_)) => match sub.stream_safety {
-                            StreamSafety::Lossless => {
-                                disconnect_lossless(sub, *id, &mut to_remove, &mut result);
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            match &sub.slow_consumer_policy {
+                                SlowConsumerPolicy::Disconnect => {
+                                    disconnect_slow_consumer(sub, *id, &mut to_remove, &mut result);
+                                }
+                                // `Backpressure` becomes real awaiting
+                                // backpressure on the async `publish`
+                                // path; this sync path cannot await, so
+                                // it behaves identically to `DropNewest`.
+                                SlowConsumerPolicy::Backpressure
+                                | SlowConsumerPolicy::DropNewest => {
+                                    result.dropped += 1;
+                                }
+                                SlowConsumerPolicy::Coalesce { .. } => unreachable!(
+                                    "subscribe() invariant: Coalesce uses Outbound::Coalesce"
+                                ),
                             }
-                            // Lossy + (Backpressure | DropNewest |
-                            // Coalesce-fell-back). `Backpressure`
-                            // becomes real awaiting backpressure on
-                            // the async `publish` path; this sync
-                            // path cannot await, so it behaves
-                            // identically to `DropNewest`.
-                            StreamSafety::Lossy => {
-                                result.dropped += 1;
-                            }
-                        },
+                        }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             to_remove.push(*id);
                         }
@@ -339,9 +333,7 @@ impl EventBus {
                             CoalescePushOutcome::Dropped => {
                                 // Coalesce fallback when the queue is
                                 // full and no same-key replacement
-                                // exists. The bus does not disconnect
-                                // here: by construction Coalesce only
-                                // backs Lossy subscriptions.
+                                // exists.
                                 result.dropped += 1;
                             }
                             CoalescePushOutcome::ReceiverGone => {
@@ -372,7 +364,7 @@ impl EventBus {
     }
 }
 
-fn disconnect_lossless(
+fn disconnect_slow_consumer(
     sub: &mut SubscriptionInner,
     id: SubscriptionId,
     to_remove: &mut Vec<SubscriptionId>,
@@ -387,14 +379,13 @@ fn disconnect_lossless(
         });
     }
     to_remove.push(id);
-    result.disconnected_lossless.push(id);
+    result.disconnected_slow_consumers.push(id);
 }
 
 impl EventBus {
-    /// Async publish that respects `OverflowPolicy::Backpressure` by
+    /// Async publish that respects `SlowConsumerPolicy::Backpressure` by
     /// awaiting subscriber queue capacity instead of dropping. For
-    /// every other policy/safety combination the behavior matches
-    /// `try_publish` exactly.
+    /// every other policy the behavior matches `try_publish` exactly.
     pub async fn publish(&self, envelope: EventEnvelope) -> Result<PublishResult, PublishError> {
         let limit = self.inner.max_event_size.load(Ordering::Relaxed);
         let size = serde_json::to_vec(&envelope).map(|v| v.len()).unwrap_or(0);
@@ -444,7 +435,7 @@ impl EventBus {
         // without holding the std::sync::Mutex across `.await`. Do
         // NOT move the slow-consumer oneshot out at snapshot time:
         // concurrent publishers must each be able to observe (and at
-        // most one of them claim) a notify on lossless overflow.
+        // most one of them claim) a notify on slow-consumer overflow.
         //
         // For limited subscriptions we *claim* the slot here
         // (decrement `remaining`, increment `in_flight`) so two
@@ -461,8 +452,7 @@ impl EventBus {
         struct Match {
             id: SubscriptionId,
             tx: mpsc::Sender<EventEnvelope>,
-            stream_safety: StreamSafety,
-            overflow_policy: OverflowPolicy,
+            slow_consumer_policy: SlowConsumerPolicy,
         }
 
         let topic = envelope.topic();
@@ -510,8 +500,7 @@ impl EventBus {
                         matches.push(Match {
                             id: *id,
                             tx: tx.clone(),
-                            stream_safety: sub.stream_safety,
-                            overflow_policy: sub.overflow_policy.clone(),
+                            slow_consumer_policy: sub.slow_consumer_policy.clone(),
                         });
                         guards.push(ClaimGuard {
                             inner: self.inner.clone(),
@@ -533,7 +522,7 @@ impl EventBus {
         enum SendResult {
             Delivered,
             Dropped,
-            DisconnectLossless,
+            DisconnectSlowConsumer,
             Closed,
         }
 
@@ -549,26 +538,20 @@ impl EventBus {
             let outcome = match m.tx.try_send(envelope.clone()) {
                 Ok(()) => SendResult::Delivered,
                 Err(mpsc::error::TrySendError::Closed(_)) => SendResult::Closed,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    match (m.stream_safety, &m.overflow_policy) {
-                        (StreamSafety::Lossy, OverflowPolicy::Backpressure) => {
-                            if m.tx.send(envelope.clone()).await.is_ok() {
-                                SendResult::Delivered
-                            } else {
-                                SendResult::Closed
-                            }
+                Err(mpsc::error::TrySendError::Full(_)) => match &m.slow_consumer_policy {
+                    SlowConsumerPolicy::Backpressure => {
+                        if m.tx.send(envelope.clone()).await.is_ok() {
+                            SendResult::Delivered
+                        } else {
+                            SendResult::Closed
                         }
-                        // `Coalesce` on an mpsc-backed match only
-                        // occurs under `Lossless` (where the lossless
-                        // disconnect path runs first). Any other
-                        // Lossy combination drops newest on overflow.
-                        (StreamSafety::Lossy, OverflowPolicy::DropNewest)
-                        | (StreamSafety::Lossy, OverflowPolicy::Coalesce { .. }) => {
-                            SendResult::Dropped
-                        }
-                        (StreamSafety::Lossless, _) => SendResult::DisconnectLossless,
                     }
-                }
+                    SlowConsumerPolicy::DropNewest => SendResult::Dropped,
+                    SlowConsumerPolicy::Coalesce { .. } => {
+                        unreachable!("subscribe() invariant: Coalesce uses Outbound::Coalesce")
+                    }
+                    SlowConsumerPolicy::Disconnect => SendResult::DisconnectSlowConsumer,
+                },
             };
 
             // Commit this match's outcome. Synchronous from here to
@@ -592,8 +575,9 @@ impl EventBus {
                     }
                     SendResult::Dropped => {
                         result.dropped += 1;
-                        // Refund the slot — lossy drops do not consume
-                        // quota, matching sync `try_publish` semantics.
+                        // Refund the slot — dropped overflow events do
+                        // not consume quota, matching sync
+                        // `try_publish` semantics.
                         if let Some(sub) = subs.get_mut(&m.id) {
                             sub.in_flight = sub.in_flight.saturating_sub(1);
                             if let Some(rem) = sub.remaining.as_mut() {
@@ -601,7 +585,7 @@ impl EventBus {
                             }
                         }
                     }
-                    SendResult::DisconnectLossless => {
+                    SendResult::DisconnectSlowConsumer => {
                         if let Some(sub) = subs.get_mut(&m.id) {
                             let last = sub.last_delivered.clone();
                             if let Some(notify) = sub.slow_consumer_notify.take() {
@@ -613,7 +597,7 @@ impl EventBus {
                             }
                         }
                         subs.remove(&m.id);
-                        result.disconnected_lossless.push(m.id);
+                        result.disconnected_slow_consumers.push(m.id);
                     }
                     SendResult::Closed => {
                         subs.remove(&m.id);
@@ -761,13 +745,13 @@ mod tests {
     async fn bounded_subscriber_default_capacity_is_64() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
-        // Lossy so a full queue drops rather than disconnects — the
-        // shape under test is the capacity bound, not the safety
-        // policy (covered separately by the lossless tests).
+        // DropNewest so a full queue drops rather than disconnects —
+        // the shape under test is the capacity bound, not the
+        // disconnect policy (covered separately).
         let _sub = bus.subscribe(
             pattern,
             SubscribeOpts {
-                stream_safety: StreamSafety::Lossy,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
@@ -801,7 +785,7 @@ mod tests {
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(4),
-                stream_safety: StreamSafety::Lossy,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
@@ -826,20 +810,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_subscriber_drops_count_in_publish_result_for_lossy() {
+    async fn bounded_subscriber_drops_count_in_publish_result_for_drop_newest() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let _sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossy,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
 
         // First publish lands. Subsequent publishes find the queue
-        // already full → dropped=1 each (Lossy keeps the subscription).
+        // already full → dropped=1 each (DropNewest keeps the
+        // subscription).
         let res = bus
             .try_publish(test_envelope(("hub", "led", "abc", "state"), json!("on")))
             .unwrap();
@@ -855,14 +840,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lossless_full_queue_disconnects_subscriber_in_publish_result() {
+    async fn disconnect_policy_full_queue_disconnects_subscriber_in_publish_result() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(2),
-                stream_safety: StreamSafety::Lossless,
                 ..Default::default()
             },
         );
@@ -876,25 +860,25 @@ mod tests {
                 .unwrap();
             assert_eq!(res.delivered, 1);
         }
-        // Third publish triggers Lossless disconnect.
+        // Third publish triggers slow-consumer disconnect.
         let res = bus
             .try_publish(test_envelope(("hub", "led", "abc", "state"), json!("y")))
             .unwrap();
         assert_eq!(res.delivered, 0);
         assert_eq!(res.dropped, 0);
-        assert_eq!(res.disconnected_lossless, vec![id]);
+        assert_eq!(res.disconnected_slow_consumers, vec![id]);
         assert_eq!(bus.active_subscriptions(), 0);
     }
 
     #[tokio::test]
-    async fn lossy_full_queue_does_not_disconnect() {
+    async fn drop_newest_full_queue_does_not_disconnect() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let _sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(2),
-                stream_safety: StreamSafety::Lossy,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
@@ -911,7 +895,7 @@ mod tests {
                 .try_publish(test_envelope(("hub", "led", "abc", "state"), json!("y")))
                 .unwrap();
             total_dropped += res.dropped;
-            assert!(res.disconnected_lossless.is_empty());
+            assert!(res.disconnected_slow_consumers.is_empty());
         }
         assert_eq!(total_dropped, 3);
         assert_eq!(bus.active_subscriptions(), 1);
@@ -1008,15 +992,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lossy_drop_newest_counts_dropped_events() {
+    async fn drop_newest_counts_dropped_events() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let _sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossy,
-                overflow_policy: OverflowPolicy::DropNewest,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
@@ -1035,15 +1018,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lossy_drop_newest_subscription_stays_alive_after_drop() {
+    async fn drop_newest_subscription_stays_alive_after_drop() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let _sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossy,
-                overflow_policy: OverflowPolicy::DropNewest,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );
@@ -1052,13 +1034,13 @@ mod tests {
             let res = bus
                 .try_publish(test_envelope(("hub", "led", "abc", "state"), json!("x")))
                 .unwrap();
-            assert!(res.disconnected_lossless.is_empty());
+            assert!(res.disconnected_slow_consumers.is_empty());
         }
         assert_eq!(bus.active_subscriptions(), 1);
     }
 
     #[tokio::test]
-    async fn lossy_backpressure_currently_behaves_like_drop_newest() {
+    async fn try_publish_backpressure_behaves_like_drop_newest() {
         // `Backpressure` becomes real awaiting backpressure once the
         // publish path is async; today it cannot await, so it behaves
         // identically to `DropNewest`. This test pins that asymmetry
@@ -1070,8 +1052,7 @@ mod tests {
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossy,
-                overflow_policy: OverflowPolicy::Backpressure,
+                slow_consumer_policy: SlowConsumerPolicy::Backpressure,
                 ..Default::default()
             },
         );
@@ -1087,42 +1068,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lossless_overrides_overflow_policy_to_disconnect() {
-        // Type system allows a Lossless + DropNewest combination, but
-        // safety wins. Disconnect fires regardless of overflow policy.
-        let bus = EventBus::new();
-        let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
-        let sub = bus.subscribe(
-            pattern,
-            SubscribeOpts {
-                outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossless,
-                overflow_policy: OverflowPolicy::DropNewest,
-                ..Default::default()
-            },
-        );
-        let id = sub.id;
-        let _hold = sub;
-
-        bus.try_publish(test_envelope(("hub", "led", "abc", "state"), json!("on")))
-            .unwrap();
-        let res = bus
-            .try_publish(test_envelope(("hub", "led", "abc", "state"), json!("off")))
-            .unwrap();
-        assert_eq!(res.disconnected_lossless, vec![id]);
-        assert_eq!(res.dropped, 0);
-        assert_eq!(bus.active_subscriptions(), 0);
-    }
-
-    #[tokio::test]
-    async fn lossless_disconnect_fires_slow_consumer_notice() {
+    async fn disconnect_policy_fires_slow_consumer_notice() {
         let bus = EventBus::new();
         let pattern = TopicPattern::parse("hub/led/abc/state").unwrap();
         let mut sub = bus.subscribe(
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(1),
-                stream_safety: StreamSafety::Lossless,
                 ..Default::default()
             },
         );
@@ -1132,7 +1084,7 @@ mod tests {
         let stream_id = env1.stream_id.clone();
         bus.try_publish(env1).unwrap();
 
-        // Second publish triggers Lossless disconnect + notice.
+        // Second publish triggers slow-consumer disconnect + notice.
         bus.try_publish(test_envelope(("hub", "led", "abc", "state"), json!("off")))
             .unwrap();
 
@@ -1152,7 +1104,7 @@ mod tests {
             pattern,
             SubscribeOpts {
                 outbound_capacity: Some(2),
-                stream_safety: StreamSafety::Lossy,
+                slow_consumer_policy: SlowConsumerPolicy::DropNewest,
                 ..Default::default()
             },
         );

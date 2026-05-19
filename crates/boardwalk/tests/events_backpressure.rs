@@ -1,12 +1,12 @@
-//! Pins async publish backpressure: a `Lossy + Backpressure`
+//! Pins async publish backpressure: a `SlowConsumerPolicy::Backpressure`
 //! subscriber must cause `EventBus::publish` to await queue capacity
 //! instead of dropping the envelope.
 
 use std::time::Duration;
 
 use boardwalk::events::{
-    ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, OverflowPolicy, StreamId, StreamRegistry,
-    StreamSafety, SubscribeOpts, TopicPattern,
+    ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, SlowConsumerPolicy, StreamId,
+    StreamRegistry, SubscribeOpts, TopicPattern,
 };
 use serde_json::Value;
 
@@ -79,8 +79,8 @@ async fn concurrent_publish_respects_subscription_limit() {
 /// the delivered path saw `remaining == 0` before the concurrent
 /// dropped path applied its refund.
 ///
-/// To force the interleaving we add a second `Lossy + Backpressure`
-/// subscriber whose outbound buffer is *already full* when both
+/// To force the interleaving we add a second `Backpressure` subscriber
+/// whose outbound buffer is *already full* when both
 /// publishes start. Each publish reaches the backpressure `send.await`
 /// after running its claim phase, so both publishes have claimed a
 /// slot on the limited subscription before either applies its
@@ -103,8 +103,7 @@ async fn concurrent_publish_does_not_remove_subscription_before_refund() {
         SubscribeOpts {
             outbound_capacity: Some(1),
             limit: Some(3),
-            stream_safety: StreamSafety::Lossy,
-            overflow_policy: OverflowPolicy::DropNewest,
+            slow_consumer_policy: SlowConsumerPolicy::DropNewest,
         },
     );
 
@@ -114,8 +113,7 @@ async fn concurrent_publish_does_not_remove_subscription_before_refund() {
         pattern,
         SubscribeOpts {
             outbound_capacity: Some(1),
-            stream_safety: StreamSafety::Lossy,
-            overflow_policy: OverflowPolicy::Backpressure,
+            slow_consumer_policy: SlowConsumerPolicy::Backpressure,
             ..Default::default()
         },
     );
@@ -193,7 +191,7 @@ async fn concurrent_publish_does_not_remove_subscription_before_refund() {
 }
 
 /// Cancellation safety: if a `publish` future is dropped while
-/// awaiting a `Lossy + Backpressure` subscriber's `send`, the claimed
+/// awaiting a `Backpressure` subscriber's `send`, the claimed
 /// quota slot must be refunded so future publishes can still proceed.
 /// Without an RAII guard, the claim would leak: `remaining` stays
 /// decremented and `in_flight` stays incremented forever.
@@ -210,8 +208,7 @@ async fn dropped_publish_future_refunds_claim_on_cancellation() {
         SubscribeOpts {
             outbound_capacity: Some(1),
             limit: Some(2),
-            stream_safety: StreamSafety::Lossy,
-            overflow_policy: OverflowPolicy::Backpressure,
+            slow_consumer_policy: SlowConsumerPolicy::Backpressure,
         },
     );
 
@@ -248,13 +245,13 @@ async fn dropped_publish_future_refunds_claim_on_cancellation() {
     assert_eq!(env2.sequence, 2);
 }
 
-/// `Lossy + DropNewest` events that drop on a full outbound channel
+/// `DropNewest` events that drop on a full outbound channel
 /// must not consume the subscription's quota — matching sync
 /// `try_publish` semantics. Scenario from the review: `limit=2`,
 /// capacity 1, one event delivered, second dropped while buffer is
 /// full, drain, third should still be delivered.
 #[tokio::test]
-async fn lossy_dropnewest_does_not_consume_subscription_quota() {
+async fn dropnewest_does_not_consume_subscription_quota() {
     let bus = EventBus::with_registry(StreamRegistry::new());
     let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
     let mut sub = bus.subscribe(
@@ -262,8 +259,7 @@ async fn lossy_dropnewest_does_not_consume_subscription_quota() {
         SubscribeOpts {
             outbound_capacity: Some(1),
             limit: Some(2),
-            stream_safety: StreamSafety::Lossy,
-            overflow_policy: OverflowPolicy::DropNewest,
+            slow_consumer_policy: SlowConsumerPolicy::DropNewest,
         },
     );
 
@@ -285,21 +281,20 @@ async fn lossy_dropnewest_does_not_consume_subscription_quota() {
     let r3 = bus.publish(envelope(3)).await.unwrap();
     assert_eq!(
         r3.delivered, 1,
-        "the lossy drop must not consume quota; the third send must deliver"
+        "DropNewest must not consume quota; the third send must deliver"
     );
     assert_eq!(r3.dropped, 0);
 }
 
 #[tokio::test]
-async fn lossy_backpressure_awaits_capacity_instead_of_dropping() {
+async fn backpressure_awaits_capacity_instead_of_dropping() {
     let bus = EventBus::with_registry(StreamRegistry::new());
     let pattern = TopicPattern::parse("hub/led/r1/state").unwrap();
     let mut sub = bus.subscribe(
         pattern,
         SubscribeOpts {
             outbound_capacity: Some(1),
-            stream_safety: StreamSafety::Lossy,
-            overflow_policy: OverflowPolicy::Backpressure,
+            slow_consumer_policy: SlowConsumerPolicy::Backpressure,
             ..Default::default()
         },
     );

@@ -20,8 +20,8 @@ pub use envelope::{
     TraceContext,
 };
 pub use policy::{
-    DEFAULT_MAX_EVENT_SIZE_BYTES, DEFAULT_OUTBOUND_CAPACITY, OverflowPolicy, PublishError,
-    PublishResult, StreamSafety, SubscribeOpts,
+    DEFAULT_MAX_EVENT_SIZE_BYTES, DEFAULT_OUTBOUND_CAPACITY, PublishError, PublishResult,
+    SlowConsumerPolicy, SubscribeOpts,
 };
 pub use replay::{DEFAULT_REPLAY_CAPACITY, StreamReplayCache};
 pub use sequencer::{Allocated, StreamRegistry};

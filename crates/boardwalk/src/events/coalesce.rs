@@ -1,4 +1,4 @@
-//! Per-subscription sidecar queue backing `OverflowPolicy::Coalesce`.
+//! Per-subscription sidecar queue backing `SlowConsumerPolicy::Coalesce`.
 //!
 //! Coalesce subscriptions hold a bounded `VecDeque<EventEnvelope>`
 //! protected by a mutex plus a `Notify`. The bus replaces any queued

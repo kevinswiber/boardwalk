@@ -848,7 +848,7 @@ async fn server_events_stream(
         loop {
             tokio::select! {
                 biased;
-                // A `Lossless` overflow on the bus side fires this
+                // A `Disconnect` overflow on the bus side fires this
                 // notice. Emit a final structured `stream-gap` line and
                 // close the response so the client sees the contract
                 // (a gap with the cause) instead of an unexplained EOF.

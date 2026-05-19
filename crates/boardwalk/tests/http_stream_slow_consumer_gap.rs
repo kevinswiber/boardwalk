@@ -1,7 +1,7 @@
-//! When the HTTP NDJSON stream's bus subscription overflows under
-//! `Lossless` semantics, the stream must emit a final structured
-//! `stream-gap` line before EOF (instead of silently ending the
-//! response body).
+//! When the HTTP NDJSON stream's bus subscription overflows under the
+//! default `Disconnect` slow-consumer policy, the stream must emit a
+//! final structured `stream-gap` line before EOF (instead of silently
+//! ending the response body).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -110,7 +110,7 @@ async fn http_ndjson_emits_stream_gap_on_slow_consumer() {
     let id = device_id(addr).await;
     let topic = format!("hub/led/{id}/state");
 
-    // outboundCapacity=1 forces the bus side into the `Lossless`
+    // outboundCapacity=1 forces the bus side into the `Disconnect`
     // overflow path the moment we publish a second time without the
     // stream reader having pulled the first envelope.
     let url = format!("http://{addr}/servers/hub/events?topic={topic}&outboundCapacity=1");

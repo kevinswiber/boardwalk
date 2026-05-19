@@ -366,8 +366,9 @@ async fn local_forwarder(
                 let msg = render_event_for_ws(app_id, &env);
                 // Block on `send` so a slow WS reader propagates
                 // backpressure into the bus, where the next publish
-                // surfaces it as a `slow_consumer` notice (Lossless)
-                // or a `dropped` count (Lossy). Race the send against
+                // surfaces it as a `slow_consumer` notice
+                // (Disconnect) or a `dropped` count (DropNewest /
+                // Coalesce). Race the send against
                 // `slow_fut` so a notice that fires while we are
                 // blocked on `out_tx.send(...)` can still preempt the
                 // send and reach the wire via `terminal_tx`.
