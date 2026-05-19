@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::core::{Core, now_ms};
 use super::render::{self, Hrefs};
-use crate::core::TransitionInput;
+use crate::core::{TransitionInput, TransitionOutcome};
 use crate::runtime::RequestCtx;
 use crate::siren::SIREN_CONTENT_TYPE;
 
@@ -42,8 +42,7 @@ pub trait PeerSenders: Send + Sync + 'static {
     }
 }
 
-/// Inputs to the hubless device registration flow
-/// (`POST /servers/{name}/devices`).
+/// Inputs to the hubless resource registration flow (`POST /resources`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DeviceRegistration {
     pub type_: String,
@@ -102,14 +101,20 @@ pub fn router(core: Arc<Core>) -> Router {
 pub(crate) fn router_with(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
-        .route("/servers/{name}", get(server_get))
+        .route("/resources", get(resources_get).post(resources_post))
+        .route("/resources/{id}", get(resource_get))
         .route(
-            "/servers/{name}/devices",
-            get(devices_get).post(devices_post),
+            "/resources/{id}/transitions/{transition}",
+            axum::routing::post(resource_transition_post),
         )
+        .route("/meta", get(local_meta_get))
+        .route("/meta/{type}", get(local_meta_type_get))
+        .route("/servers/{name}", get(server_get))
+        .route("/servers/{name}/resources", get(server_resources_get))
+        .route("/servers/{name}/resources/{id}", get(server_resource_get))
         .route(
-            "/servers/{name}/devices/{id}",
-            get(device_get).post(device_post),
+            "/servers/{name}/resources/{id}/transitions/{transition}",
+            axum::routing::post(server_resource_transition_post),
         )
         .route("/servers/{name}/meta", get(meta_get))
         .route("/servers/{name}/meta/{type}", get(meta_type_get))
@@ -157,6 +162,12 @@ async fn maybe_forward_or_404(
         }
         builder = builder.header(name.clone(), value.clone());
     }
+    let bases = forwarded_external_bases(headers, uri, target_name);
+    builder = builder
+        .header("x-forwarded-host", bases.host)
+        .header("x-forwarded-proto", bases.scheme)
+        .header("x-boardwalk-external-base", bases.http)
+        .header("x-boardwalk-external-ws-base", bases.ws);
     let req = match builder.body(body) {
         Ok(r) => r,
         Err(e) => {
@@ -212,6 +223,30 @@ async fn maybe_forward_get_or_404(
 }
 
 fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
+    if let Some(http_base) = headers
+        .get("x-boardwalk-external-base")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|base| base.parse::<url::Url>().ok())
+    {
+        let ws_base = headers
+            .get("x-boardwalk-external-ws-base")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|base| base.parse::<url::Url>().ok())
+            .unwrap_or_else(|| {
+                let mut ws = http_base.clone();
+                let _ = ws.set_scheme(if http_base.scheme() == "https" {
+                    "wss"
+                } else {
+                    "ws"
+                });
+                ws
+            });
+        return Hrefs {
+            http: http_base,
+            ws: ws_base,
+            server: server.to_string(),
+        };
+    }
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -228,6 +263,39 @@ fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
         http: http_base,
         ws: ws_base,
         server: server.to_string(),
+    }
+}
+
+struct ForwardedExternalBases {
+    host: String,
+    scheme: String,
+    http: String,
+    ws: String,
+}
+
+fn forwarded_external_bases(
+    headers: &HeaderMap,
+    uri: &Uri,
+    target_name: &str,
+) -> ForwardedExternalBases {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost")
+        .to_string();
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.scheme_str())
+        .unwrap_or("http")
+        .to_string();
+    let ws_scheme = if scheme == "https" { "wss" } else { "ws" };
+    let peer = urlencoding::encode(target_name);
+    ForwardedExternalBases {
+        host: host.clone(),
+        scheme: scheme.clone(),
+        http: format!("{scheme}://{host}/servers/{peer}/"),
+        ws: format!("{ws_scheme}://{host}/servers/{peer}/"),
     }
 }
 
@@ -308,39 +376,108 @@ async fn server_get(
     siren_response(render::render_server(&h, &snaps))
 }
 
-async fn devices_get(
+async fn server_resources_get(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(params): Query<QueryParams>,
+) -> Response {
+    if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
+        return r;
+    }
+    resources_response(&state.core, &headers, &uri, params).await
+}
+
+async fn server_resource_get(
+    State(state): State<AppState>,
+    Path((name, id)): Path<(String, String)>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
     if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
         return r;
     }
-    let core = state.core.clone();
-    let h = build_hrefs(&headers, &uri, &core.name);
-    let devices = core.list_devices().await;
-    let snaps: Vec<_> = devices
-        .iter()
-        .map(|d| d.to_resource_snapshot(&core.name))
-        .collect();
-    siren_response(render::render_server(&h, &snaps))
+    resource_response(&state.core, &headers, &uri, &id).await
 }
 
-async fn devices_post(
+async fn server_resource_transition_post(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path((name, id, transition)): Path<(String, String, String)>,
     headers: HeaderMap,
     uri: Uri,
     body_bytes: bytes::Bytes,
 ) -> Response {
-    // If forwarding to a peer, do it now (we still have the body in bytes).
     if name != state.core.name {
-        let body = Body::from(body_bytes);
-        return maybe_forward_or_404(&state, &name, Method::POST, &uri, &headers, body)
-            .await
-            .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
+        return maybe_forward_or_404(
+            &state,
+            &name,
+            Method::POST,
+            &uri,
+            &headers,
+            Body::from(body_bytes),
+        )
+        .await
+        .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
     }
+    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+}
+
+async fn resources_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(params): Query<QueryParams>,
+) -> Response {
+    resources_response(&state.core, &headers, &uri, params).await
+}
+
+async fn local_meta_get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    meta_response(&state.core, &headers, &uri).await
+}
+
+async fn local_meta_type_get(
+    State(state): State<AppState>,
+    Path(ty): Path<String>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    meta_type_response(&state.core, &headers, &uri, &ty).await
+}
+
+async fn resources_response(
+    core: &Arc<Core>,
+    headers: &HeaderMap,
+    uri: &Uri,
+    params: QueryParams,
+) -> Response {
+    let h = build_hrefs(headers, uri, &core.name);
+    let devices = core.list_devices().await;
+    if let Some(ql) = params.ql {
+        return match filter_by_ql(&devices, &ql, &core.name) {
+            Ok(filtered) => {
+                let snaps: Vec<_> = filtered
+                    .iter()
+                    .map(|d| d.to_resource_snapshot(&core.name))
+                    .collect();
+                siren_response(render::render_search_results(&h, &ql, &snaps))
+            }
+            Err(e) => query_error_response(&ql, &e),
+        };
+    }
+    let snaps: Vec<_> = devices
+        .iter()
+        .map(|d| d.to_resource_snapshot(&core.name))
+        .collect();
+    siren_response(render::render_resources(&h, &snaps))
+}
+
+async fn resources_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    body_bytes: bytes::Bytes,
+) -> Response {
     let Some(registrar) = state.device_registrar.clone() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
@@ -380,106 +517,212 @@ async fn devices_post(
     let Some(snap) = state.core.get_device(&new_id).await else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "device missing after register",
+            "resource missing after register",
         )
             .into_response();
     };
     let rsnap = snap.to_resource_snapshot(&state.core.name);
-    let mut resp = siren_response(render::render_device(&h, &rsnap, &snap.config));
+    let mut resp = siren_response(render::render_device(&h, &rsnap));
     *resp.status_mut() = StatusCode::CREATED;
+    resp.headers_mut().insert(
+        http::header::LOCATION,
+        HeaderValue::from_str(h.resource_url(&rsnap.id).as_str()).unwrap(),
+    );
     resp
 }
 
-async fn device_get(
+async fn resource_get(
     State(state): State<AppState>,
-    Path((name, id)): Path<(String, String)>,
+    Path(id): Path<String>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
-        return r;
-    }
-    let core = state.core.clone();
-    let h = build_hrefs(&headers, &uri, &core.name);
-    let id = match uuid::Uuid::parse_str(&id) {
+    resource_response(&state.core, &headers, &uri, &id).await
+}
+
+async fn resource_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri, id: &str) -> Response {
+    let h = build_hrefs(headers, uri, &core.name);
+    let id = match uuid::Uuid::parse_str(id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid device id").into_response(),
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid resource id").into_response(),
     };
     match core.get_device(&id).await {
         Some(d) => {
             let rsnap = d.to_resource_snapshot(&core.name);
-            siren_response(render::render_device(&h, &rsnap, &d.config))
+            siren_response(render::render_device(&h, &rsnap))
         }
-        None => (StatusCode::NOT_FOUND, "unknown device").into_response(),
+        None => (StatusCode::NOT_FOUND, "unknown resource").into_response(),
     }
 }
 
-async fn device_post(
+async fn resource_transition_post(
     State(state): State<AppState>,
-    Path((name, id)): Path<(String, String)>,
+    Path((id, transition)): Path<(String, String)>,
     headers: HeaderMap,
-    uri: Uri,
-    body: String,
+    body_bytes: bytes::Bytes,
 ) -> Response {
-    if name != state.core.name {
-        if state.peer_senders.is_some() {
-            return maybe_forward_or_404(
-                &state,
-                &name,
-                Method::POST,
-                &uri,
-                &headers,
-                Body::from(body),
-            )
-            .await
-            .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
-        }
-        return (StatusCode::NOT_FOUND, "unknown server").into_response();
-    }
-    let core = state.core.clone();
-    let id = match uuid::Uuid::parse_str(&id) {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid device id").into_response(),
-    };
-    let h = build_hrefs(&headers, &uri, &core.name);
+    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+}
 
-    let pairs: Vec<(String, String)> = match serde_urlencoded::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("bad form body: {e}")).into_response(),
-    };
-    let mut map: BTreeMap<String, JsonValue> = BTreeMap::new();
-    let mut action_name = None;
-    for (k, v) in pairs {
-        if k == "action" {
-            action_name = Some(v);
-        } else {
-            map.insert(k, JsonValue::String(v));
-        }
+async fn transition_response(
+    core: &Arc<Core>,
+    headers: &HeaderMap,
+    id: &str,
+    transition: &str,
+    body_bytes: bytes::Bytes,
+) -> Response {
+    if !is_json_content_type(headers) {
+        return problem_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-media-type",
+            "transition input must be application/json",
+            Some("content-type"),
+        );
     }
-    let action_name = match action_name {
-        Some(n) => n,
-        None => return (StatusCode::BAD_REQUEST, "missing `action` field").into_response(),
+    let body: JsonValue = match serde_json::from_slice(&body_bytes) {
+        Ok(body) => body,
+        Err(err) => {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-json",
+                &err.to_string(),
+                Some("body"),
+            );
+        }
     };
-    let input = TransitionInput { fields: map };
-    let request_ctx = RequestCtx::from_headers(&headers);
+    let fields = match body {
+        JsonValue::Object(fields) => fields.into_iter().collect::<BTreeMap<_, _>>(),
+        JsonValue::Null => BTreeMap::new(),
+        _ => {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-json",
+                "transition input must be a JSON object",
+                Some("body"),
+            );
+        }
+    };
+
+    let id = match uuid::Uuid::parse_str(id) {
+        Ok(id) => id,
+        Err(_) => {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-resource-id",
+                "resource id must be a UUID",
+                Some("id"),
+            );
+        }
+    };
+    if core.get_device(&id).await.is_none() {
+        return problem_response(
+            StatusCode::NOT_FOUND,
+            "resource-not-found",
+            "unknown resource",
+            Some("id"),
+        );
+    }
+
+    let request_ctx = RequestCtx::from_headers(headers);
     match core
-        .run_transition(&id, &action_name, input, request_ctx)
+        .run_transition(&id, transition, TransitionInput { fields }, request_ctx)
         .await
     {
         Ok(snap) => {
             let rsnap = snap.to_resource_snapshot(&core.name);
-            siren_response(render::render_device(&h, &rsnap, &snap.config))
+            transition_outcome_response(TransitionOutcome::Completed {
+                output: None,
+                snapshot: rsnap,
+            })
         }
-        Err(crate::core::DeviceError::NotAllowed(_)) => (
+        Err(crate::core::DeviceError::NotAllowed(msg)) => problem_response(
             StatusCode::CONFLICT,
-            "transition not allowed in current state",
-        )
-            .into_response(),
+            "transition-not-allowed",
+            &msg,
+            Some("transition"),
+        ),
         Err(crate::core::DeviceError::Invalid(msg)) => {
-            (StatusCode::BAD_REQUEST, msg).into_response()
+            problem_response(StatusCode::BAD_REQUEST, "invalid-input", &msg, None)
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(crate::core::DeviceError::Conflict(msg)) => {
+            problem_response(StatusCode::CONFLICT, "conflict", &msg, None)
+        }
+        Err(crate::core::DeviceError::Internal(msg)) => {
+            problem_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &msg, None)
+        }
     }
+}
+
+fn transition_outcome_response(outcome: TransitionOutcome) -> Response {
+    match outcome {
+        TransitionOutcome::Completed { output, snapshot } => Json(serde_json::json!({
+            "output": output,
+            "snapshot": snapshot.to_query_value(),
+        }))
+        .into_response(),
+        TransitionOutcome::Accepted { job, output } => {
+            let status = if job.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::ACCEPTED
+            };
+            let location = job.location.clone();
+            let body = serde_json::json!({
+                "output": output,
+                "job": {
+                    "id": job.id,
+                    "kind": job.kind,
+                    "location": location.clone(),
+                },
+            });
+            let mut resp = (status, Json(body)).into_response();
+            if status == StatusCode::CREATED {
+                resp.headers_mut().insert(
+                    http::header::LOCATION,
+                    HeaderValue::from_str(&location)
+                        .unwrap_or_else(|_| HeaderValue::from_static("/")),
+                );
+            }
+            resp
+        }
+    }
+}
+
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .map(str::trim)
+                .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
+        })
+        .unwrap_or(false)
+}
+
+fn problem_response(
+    status: StatusCode,
+    error: &str,
+    message: &str,
+    field: Option<&str>,
+) -> Response {
+    let mut body = serde_json::json!({
+        "error": error,
+        "message": message,
+    });
+    if let Some(field) = field
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("field".into(), JsonValue::String(field.to_string()));
+    }
+    let mut resp = (status, Json(body)).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/problem+json"),
+    );
+    resp
 }
 
 #[derive(Debug, Deserialize)]
@@ -630,26 +873,7 @@ async fn meta_get(
     if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
         return r;
     }
-    let core = state.core.clone();
-    let h = build_hrefs(&headers, &uri, &core.name);
-    let devices = core.list_devices().await;
-    let snaps: Vec<_> = devices
-        .iter()
-        .map(|d| d.to_resource_snapshot(&core.name))
-        .collect();
-    // Metadata describes the kind, not the instance — gather the full
-    // transition and stream surfaces from `DeviceConfig` instead of
-    // the snapshot's state-dependent `affordances.available` lists.
-    let types: Vec<render::TypeMeta> = devices
-        .iter()
-        .zip(snaps.iter())
-        .map(|(d, snap)| render::TypeMeta {
-            snap,
-            all_transitions: d.config.transitions.keys().cloned().collect(),
-            all_streams: d.config.streams.iter().map(|s| s.name.clone()).collect(),
-        })
-        .collect();
-    siren_response(render::render_meta(&h, &types))
+    meta_response(&state.core, &headers, &uri).await
 }
 
 async fn meta_type_get(
@@ -661,22 +885,39 @@ async fn meta_type_get(
     if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
         return r;
     }
-    let core = state.core.clone();
-    let h = build_hrefs(&headers, &uri, &core.name);
+    meta_type_response(&state.core, &headers, &uri, &ty).await
+}
+
+async fn meta_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri) -> Response {
+    let h = build_hrefs(headers, uri, &core.name);
     let devices = core.list_devices().await;
-    let dev = devices.iter().find(|d| d.type_ == ty);
-    match dev {
-        Some(d) => siren_response(
-            crate::siren::Entity::new()
-                .with_class("type")
-                .with_property("type", JsonValue::String(d.type_.clone()))
-                .with_link(crate::siren::Link::new(
-                    crate::siren::rels::SELF,
-                    h.meta_type_url(&d.type_),
-                )),
-        ),
-        None => (StatusCode::NOT_FOUND, "unknown type").into_response(),
-    }
+    let types: Vec<render::KindMeta> = devices
+        .iter()
+        .map(|device| render::KindMeta {
+            spec: device.to_actor_spec(),
+        })
+        .collect();
+    siren_response(render::render_meta(&h, &types))
+}
+
+async fn meta_type_response(
+    core: &Arc<Core>,
+    headers: &HeaderMap,
+    uri: &Uri,
+    ty: &str,
+) -> Response {
+    let h = build_hrefs(headers, uri, &core.name);
+    let devices = core.list_devices().await;
+    let Some(spec) = devices
+        .iter()
+        .find(|device| device.type_ == ty)
+        .map(|device| render::KindMeta {
+            spec: device.to_actor_spec(),
+        })
+    else {
+        return (StatusCode::NOT_FOUND, "unknown type").into_response();
+    };
+    siren_response(render::render_meta_type(&h, &spec))
 }
 
 async fn peer_management_get() -> Response {
@@ -804,4 +1045,62 @@ fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
         axum::http::HeaderValue::from_static("application/problem+json"),
     );
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::JobHandle;
+
+    #[tokio::test]
+    async fn accepted_created_transition_sets_201_location_and_job_body() {
+        let resp = transition_outcome_response(TransitionOutcome::Accepted {
+            job: JobHandle {
+                id: "job-1".into(),
+                kind: "job".into(),
+                location: "/resources/job-1".into(),
+                created: true,
+            },
+            output: Some(serde_json::json!({"queued": true})),
+        });
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(
+            resp.headers()
+                .get(http::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/resources/job-1")
+        );
+        let body = response_json(resp).await;
+        assert_eq!(body["job"]["id"], "job-1");
+        assert_eq!(body["job"]["kind"], "job");
+        assert_eq!(body["job"]["location"], "/resources/job-1");
+        assert_eq!(body["output"], serde_json::json!({"queued": true}));
+    }
+
+    #[tokio::test]
+    async fn accepted_existing_transition_sets_202_without_location() {
+        let resp = transition_outcome_response(TransitionOutcome::Accepted {
+            job: JobHandle {
+                id: "job-1".into(),
+                kind: "job".into(),
+                location: "/resources/job-1".into(),
+                created: false,
+            },
+            output: None,
+        });
+
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert!(!resp.headers().contains_key(http::header::LOCATION));
+        let body = response_json(resp).await;
+        assert_eq!(body["job"]["location"], "/resources/job-1");
+        assert_eq!(body["output"], JsonValue::Null);
+    }
+
+    async fn response_json(resp: Response) -> JsonValue {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }

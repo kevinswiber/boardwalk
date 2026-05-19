@@ -79,18 +79,18 @@ async fn root_returns_siren() {
 async fn list_get_transition_flow() {
     let (addr, _core, _h) = boot().await;
 
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
+    let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let id = server["entities"][0]["properties"]["id"]
+    let id = resources["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let dev: Json = reqwest::get(format!("http://{addr}/servers/hub/devices/{id}"))
+    let dev: Json = reqwest::get(format!("http://{addr}/resources/{id}"))
         .await
         .unwrap()
         .json()
@@ -101,22 +101,26 @@ async fn list_get_transition_flow() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let dev: Json = resp.json().await.unwrap();
-    assert_eq!(dev["properties"]["state"], "on");
+    let outcome: Json = resp.json().await.unwrap();
+    assert_eq!(outcome["snapshot"]["state"], "on");
+    let dev: Json = reqwest::get(format!("http://{addr}/resources/{id}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(dev["actions"][0]["name"], "turn-off");
 
     // Not allowed in current state.
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -127,13 +131,13 @@ async fn list_get_transition_flow() {
 async fn ws_subscribe_receives_state_event() {
     let (addr, _core, _h) = boot().await;
 
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
+    let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let id = server["entities"][0]["properties"]["id"]
+    let id = resources["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -164,9 +168,8 @@ async fn ws_subscribe_receives_state_event() {
     // Trigger a state change.
     let client = reqwest::Client::new();
     let _ = client
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -204,21 +207,21 @@ async fn ws_subscribe_receives_state_event() {
 }
 
 #[tokio::test]
-async fn query_string_filters_devices() {
+async fn query_string_filters_resources() {
     let (addr, _core, _h) = boot().await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode("where type = \"led\"")
     );
     let resp: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
     assert_eq!(
         resp["class"],
-        serde_json::json!(["server", "search-results"])
+        serde_json::json!(["resources", "search-results"])
     );
     assert!(!resp["entities"].as_array().unwrap().is_empty());
 
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode("where type = \"motion\"")
     );
     let resp: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();

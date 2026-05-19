@@ -198,14 +198,10 @@ async fn runtime_transition_event_carries_request_correlation_and_command_causat
     assert_eq!(trace.traceparent, TRACEPARENT);
 }
 
-/// The form-url-encoded device route is still wired to `Core` and is
-/// scheduled to be replaced by the JSON `/resources` transition
-/// endpoint. Until that replacement lands, the form path must
-/// participate in the same correlation/causation/trace contract — both
-/// to validate the bridge into `RequestCtx`/`TransitionCtx` and to
-/// avoid silently leaving form-issued commands uncorrelated.
+/// The JSON resource transition route participates in the same
+/// correlation/causation/trace contract as direct runtime transitions.
 #[tokio::test]
-async fn legacy_form_transition_event_is_populated_until_form_route_is_removed() {
+async fn json_resource_transition_event_is_populated() {
     let mut b = CoreBuilder::new("hub");
     let id = b.add_device(DeviceLed::default());
     let core = b.build();
@@ -225,11 +221,10 @@ async fn legacy_form_transition_event_is_populated_until_form_route_is_removed()
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
         .header("traceparent", TRACEPARENT)
         .header("x-request-id", "req-123")
-        .body("action=turn-on")
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -243,7 +238,7 @@ async fn legacy_form_transition_event_is_populated_until_form_route_is_removed()
     let causation = env
         .causation_id
         .as_ref()
-        .expect("causation_id must be set for form-route transitions");
+        .expect("causation_id must be set for resource transitions");
     assert!(
         !causation.0.is_empty(),
         "causation_id should carry the minted command id"

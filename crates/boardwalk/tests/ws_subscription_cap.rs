@@ -166,9 +166,8 @@ async fn ws_reclaims_cap_slot_when_local_forwarder_exits() {
     // One transition fan-outs to all 5 limit:1 subs; each delivers
     // its one event, hits limit, and the bus auto-removes it.
     let _ = reqwest::Client::new()
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();

@@ -113,30 +113,33 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     assert_eq!(entities[0]["properties"]["type"], "led");
     assert_eq!(entities[0]["properties"]["state"], "off");
 
-    // Forward a transition POST.
+    // Forward a transition POST through the cloud gateway.
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{cloud_addr}/servers/hub/devices/{dev_id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{dev_id}/transitions/turn-on"
+        ))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200, "forwarded transition should succeed");
-    let dev: Json = resp.json().await.unwrap();
-    assert_eq!(dev["properties"]["state"], "on");
+    let outcome: Json = resp.json().await.unwrap();
+    assert_eq!(outcome["snapshot"]["state"], "on");
 
-    // Forward GET device for verification.
-    let dev: Json = reqwest::get(format!("http://{cloud_addr}/servers/hub/devices/{dev_id}"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // Forward GET resource for verification.
+    let dev: Json = reqwest::get(format!(
+        "http://{cloud_addr}/servers/hub/resources/{dev_id}"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     assert_eq!(dev["properties"]["state"], "on");
 
     // Direct check on the hub returns the same.
-    let dev_direct: Json = reqwest::get(format!("http://{hub_addr}/servers/hub/devices/{dev_id}"))
+    let dev_direct: Json = reqwest::get(format!("http://{hub_addr}/resources/{dev_id}"))
         .await
         .unwrap()
         .json()
@@ -224,9 +227,10 @@ async fn cloud_dedups_peer_subscriptions() {
 
     let client = reqwest::Client::new();
     let _ = client
-        .post(format!("http://{hub_addr}/servers/hub/devices/{dev_id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!(
+            "http://{hub_addr}/resources/{dev_id}/transitions/turn-on"
+        ))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -395,9 +399,10 @@ async fn cloud_ws_forwards_peer_events() {
     // Trigger the LED on the HUB directly.
     let client = reqwest::Client::new();
     let _ = client
-        .post(format!("http://{hub_addr}/servers/hub/devices/{dev_id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("action=turn-on")
+        .post(format!(
+            "http://{hub_addr}/resources/{dev_id}/transitions/turn-on"
+        ))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();

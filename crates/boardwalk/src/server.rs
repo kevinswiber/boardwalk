@@ -74,9 +74,9 @@ impl Boardwalk {
     }
 
     /// Register a factory for hubless device registration. The factory
-    /// receives the form fields from `POST /servers/{name}/devices`
-    /// (minus the standard `type`/`id`/`name` fields, which are
-    /// extracted separately) and returns a freshly-built device.
+    /// receives the form fields from `POST /resources` (minus the
+    /// standard `type`/`id`/`name` fields, which are extracted
+    /// separately) and returns a freshly-built device.
     pub fn register_factory<F>(mut self, type_name: impl Into<String>, factory: F) -> Self
     where
         F: Fn(HashMap<String, String>) -> Result<Box<dyn Device>, DeviceError>

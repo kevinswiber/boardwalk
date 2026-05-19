@@ -172,7 +172,7 @@ impl StreamSink for BusSink {
 
 impl Core {
     /// Register a device at runtime (not via the static builder).
-    /// Used by `POST /servers/{name}/devices` factories and by scouts.
+    /// Used by `POST /resources` factories and by scouts.
     pub async fn register_device(
         &self,
         id: DeviceId,
@@ -400,6 +400,19 @@ impl DeviceSnapshot {
             streams,
             revision: None,
             metadata: serde_json::Map::new(),
+        }
+    }
+
+    pub fn to_actor_spec(&self) -> crate::core::ActorSpec {
+        crate::core::ActorSpec {
+            resource: crate::core::ResourceSpec {
+                kind: self.type_.clone(),
+                name: self.name.clone(),
+                labels: BTreeMap::new(),
+                property_schema: None,
+                streams: self.config.streams.clone(),
+            },
+            transitions: self.config.transitions.values().cloned().collect(),
         }
     }
 }

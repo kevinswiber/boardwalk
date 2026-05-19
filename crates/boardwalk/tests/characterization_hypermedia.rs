@@ -129,6 +129,81 @@ fn find_link_with_rels<'a>(entity: &'a Json, rels: &[&str]) -> Option<&'a Json> 
 }
 
 #[tokio::test]
+async fn root_links_to_local_resources() {
+    let (addr, _core, _h) = boot().await;
+    let body: Json = reqwest::get(format!("http://{addr}/"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let resources_link = find_link_with_rels(&body, &["https://rels.boardwalk.to/resources"])
+        .expect("resources link present");
+    assert_eq!(
+        resources_link["href"].as_str().unwrap(),
+        format!("http://{addr}/resources")
+    );
+}
+
+#[tokio::test]
+async fn resources_collection_renders_resource_entities() {
+    let (addr, _core, _h) = boot().await;
+    let collection: Json = reqwest::get(format!("http://{addr}/resources"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let classes: Vec<&str> = collection["class"]
+        .as_array()
+        .expect("class array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        classes.contains(&"resources"),
+        "expected resources class, got {classes:?}"
+    );
+
+    let entities = collection["entities"]
+        .as_array()
+        .expect("resource entities present");
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0]["properties"]["node"], "hub");
+    let resource_id = entities[0]["properties"]["id"].as_str().unwrap();
+    assert_eq!(
+        entities[0]["links"][0]["href"].as_str().unwrap(),
+        format!("http://{addr}/resources/{resource_id}")
+    );
+
+    let resource: Json = reqwest::get(format!("http://{addr}/resources/{resource_id}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resource["properties"]["node"], "hub");
+}
+
+#[tokio::test]
+async fn old_device_routes_return_404_after_resource_switch() {
+    let (addr, core, _h) = boot().await;
+    let id = core.list_devices().await[0].id;
+
+    let devices = reqwest::get(format!("http://{addr}/servers/hub/devices"))
+        .await
+        .unwrap();
+    assert_eq!(devices.status(), 404);
+
+    let device = reqwest::get(format!("http://{addr}/servers/hub/devices/{id}"))
+        .await
+        .unwrap();
+    assert_eq!(device.status(), 404);
+}
+
+#[tokio::test]
 async fn root_advertises_self_server_peer_management_events_links() {
     let (addr, _core, _h) = boot().await;
     let body: Json = reqwest::get(format!("http://{addr}/"))
@@ -165,7 +240,7 @@ async fn root_advertises_self_server_peer_management_events_links() {
 }
 
 #[tokio::test]
-async fn root_query_devices_action_has_server_and_ql_fields() {
+async fn root_query_resources_action_has_ql_field() {
     let (addr, _core, _h) = boot().await;
     let body: Json = reqwest::get(format!("http://{addr}/"))
         .await
@@ -175,8 +250,9 @@ async fn root_query_devices_action_has_server_and_ql_fields() {
         .unwrap();
 
     let action = &body["actions"][0];
-    assert_eq!(action["name"], "query-devices");
+    assert_eq!(action["name"], "query-resources");
     assert_eq!(action["method"], "GET");
+    assert_eq!(action["href"], format!("http://{addr}/resources"));
     assert_eq!(action["type"], "application/x-www-form-urlencoded");
 
     let field_names: Vec<&str> = action["fields"]
@@ -185,11 +261,11 @@ async fn root_query_devices_action_has_server_and_ql_fields() {
         .iter()
         .map(|f| f["name"].as_str().unwrap())
         .collect();
-    assert_eq!(field_names, vec!["server", "ql"]);
+    assert_eq!(field_names, vec!["ql"]);
 }
 
 #[tokio::test]
-async fn server_renders_query_register_actions_and_device_entities() {
+async fn server_renders_resource_actions_and_resource_entities() {
     let (addr, _core, _h) = boot().await;
     let body: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
@@ -215,38 +291,37 @@ async fn server_renders_query_register_actions_and_device_entities() {
         .iter()
         .map(|a| a["name"].as_str().unwrap())
         .collect();
-    assert!(action_names.contains(&"query-devices"));
-    assert!(action_names.contains(&"register-device"));
+    assert!(action_names.contains(&"query-resources"));
+    assert!(action_names.contains(&"register-resource"));
 
     let entities = body["entities"].as_array().expect("entities present");
-    assert_eq!(entities.len(), 1, "expected one embedded device entity");
-    let device_classes: Vec<&str> = entities[0]["class"]
+    assert_eq!(entities.len(), 1, "expected one embedded resource entity");
+    let resource_classes: Vec<&str> = entities[0]["class"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert!(device_classes.contains(&"device"));
-    assert!(device_classes.contains(&"led"));
+    assert!(resource_classes.contains(&"resource"));
+    assert!(resource_classes.contains(&"led"));
 }
 
 #[tokio::test]
-async fn device_renders_state_gated_transition_action_and_stream_links() {
+async fn resource_renders_state_gated_transition_action_and_stream_links() {
     let (addr, _core, _h) = boot().await;
 
-    // Discover device id via the server crawl.
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
+    let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let id = server["entities"][0]["properties"]["id"]
+    let id = resources["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let dev: Json = reqwest::get(format!("http://{addr}/servers/hub/devices/{id}"))
+    let dev: Json = reqwest::get(format!("http://{addr}/resources/{id}"))
         .await
         .unwrap()
         .json()
@@ -260,14 +335,11 @@ async fn device_renders_state_gated_transition_action_and_stream_links() {
         "expected exactly one allowed transition in 'off' state"
     );
     assert_eq!(actions[0]["name"], "turn-on");
-    let hidden = actions[0]["fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["type"] == "hidden")
-        .expect("hidden action field present");
-    assert_eq!(hidden["name"], "action");
-    assert_eq!(hidden["value"], "turn-on");
+    assert_eq!(actions[0]["type"], "application/json");
+    assert_eq!(
+        actions[0]["href"],
+        format!("http://{addr}/resources/{id}/transitions/turn-on")
+    );
 
     let stream_link = find_link_with_rels(
         &dev,
@@ -281,12 +353,16 @@ async fn device_renders_state_gated_transition_action_and_stream_links() {
         decoded.contains(&expected),
         "stream href {decoded:?} should contain {expected:?}"
     );
+    assert!(
+        decoded.starts_with(&format!("ws://{addr}/events")),
+        "stream href {decoded:?} should use the local events route"
+    );
 }
 
 #[tokio::test]
 async fn meta_collection_renders_type_subentities_with_streams_and_transitions() {
     let (addr, _core, _h) = boot().await;
-    let meta: Json = reqwest::get(format!("http://{addr}/servers/hub/meta"))
+    let meta: Json = reqwest::get(format!("http://{addr}/meta"))
         .await
         .unwrap()
         .json()
@@ -305,12 +381,13 @@ async fn meta_collection_renders_type_subentities_with_streams_and_transitions()
         .expect("at least one `type` sub-entity");
 
     assert_eq!(type_entity["properties"]["type"], "led");
+    assert_eq!(type_entity["properties"]["kind"], "led");
 
     let streams: Vec<&str> = type_entity["properties"]["streams"]
         .as_array()
         .expect("streams array")
         .iter()
-        .map(|v| v.as_str().unwrap())
+        .map(|v| v["name"].as_str().unwrap())
         .collect();
     assert!(
         streams.contains(&"state"),
@@ -336,82 +413,26 @@ async fn meta_collection_renders_type_subentities_with_streams_and_transitions()
     );
 }
 
-/// Survivor characterization for the full device-first Siren crawl.
-///
-/// Locks the exact wire bytes — class, properties, link rels/hrefs,
-/// action names, action content types, embedded entity classes, stream
-/// links, and the compat `type` property on device renders — across
-/// every route the resource refactor is going to retire. Updating any
-/// of these snapshots must be a deliberate act tied to the new
-/// `/resources` shape, not an accident.
 #[tokio::test]
-async fn current_device_siren_crawl_is_byte_stable() {
+async fn current_resource_siren_crawl_is_byte_stable() {
     let device_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
     let (addr, _core, _h) = boot_pinned(device_id).await;
     let port = addr.port();
     let id = device_id.to_string();
 
     let root = normalize_port(&fetch_json(addr, "/").await, port);
-    let server = normalize_port(&fetch_json(addr, "/servers/hub").await, port);
-    let devices = normalize_port(&fetch_json(addr, "/servers/hub/devices").await, port);
-    let device = normalize_port(
-        &fetch_json(addr, &format!("/servers/hub/devices/{id}")).await,
-        port,
-    );
-    let meta = normalize_port(&fetch_json(addr, "/servers/hub/meta").await, port);
-    let meta_led = normalize_port(&fetch_json(addr, "/servers/hub/meta/led").await, port);
-
-    let device_self_href =
-        "http://127.0.0.1:PORT/servers/hub/devices/11111111-2222-3333-4444-555555555555";
-    let server_self_href = "http://127.0.0.1:PORT/servers/hub";
-
-    let device_sub_entity = json!({
-        "class": ["device", "led"],
-        "rel": ["https://rels.boardwalk.to/device"],
-        "properties": {
-            "id": "11111111-2222-3333-4444-555555555555",
-            "name": "LED",
-            "state": "off",
-            "type": "led"
-        },
-        "links": [
-            {"rel": ["self"], "href": device_self_href},
-            {
-                "rel": ["up", "https://rels.boardwalk.to/server"],
-                "href": server_self_href,
-                "title": "hub"
-            }
-        ]
-    });
-
-    let server_actions = json!([
-        {
-            "name": "query-devices",
-            "method": "GET",
-            "href": server_self_href,
-            "type": "application/x-www-form-urlencoded",
-            "fields": [{"name": "ql", "type": "text"}]
-        },
-        {
-            "name": "register-device",
-            "method": "POST",
-            "href": "http://127.0.0.1:PORT/servers/hub/devices",
-            "type": "application/x-www-form-urlencoded",
-            "fields": [
-                {"name": "type", "type": "text"},
-                {"name": "id", "type": "text"},
-                {"name": "name", "type": "text"}
-            ]
-        }
-    ]);
+    let resources = normalize_port(&fetch_json(addr, "/resources").await, port);
+    let resource = normalize_port(&fetch_json(addr, &format!("/resources/{id}")).await, port);
+    let meta = normalize_port(&fetch_json(addr, "/meta").await, port);
 
     let expected_root = json!({
         "class": ["root"],
         "links": [
             {"rel": ["self"], "href": "http://127.0.0.1:PORT/"},
+            {"rel": ["https://rels.boardwalk.to/resources"], "href": "http://127.0.0.1:PORT/resources"},
             {
                 "rel": ["https://rels.boardwalk.to/server"],
-                "href": server_self_href,
+                "href": "http://127.0.0.1:PORT/servers/hub",
                 "title": "hub"
             },
             {
@@ -424,64 +445,87 @@ async fn current_device_siren_crawl_is_byte_stable() {
             }
         ],
         "actions": [{
-            "name": "query-devices",
+            "name": "query-resources",
             "method": "GET",
-            "href": "http://127.0.0.1:PORT/",
+            "href": "http://127.0.0.1:PORT/resources",
             "type": "application/x-www-form-urlencoded",
-            "fields": [
-                {"name": "server", "type": "text"},
-                {"name": "ql", "type": "text"}
-            ]
+            "fields": [{"name": "ql", "type": "text"}]
         }]
     });
 
-    let expected_server = json!({
-        "class": ["server"],
-        "properties": {"name": "hub"},
-        "entities": [device_sub_entity],
-        "links": [
-            {"rel": ["self"], "href": server_self_href},
-            {"rel": ["monitor"], "href": "ws://127.0.0.1:PORT/events"}
-        ],
-        "actions": server_actions,
-    });
-
-    let expected_devices = expected_server.clone();
-
-    let expected_device = json!({
-        "class": ["device", "led"],
+    let expected_resource_sub_entity = json!({
+        "class": ["resource", "led"],
+        "rel": ["https://rels.boardwalk.to/resource"],
         "properties": {
             "id": "11111111-2222-3333-4444-555555555555",
+            "kind": "led",
             "name": "LED",
+            "node": "hub",
             "state": "off",
             "type": "led"
         },
         "links": [
-            {"rel": ["self", "edit"], "href": device_self_href},
+            {"rel": ["self"], "href": "http://127.0.0.1:PORT/resources/11111111-2222-3333-4444-555555555555"},
+            {"rel": ["up", "https://rels.boardwalk.to/resources"], "href": "http://127.0.0.1:PORT/resources"}
+        ]
+    });
+
+    let expected_resources = json!({
+        "class": ["resources"],
+        "properties": {"node": "hub"},
+        "entities": [expected_resource_sub_entity],
+        "links": [{"rel": ["self"], "href": "http://127.0.0.1:PORT/resources"}],
+        "actions": [
             {
-                "rel": ["up", "https://rels.boardwalk.to/server"],
-                "href": server_self_href,
-                "title": "hub"
+                "name": "query-resources",
+                "method": "GET",
+                "href": "http://127.0.0.1:PORT/resources",
+                "type": "application/x-www-form-urlencoded",
+                "fields": [{"name": "ql", "type": "text"}]
             },
             {
+                "name": "register-resource",
+                "method": "POST",
+                "href": "http://127.0.0.1:PORT/resources",
+                "type": "application/x-www-form-urlencoded",
+                "fields": [
+                    {"name": "type", "type": "text"},
+                    {"name": "id", "type": "text"},
+                    {"name": "name", "type": "text"}
+                ]
+            }
+        ]
+    });
+
+    let expected_resource = json!({
+        "class": ["resource", "led"],
+        "properties": {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "kind": "led",
+            "name": "LED",
+            "node": "hub",
+            "state": "off",
+            "type": "led"
+        },
+        "links": [
+            {"rel": ["self", "edit"], "href": "http://127.0.0.1:PORT/resources/11111111-2222-3333-4444-555555555555"},
+            {"rel": ["up", "https://rels.boardwalk.to/resources"], "href": "http://127.0.0.1:PORT/resources"},
+            {
                 "rel": ["https://rels.boardwalk.to/type", "describedby"],
-                "href": "http://127.0.0.1:PORT/servers/hub/meta/led"
+                "href": "http://127.0.0.1:PORT/meta/led"
             },
             {
                 "rel": ["monitor", "https://rels.boardwalk.to/object-stream"],
-                "href": "ws://127.0.0.1:PORT/servers/hub/events?topic=hub%2Fled%2F11111111-2222-3333-4444-555555555555%2Fstate",
+                "href": "ws://127.0.0.1:PORT/events?topic=hub%2Fled%2F11111111-2222-3333-4444-555555555555%2Fstate",
                 "title": "state"
             }
         ],
         "actions": [{
             "name": "turn-on",
             "method": "POST",
-            "href": device_self_href,
-            "type": "application/x-www-form-urlencoded",
-            "class": ["transition"],
-            "fields": [
-                {"name": "action", "type": "hidden", "value": "turn-on"}
-            ]
+            "href": "http://127.0.0.1:PORT/resources/11111111-2222-3333-4444-555555555555/transitions/turn-on",
+            "type": "application/json",
+            "class": ["transition"]
         }]
     });
 
@@ -492,57 +536,45 @@ async fn current_device_siren_crawl_is_byte_stable() {
             "class": ["type"],
             "rel": ["https://rels.boardwalk.to/type", "item"],
             "properties": {
+                "kind": "led",
                 "type": "led",
-                "properties": ["id", "type", "state"],
-                "streams": ["state"],
+                "name": "LED",
+                "labels": {},
+                "propertySchema": null,
+                "properties": ["id", "kind", "type", "node", "state"],
+                "streams": [{"name": "state", "kind": "object"}],
                 "transitions": [
-                    {"name": "turn-off"},
-                    {"name": "turn-on"}
+                    {"name": "turn-off", "allowedStates": ["on"], "result": "sync", "idempotency": "none", "safety": "unsafe", "requiredScopes": []},
+                    {"name": "turn-on", "allowedStates": ["off"], "result": "sync", "idempotency": "none", "safety": "unsafe", "requiredScopes": []}
                 ]
             },
             "links": [
                 {
                     "rel": ["self"],
-                    "href": "http://127.0.0.1:PORT/servers/hub/meta/led"
+                    "href": "http://127.0.0.1:PORT/meta/led"
                 }
             ]
         }],
         "links": [
-            {"rel": ["self"], "href": "http://127.0.0.1:PORT/servers/hub/meta"},
-            {"rel": ["https://rels.boardwalk.to/server"], "href": server_self_href},
+            {"rel": ["self"], "href": "http://127.0.0.1:PORT/meta"},
+            {"rel": ["https://rels.boardwalk.to/resources"], "href": "http://127.0.0.1:PORT/resources"},
             {"rel": ["monitor"], "href": "ws://127.0.0.1:PORT/events?topic=meta"}
         ]
     });
 
-    let expected_meta_led = json!({
-        "class": ["type"],
-        "properties": {"type": "led"},
-        "links": [
-            {
-                "rel": ["self"],
-                "href": "http://127.0.0.1:PORT/servers/hub/meta/led"
-            }
-        ]
-    });
-
     assert_eq!(root, expected_root, "root snapshot");
-    assert_eq!(server, expected_server, "server snapshot");
-    assert_eq!(devices, expected_devices, "devices collection snapshot");
-    assert_eq!(device, expected_device, "device snapshot");
+    assert_eq!(
+        resources, expected_resources,
+        "resources collection snapshot"
+    );
+    assert_eq!(resource, expected_resource, "resource snapshot");
     assert_eq!(meta, expected_meta, "meta collection snapshot");
-    assert_eq!(meta_led, expected_meta_led, "meta/led snapshot");
 }
 
 #[tokio::test]
-#[allow(non_snake_case)]
-async fn meta_type_endpoint_returns_minimal_self_only_entity__pending_replacement() {
-    // Documents the current parity loss between `/meta` and
-    // `/meta/{type}`: the per-type endpoint omits streams and
-    // transitions and exposes only a `self` link. Assertions are
-    // intentionally tight so that bringing the per-type endpoint to
-    // parity with the collection breaks this test loudly.
+async fn meta_type_endpoint_returns_full_kind_metadata() {
     let (addr, _core, _h) = boot().await;
-    let body: Json = reqwest::get(format!("http://{addr}/servers/hub/meta/led"))
+    let body: Json = reqwest::get(format!("http://{addr}/meta/led"))
         .await
         .unwrap()
         .json()
@@ -550,7 +582,21 @@ async fn meta_type_endpoint_returns_minimal_self_only_entity__pending_replacemen
         .unwrap();
 
     assert_eq!(body["class"], serde_json::json!(["type"]));
+    assert_eq!(body["properties"]["kind"], "led");
     assert_eq!(body["properties"]["type"], "led");
+    assert_eq!(
+        body["properties"]["streams"],
+        serde_json::json!([{"name": "state", "kind": "object"}])
+    );
+    let transitions = body["properties"]["transitions"]
+        .as_array()
+        .expect("transitions array");
+    let transition_names: Vec<&str> = transitions
+        .iter()
+        .map(|transition| transition["name"].as_str().unwrap())
+        .collect();
+    assert!(transition_names.contains(&"turn-on"));
+    assert!(transition_names.contains(&"turn-off"));
 
     let links = body["links"].as_array().expect("links array");
     assert_eq!(links.len(), 1, "expected exactly one link, got {links:?}");

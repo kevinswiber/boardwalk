@@ -1,12 +1,10 @@
 //! Characterization tests for the current `?ql=` and `ServerHandle::query`
 //! behaviors.
 //!
-//! Three of these tests carry the `__pending_replacement` suffix: they
-//! lock in behaviors that are explicitly slated for replacement (the
-//! HTTP swallow-on-error, the app-side swallow-on-error, and the
-//! query target's narrow projection). Replacing them will require
-//! intentional updates to these tests *plus* a paired source change
-//! — that is the point.
+//! Several tests lock in behaviors that are explicitly slated for later
+//! replacement (the HTTP swallow-on-error, the app-side swallow-on-error,
+//! and the query target's narrow projection). Replacing them will require
+//! intentional updates to these tests plus a paired source change.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -98,7 +96,7 @@ async fn boot_with<D: Device + 'static>(device: D) -> (SocketAddr, Arc<Core>) {
 async fn ql_with_matching_predicate_returns_search_results_with_entities() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where type = "led""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
@@ -108,7 +106,7 @@ async fn ql_with_matching_predicate_returns_search_results_with_entities() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert!(classes.contains(&"server"));
+    assert!(classes.contains(&"resources"));
     assert!(classes.contains(&"search-results"));
     let entities = body["entities"]
         .as_array()
@@ -121,7 +119,7 @@ async fn ql_with_matching_predicate_returns_search_results_with_entities() {
 async fn ql_with_non_matching_predicate_returns_search_results_with_no_entities() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where type = "motion""#)
     );
     let resp = reqwest::get(&url).await.unwrap();
@@ -147,7 +145,7 @@ async fn ql_with_non_matching_predicate_returns_search_results_with_no_entities(
 async fn invalid_ql_returns_400_with_structured_body() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode("where type =")
     );
     let resp = reqwest::get(&url).await.unwrap();
@@ -187,7 +185,7 @@ async fn query_can_match_extra_device_properties() {
     // The new query target exposes device properties under a
     // `properties` subobject, so `properties.color` resolves.
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where properties.color = "red""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
@@ -198,14 +196,11 @@ async fn query_can_match_extra_device_properties() {
     assert_eq!(entities[0]["properties"]["color"], "red");
 }
 
-/// Pins the `?ql=` parameter as the only way the server consumes a
-/// CaQL predicate. Later resource-route work will swap `/servers/...`
-/// for `/resources`, but the `ql` parameter name must survive.
 #[tokio::test]
-async fn current_server_query_uses_ql_parameter() {
+async fn resources_query_uses_ql_parameter() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where state = "off""#)
     );
     let resp = reqwest::get(&url).await.unwrap();
@@ -218,8 +213,8 @@ async fn current_server_query_uses_ql_parameter() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(
-        classes.contains(&"server") && classes.contains(&"search-results"),
-        "expected server+search-results, got {classes:?}"
+        classes.contains(&"resources") && classes.contains(&"search-results"),
+        "expected resources+search-results, got {classes:?}"
     );
     assert_eq!(body["properties"]["ql"], r#"where state = "off""#);
     let entities = body["entities"]
@@ -229,12 +224,8 @@ async fn current_server_query_uses_ql_parameter() {
     assert_eq!(entities[0]["properties"]["state"], "off");
 }
 
-/// Pins the unused `server` field on the root `query-devices` action —
-/// the field exists in the form today but the route handler ignores it.
-/// Removing the field is a route surface change that needs an explicit
-/// test update.
 #[tokio::test]
-async fn current_root_query_action_carries_unused_server_field() {
+async fn root_query_action_carries_only_ql_field() {
     let (addr, _core) = boot_with(Led::default()).await;
     let body: Json = reqwest::get(format!("http://{addr}/"))
         .await
@@ -244,8 +235,8 @@ async fn current_root_query_action_carries_unused_server_field() {
         .unwrap();
     let action = body["actions"]
         .as_array()
-        .and_then(|arr| arr.iter().find(|a| a["name"] == "query-devices"))
-        .expect("query-devices action on root");
+        .and_then(|arr| arr.iter().find(|a| a["name"] == "query-resources"))
+        .expect("query-resources action on root");
     let field_names: Vec<&str> = action["fields"]
         .as_array()
         .expect("fields array")
@@ -254,50 +245,30 @@ async fn current_root_query_action_carries_unused_server_field() {
         .collect();
     assert_eq!(
         field_names,
-        vec!["server", "ql"],
-        "root action still advertises both `server` (unused) and `ql`"
+        vec!["ql"],
+        "root action should only advertise the `ql` resource query field"
     );
 }
 
-/// Pins the dead `query` stream link that search-results currently
-/// advertises. The href points at the server-wide events socket with a
-/// `topic=query/{ql}` parameter, but nothing publishes on that topic.
-/// The resource-route migration will remove the link and the
-/// corresponding renderer code.
 #[tokio::test]
-async fn current_search_results_advertise_dead_query_stream_link() {
+async fn search_results_do_not_advertise_query_stream_until_reactive_query_exists() {
     let (addr, _core) = boot_with(Led::default()).await;
     let ql = r#"where kind = "led""#;
-    let url = format!("http://{addr}/servers/hub?ql={}", urlencoding::encode(ql));
+    let url = format!("http://{addr}/resources?ql={}", urlencoding::encode(ql));
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
 
     let links = body["links"].as_array().expect("links array");
-    let query_link = links
-        .iter()
-        .find(|l| {
-            l["rel"]
-                .as_array()
-                .map(|rs| rs.iter().any(|r| r == "https://rels.boardwalk.to/query"))
-                .unwrap_or(false)
-        })
-        .expect("dead query stream link present on search results");
-    let href = query_link["href"].as_str().unwrap();
     assert!(
-        href.starts_with("ws://") || href.starts_with("wss://"),
-        "query stream link uses ws scheme; got {href}"
-    );
-    // The href is form-encoded (spaces become `+`); compare the
-    // query/<ql> prefix on the form-decoded form.
-    let after_topic = href
-        .split_once("?topic=")
-        .map(|(_, q)| q)
-        .expect("?topic= query param present");
-    let topic_form_decoded = after_topic.replace('+', " ");
-    let topic_url_decoded = urlencoding::decode(&topic_form_decoded).expect("topic url-decodes");
-    let expected = format!("query/{ql}");
-    assert_eq!(
-        topic_url_decoded, expected,
-        "query stream topic should be query/<ql>"
+        links.iter().all(|link| {
+            link["rel"]
+                .as_array()
+                .map(|rels| {
+                    rels.iter()
+                        .all(|rel| rel != "https://rels.boardwalk.to/query")
+                })
+                .unwrap_or(true)
+        }),
+        "search results must not advertise a reactive query stream until one exists: {links:?}"
     );
 }
 
@@ -307,7 +278,7 @@ async fn query_with_kind_alias_still_uses_type_keyword() {
     // alias in the evaluator's path lookup.
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
-        "http://{addr}/servers/hub?ql={}",
+        "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where type = "led""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();

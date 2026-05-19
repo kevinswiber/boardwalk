@@ -102,9 +102,8 @@ async fn device_id_via(addr: SocketAddr) -> String {
 
 async fn post_action(addr: SocketAddr, id: &str, action: &str) -> reqwest::StatusCode {
     reqwest::Client::new()
-        .post(format!("http://{addr}/servers/hub/devices/{id}"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("action={action}"))
+        .post(format!("http://{addr}/resources/{id}/transitions/{action}"))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap()

@@ -182,6 +182,7 @@ pub struct JobHandle {
     pub id: String,
     pub kind: ResourceKind,
     pub location: String,
+    pub created: bool,
 }
 
 /// Typed return type for invoking a transition. `Sync` transitions

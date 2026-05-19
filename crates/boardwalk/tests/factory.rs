@@ -1,4 +1,4 @@
-//! Hubless device registration via Boardwalk::register_factory.
+//! Hubless resource registration via Boardwalk::register_factory.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -68,15 +68,15 @@ async fn register_factory_creates_device_at_runtime() {
             });
     let addr = serve(boardwalk).await;
 
-    // Before any POST, no devices.
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
+    // Before any POST, no resources.
+    let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
     assert!(
-        server
+        resources
             .get("entities")
             .and_then(|e| e.as_array())
             .map(|a| a.is_empty())
@@ -86,7 +86,7 @@ async fn register_factory_creates_device_at_runtime() {
     // POST a registration.
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices"))
+        .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body("type=led&name=KitchenLED")
         .send()
@@ -98,25 +98,23 @@ async fn register_factory_creates_device_at_runtime() {
     assert_eq!(dev["properties"]["name"], "KitchenLED");
     assert_eq!(dev["properties"]["state"], "off");
 
-    // The device now appears in the server listing.
-    let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
+    // The resource now appears in the resource listing.
+    let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let entities = server["entities"].as_array().unwrap();
+    let entities = resources["entities"].as_array().unwrap();
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0]["properties"]["name"], "KitchenLED");
 }
 
-/// Pins the current hubless registration form: `POST
-/// /servers/hub/devices` consumes the `type`, `id`, and `name`
-/// form fields and returns 201 Created with a Siren device. The
-/// resource-route migration will swap this for the resource
-/// registration endpoint.
+/// Pins the hubless registration form: `POST /resources` consumes the
+/// `type`, `id`, and `name` form fields and returns 201 Created with a
+/// Siren resource.
 #[tokio::test]
-async fn current_factory_registration_posts_type_id_name_to_devices_route() {
+async fn factory_registration_posts_type_id_name_to_resources_route() {
     let boardwalk = Boardwalk::new()
         .name("hub")
         .register_factory("led", |_args: HashMap<String, String>| {
@@ -127,7 +125,7 @@ async fn current_factory_registration_posts_type_id_name_to_devices_route() {
     let supplied_id = uuid::Uuid::new_v4();
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices"))
+        .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!("type=led&id={supplied_id}&name=PantryLED",))
         .send()
@@ -148,7 +146,7 @@ async fn missing_type_returns_400() {
     let addr = serve(boardwalk).await;
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices"))
+        .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body("name=Foo")
         .send()
@@ -165,7 +163,7 @@ async fn unknown_type_returns_400() {
     let addr = serve(boardwalk).await;
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices"))
+        .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body("type=motion")
         .send()
@@ -179,7 +177,7 @@ async fn no_factories_returns_501() {
     let addr = serve(Boardwalk::new().name("hub")).await;
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{addr}/servers/hub/devices"))
+        .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body("type=led")
         .send()

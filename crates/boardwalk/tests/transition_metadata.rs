@@ -107,6 +107,7 @@ fn transition_outcome_accepted_carries_typed_job_handle() {
         id: "job-1".into(),
         kind: "job".into(),
         location: "/resources/job-1".into(),
+        created: true,
     };
     let outcome = TransitionOutcome::Accepted {
         job: handle.clone(),
@@ -117,6 +118,7 @@ fn transition_outcome_accepted_carries_typed_job_handle() {
             assert_eq!(job.id, handle.id);
             assert_eq!(job.kind, handle.kind);
             assert_eq!(job.location, handle.location);
+            assert!(job.created);
             assert_eq!(output, Some(json!({"queue": "default"})));
         }
         TransitionOutcome::Completed { .. } => panic!("expected Accepted variant"),
