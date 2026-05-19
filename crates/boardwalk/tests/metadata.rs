@@ -71,7 +71,7 @@ async fn metadata_lists_kind_transitions_streams_and_schemas_from_resource_spec(
         .iter()
         .find(|entity| entity["properties"]["kind"] == "led")
         .expect("led metadata entity");
-    assert_eq!(type_entity["properties"]["type"], "led");
+    assert!(type_entity["properties"].get("type").is_none());
     assert_eq!(type_entity["properties"]["propertySchema"], Json::Null);
 
     let transition = &type_entity["properties"]["transitions"][0];

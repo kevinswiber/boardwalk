@@ -14,8 +14,7 @@ streams.
 > Query predicates target the snapshot shape: `kind`, `state`,
 > `properties.*`, `labels`, `affordances.transitions.available`,
 > `affordances.streams.available`. See [caql.md](caql.md) for the
-> query language. The wire `type` keyword keeps working as a
-> compatibility alias for `kind`.
+> query language. Use `kind` for resource-kind predicates.
 
 ## The trait
 
@@ -46,7 +45,7 @@ pub trait Device: Send + 'static {
 device. The builder is chainable:
 
 ```rust,ignore
-cfg.type_("thermostat")           // wire type, required
+cfg.type_("thermostat")           // resource kind, required
    .name("hallway")               // optional human label
    .state(self.state())           // current state
    .when("idle",     &["heat", "cool"])
@@ -56,7 +55,7 @@ cfg.type_("thermostat")           // wire type, required
    .monitor("temperature");       // auto-publish a property
 ```
 
-- **`type_(t)`** — wire type, lowercase kebab-case by convention.
+- **`type_(t)`** — resource kind, lowercase kebab-case by convention.
 - **`name(n)`** — human label, optional.
 - **`state(s)`** — current state.
 - **`when(state, transitions)`** — declares which transitions are
@@ -121,7 +120,7 @@ fn on_start(&self, ctx: DeviceCtx) {
 }
 ```
 
-The published topic is `{server}/{type}/{id}/{stream}` — in this case
+The published topic is `{server}/{kind}/{id}/{stream}` — in this case
 `hub/photocell/<uuid>/intensity`.
 
 ## Subscribing to events
@@ -164,9 +163,8 @@ Boardwalk::new()
 
 ## Hubless registration via factories
 
-If you want a server that accepts `POST /servers/{name}/devices` to
-register devices at runtime (instead of compile-time), register a
-factory:
+If you want a server that accepts `POST /resources` to register
+resources at runtime (instead of compile-time), register a factory:
 
 ```rust,ignore
 Boardwalk::new()
@@ -178,7 +176,7 @@ Boardwalk::new()
 Then:
 
 ```
-curl -d 'type=led&name=garage' http://hub:1337/servers/hub/devices
+curl -d 'kind=led&name=garage' http://hub:1337/resources
 ```
 
 ## Scouts
@@ -205,5 +203,5 @@ Boardwalk::new()
 ```
 
 With `.persist(path)`, device IDs become stable across restarts
-(looked up by `(type, name)` identity). Peer connection history is
+(looked up by `(kind, name)` identity). Peer connection history is
 also persisted.

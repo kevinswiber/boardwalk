@@ -74,7 +74,7 @@ impl App for DuskDawn {
     async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError> {
         server
             .observe(
-                vec![r#"where type = "led""#, r#"where type = "photocell""#],
+                vec![r#"where kind = "led""#, r#"where kind = "photocell""#],
                 |devs| async move {
                     assert_eq!(devs.len(), 2);
                     self.fired.store(true, Ordering::SeqCst);
@@ -101,7 +101,7 @@ impl App for ObservePin {
         let me = self.clone();
         server
             .observe(
-                vec![r#"where type = "led""#, r#"where type = "photocell""#],
+                vec![r#"where kind = "led""#, r#"where kind = "photocell""#],
                 |devs| {
                     let me = me.clone();
                     async move {

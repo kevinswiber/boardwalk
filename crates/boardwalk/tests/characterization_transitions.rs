@@ -255,7 +255,7 @@ async fn json_transition_returns_outcome_and_state_event() {
     let body: Json = resp.json().await.unwrap();
     assert_eq!(body["output"], Json::Null);
     assert_eq!(body["snapshot"]["state"], "on");
-    assert_eq!(body["snapshot"]["type"], "led");
+    assert_eq!(body["snapshot"]["kind"], "led");
 
     let env = sub.rx.recv().await.expect("state-change envelope");
     assert_eq!(env.payload_kind, "resource.state.changed");

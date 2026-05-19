@@ -211,7 +211,7 @@ async fn query_string_filters_resources() {
     let (addr, _core, _h) = boot().await;
     let url = format!(
         "http://{addr}/resources?ql={}",
-        urlencoding::encode("where type = \"led\"")
+        urlencoding::encode("where kind = \"led\"")
     );
     let resp: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
     assert_eq!(
@@ -222,7 +222,7 @@ async fn query_string_filters_resources() {
 
     let url = format!(
         "http://{addr}/resources?ql={}",
-        urlencoding::encode("where type = \"motion\"")
+        urlencoding::encode("where kind = \"motion\"")
     );
     let resp: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
     // Empty entities array is omitted from JSON when no matches; either absence or empty array is OK.

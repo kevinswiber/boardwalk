@@ -509,7 +509,7 @@ async fn resources_post(
     let mut reg = DeviceRegistration::default();
     for (k, v) in pairs {
         match k.as_str() {
-            "type" => reg.type_ = v,
+            "kind" => reg.type_ = v,
             "name" => reg.name = Some(v),
             "id" => reg.id = Uuid::parse_str(&v).ok(),
             _ => {
@@ -518,7 +518,7 @@ async fn resources_post(
         }
     }
     if reg.type_.is_empty() {
-        return (StatusCode::BAD_REQUEST, "missing `type` field").into_response();
+        return (StatusCode::BAD_REQUEST, "missing `kind` field").into_response();
     }
     let new_id = match registrar(reg).await {
         Ok(id) => id,

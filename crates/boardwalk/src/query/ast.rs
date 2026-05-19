@@ -98,9 +98,7 @@ impl FieldPath {
     /// Walk `target` as a JSON object tree, returning the value at this
     /// path or `None` if any segment is missing or `target` is not an
     /// object where an inner segment is required. No aliasing: paths
-    /// like `data.type` resolve to the literal `type` key. CaQL's
-    /// `type → kind` root-segment alias lives in the evaluator, not in
-    /// the path walker.
+    /// like `type` and `data.type` resolve to the literal `type` key.
     pub fn extract<'a>(&self, target: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
         let mut cur = target;
         for seg in &self.0 {

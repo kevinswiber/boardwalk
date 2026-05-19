@@ -97,7 +97,7 @@ async fn ql_with_matching_predicate_returns_search_results_with_entities() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
         "http://{addr}/resources?ql={}",
-        urlencoding::encode(r#"where type = "led""#)
+        urlencoding::encode(r#"where kind = "led""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
     let classes: Vec<&str> = body["class"]
@@ -112,7 +112,7 @@ async fn ql_with_matching_predicate_returns_search_results_with_entities() {
         .as_array()
         .expect("matching ql should populate entities");
     assert_eq!(entities.len(), 1);
-    assert_eq!(entities[0]["properties"]["type"], "led");
+    assert_eq!(entities[0]["properties"]["kind"], "led");
 }
 
 #[tokio::test]
@@ -120,7 +120,7 @@ async fn ql_with_non_matching_predicate_returns_search_results_with_no_entities(
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
         "http://{addr}/resources?ql={}",
-        urlencoding::encode(r#"where type = "motion""#)
+        urlencoding::encode(r#"where kind = "motion""#)
     );
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -146,7 +146,7 @@ async fn invalid_ql_returns_400_with_structured_body() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
         "http://{addr}/resources?ql={}",
-        urlencoding::encode("where type =")
+        urlencoding::encode("where kind =")
     );
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), 400);
@@ -273,17 +273,16 @@ async fn search_results_do_not_advertise_query_stream_until_reactive_query_exist
 }
 
 #[tokio::test]
-async fn query_with_kind_alias_still_uses_type_keyword() {
-    // `where type = "led"` continues to work via the `type → kind`
-    // alias in the evaluator's path lookup.
+async fn query_with_type_keyword_does_not_alias_kind() {
     let (addr, _core) = boot_with(Led::default()).await;
     let url = format!(
         "http://{addr}/resources?ql={}",
         urlencoding::encode(r#"where type = "led""#)
     );
     let body: Json = reqwest::get(&url).await.unwrap().json().await.unwrap();
-    let entities = body["entities"]
-        .as_array()
-        .expect("kind alias should resolve `type = led`");
-    assert_eq!(entities.len(), 1);
+    let entities = body.get("entities").and_then(|v| v.as_array());
+    assert!(
+        entities.map(|a| a.is_empty()).unwrap_or(true),
+        "`type` must not match the canonical `kind` field"
+    );
 }

@@ -46,8 +46,7 @@ fn sample() -> ResourceSnapshot {
 
 /// Canonical contract test for the widened `ResourceSnapshot`:
 /// `labels` is a string-string map, `transitions` and `streams` are
-/// structured arrays, `revision` is optional, and `type` is a derived
-/// alias for `kind` so existing query/render expectations keep working.
+/// structured arrays, and `revision` is optional.
 #[test]
 fn resource_snapshot_query_value_exposes_widened_contract() {
     use std::collections::BTreeMap;
@@ -89,7 +88,6 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
 
     let v = snap.to_query_value();
     assert_eq!(v["kind"], "job");
-    assert_eq!(v["type"], "job", "type alias must mirror kind");
 
     let labels_obj = v["labels"]
         .as_object()
@@ -130,16 +128,14 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
 }
 
 /// Canonical contract test for `sanitize_properties`: every reserved
-/// name — including `type`, the render-time alias — is stripped from
-/// user-supplied properties so user data cannot shadow Boardwalk-owned
-/// fields or render aliases.
+/// name is stripped from user-supplied properties so user data cannot
+/// shadow Boardwalk-owned fields.
 #[test]
 fn sanitize_properties_strips_all_reserved_resource_fields() {
     let mut hostile = Map::new();
     for k in [
         "id",
         "kind",
-        "type",
         "name",
         "state",
         "node",
@@ -153,14 +149,16 @@ fn sanitize_properties_strips_all_reserved_resource_fields() {
     ] {
         hostile.insert(k.into(), Json::String("attacker".into()));
     }
+    hostile.insert("type".into(), Json::String("user-type".into()));
     hostile.insert("color".into(), Json::String("red".into()));
 
     let cleaned = boardwalk::http::sanitize_properties(hostile);
     assert_eq!(
         cleaned.len(),
-        1,
+        2,
         "expected every reserved field to be stripped; survivors: {cleaned:?}"
     );
+    assert_eq!(cleaned.get("type"), Some(&Json::String("user-type".into())));
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
 
@@ -173,7 +171,6 @@ fn to_query_value_includes_all_reserved_fields() {
     let mut expected = [
         "id",
         "kind",
-        "type",
         "name",
         "state",
         "node",
@@ -268,15 +265,15 @@ fn reserved_fields_are_stripped_from_properties() {
 }
 
 #[test]
-fn type_is_stripped_at_snapshot_level_as_render_compat_alias() {
+fn type_is_not_reserved_at_snapshot_level() {
     let mut props = Map::new();
     props.insert("type".into(), Json::String("shadow-led".into()));
     props.insert("color".into(), Json::String("red".into()));
     let cleaned = boardwalk::http::sanitize_properties(props);
     assert_eq!(
         cleaned.get("type"),
-        None,
-        "`type` is a render/query alias for `kind`; user properties must not shadow it"
+        Some(&Json::String("shadow-led".into())),
+        "`type` is user data, not a resource-kind alias"
     );
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
@@ -484,7 +481,7 @@ async fn adapter_to_query_value_contains_works_on_transitions() {
         .collect();
     assert!(names.iter().any(|n| n == "turn-on"));
 
-    // The query evaluator can still spot the kind alias.
+    // The query evaluator matches the canonical kind field.
     let q = Query {
         projection: Projection::All,
         predicate: Predicate::Compare {

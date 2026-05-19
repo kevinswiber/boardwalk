@@ -88,13 +88,13 @@ async fn register_factory_creates_device_at_runtime() {
     let resp = client
         .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
-        .body("type=led&name=KitchenLED")
+        .body("kind=led&name=KitchenLED")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 201);
     let dev: Json = resp.json().await.unwrap();
-    assert_eq!(dev["properties"]["type"], "led");
+    assert_eq!(dev["properties"]["kind"], "led");
     assert_eq!(dev["properties"]["name"], "KitchenLED");
     assert_eq!(dev["properties"]["state"], "off");
 
@@ -111,10 +111,10 @@ async fn register_factory_creates_device_at_runtime() {
 }
 
 /// Pins the hubless registration form: `POST /resources` consumes the
-/// `type`, `id`, and `name` form fields and returns 201 Created with a
+/// `kind`, `id`, and `name` form fields and returns 201 Created with a
 /// Siren resource.
 #[tokio::test]
-async fn factory_registration_posts_type_id_name_to_resources_route() {
+async fn factory_registration_posts_kind_id_name_to_resources_route() {
     let boardwalk = Boardwalk::new()
         .name("hub")
         .register_factory("led", |_args: HashMap<String, String>| {
@@ -127,19 +127,19 @@ async fn factory_registration_posts_type_id_name_to_resources_route() {
     let resp = client
         .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("type=led&id={supplied_id}&name=PantryLED",))
+        .body(format!("kind=led&id={supplied_id}&name=PantryLED",))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 201);
     let body: Json = resp.json().await.unwrap();
     assert_eq!(body["properties"]["id"], supplied_id.to_string());
-    assert_eq!(body["properties"]["type"], "led");
+    assert_eq!(body["properties"]["kind"], "led");
     assert_eq!(body["properties"]["name"], "PantryLED");
 }
 
 #[tokio::test]
-async fn missing_type_returns_400() {
+async fn missing_kind_returns_400() {
     let boardwalk = Boardwalk::new()
         .name("hub")
         .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
@@ -156,7 +156,7 @@ async fn missing_type_returns_400() {
 }
 
 #[tokio::test]
-async fn unknown_type_returns_400() {
+async fn unknown_kind_returns_400() {
     let boardwalk = Boardwalk::new()
         .name("hub")
         .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
@@ -165,7 +165,7 @@ async fn unknown_type_returns_400() {
     let resp = client
         .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
-        .body("type=motion")
+        .body("kind=motion")
         .send()
         .await
         .unwrap();
@@ -182,7 +182,7 @@ async fn json_registration_returns_415() {
     let resp = client
         .post(format!("http://{addr}/resources"))
         .header("content-type", "application/json")
-        .body(r#"{"type":"led"}"#)
+        .body(r#"{"kind":"led"}"#)
         .send()
         .await
         .unwrap();
@@ -199,7 +199,7 @@ async fn no_factories_returns_501() {
     let resp = client
         .post(format!("http://{addr}/resources"))
         .header("content-type", "application/x-www-form-urlencoded")
-        .body("type=led")
+        .body("kind=led")
         .send()
         .await
         .unwrap();

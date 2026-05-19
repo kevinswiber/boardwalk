@@ -408,8 +408,8 @@ async fn meta_collection_renders_type_subentities_with_streams_and_transitions()
         })
         .expect("at least one `type` sub-entity");
 
-    assert_eq!(type_entity["properties"]["type"], "led");
     assert_eq!(type_entity["properties"]["kind"], "led");
+    assert!(type_entity["properties"].get("type").is_none());
 
     let streams: Vec<&str> = type_entity["properties"]["streams"]
         .as_array()
@@ -489,8 +489,7 @@ async fn current_resource_siren_crawl_is_byte_stable() {
             "kind": "led",
             "name": "LED",
             "node": "hub",
-            "state": "off",
-            "type": "led"
+            "state": "off"
         },
         "links": [
             {"rel": ["self"], "href": "http://127.0.0.1:PORT/resources/11111111-2222-3333-4444-555555555555"},
@@ -517,7 +516,7 @@ async fn current_resource_siren_crawl_is_byte_stable() {
                 "href": "http://127.0.0.1:PORT/resources",
                 "type": "application/x-www-form-urlencoded",
                 "fields": [
-                    {"name": "type", "type": "text"},
+                    {"name": "kind", "type": "text"},
                     {"name": "id", "type": "text"},
                     {"name": "name", "type": "text"}
                 ]
@@ -532,8 +531,7 @@ async fn current_resource_siren_crawl_is_byte_stable() {
             "kind": "led",
             "name": "LED",
             "node": "hub",
-            "state": "off",
-            "type": "led"
+            "state": "off"
         },
         "links": [
             {"rel": ["self", "edit"], "href": "http://127.0.0.1:PORT/resources/11111111-2222-3333-4444-555555555555"},
@@ -565,11 +563,10 @@ async fn current_resource_siren_crawl_is_byte_stable() {
             "rel": ["https://rels.boardwalk.to/type", "item"],
             "properties": {
                 "kind": "led",
-                "type": "led",
                 "name": "LED",
                 "labels": {},
                 "propertySchema": null,
-                "properties": ["id", "kind", "type", "node", "state"],
+                "properties": ["id", "kind", "node", "state"],
                 "streams": [{"name": "state", "kind": "object"}],
                 "transitions": [
                     {"name": "turn-off", "allowedStates": ["on"], "result": "sync", "idempotency": "none", "effect": "unsafe", "requiredScopes": []},
@@ -611,7 +608,7 @@ async fn meta_type_endpoint_returns_full_kind_metadata() {
 
     assert_eq!(body["class"], serde_json::json!(["type"]));
     assert_eq!(body["properties"]["kind"], "led");
-    assert_eq!(body["properties"]["type"], "led");
+    assert!(body["properties"].get("type").is_none());
     assert_eq!(
         body["properties"]["streams"],
         serde_json::json!([{"name": "state", "kind": "object"}])

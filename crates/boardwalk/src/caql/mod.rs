@@ -31,10 +31,7 @@
 //!   segment of `p` resolves, including when the final value is
 //!   `null`.
 //!
-//! The evaluator treats `type` as a root-segment alias for `kind` so
-//! `where type = "led"` keeps working under the canonical
-//! `ResourceSnapshot` projection. See [`docs/caql.md`] in the repo
-//! for the full user-facing reference.
+//! See [`docs/caql.md`] in the repo for the full user-facing reference.
 
 #![forbid(unsafe_code)]
 
@@ -61,7 +58,7 @@ mod tests {
 
     #[test]
     fn caql_parse_returns_query_module_type() {
-        let q: query::Query = parse(r#"where type = "led""#).unwrap();
+        let q: query::Query = parse(r#"where kind = "led""#).unwrap();
         assert!(matches!(q.predicate, Predicate::Compare { .. }));
     }
 
@@ -114,7 +111,7 @@ mod tests {
 
     #[test]
     fn caql_parse_returns_query_error_not_caql_error() {
-        let err = parse("where type =").unwrap_err();
+        let err = parse("where kind =").unwrap_err();
         let _err: query::QueryError = err;
     }
 
@@ -128,7 +125,7 @@ mod tests {
 
     #[test]
     fn caql_parse_then_eval_eq_and_or() {
-        let q = parse(r#"where type = "led" or type = "motion""#).unwrap();
+        let q = parse(r#"where kind = "led" or kind = "motion""#).unwrap();
         assert!(query::matches(&q, &json!({"kind": "led"})).unwrap());
         assert!(query::matches(&q, &json!({"kind": "motion"})).unwrap());
         assert!(!query::matches(&q, &json!({"kind": "switch"})).unwrap());

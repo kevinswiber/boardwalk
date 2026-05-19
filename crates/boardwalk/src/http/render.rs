@@ -98,7 +98,7 @@ pub(crate) fn render_resources(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity 
         .with_action(
             Action::new("register-resource", "POST", h.resources_url())
                 .form_urlencoded()
-                .with_field(Field::typed("type", "text"))
+                .with_field(Field::typed("kind", "text"))
                 .with_field(Field::typed("id", "text"))
                 .with_field(Field::typed("name", "text")),
         );
@@ -122,7 +122,7 @@ pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
         .with_action(
             Action::new("register-resource", "POST", h.resources_url())
                 .form_urlencoded()
-                .with_field(Field::typed("type", "text"))
+                .with_field(Field::typed("kind", "text"))
                 .with_field(Field::typed("id", "text"))
                 .with_field(Field::typed("name", "text")),
         );
@@ -205,7 +205,7 @@ pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapsh
         .with_action(
             Action::new("register-resource", "POST", h.resources_url())
                 .form_urlencoded()
-                .with_field(Field::typed("type", "text"))
+                .with_field(Field::typed("kind", "text"))
                 .with_field(Field::typed("id", "text"))
                 .with_field(Field::typed("name", "text")),
         )
@@ -238,16 +238,12 @@ impl WithResourceProperty for EmbeddedEntity {
 
 fn apply_resource_properties<T: WithResourceProperty>(mut entity: T, snap: &ResourceSnapshot) -> T {
     for (k, v) in snap.properties.iter() {
-        if k == "type" {
-            continue;
-        }
         entity = entity.with_resource_property(k.clone(), v.clone());
     }
 
     entity = entity
         .with_resource_property("id", Value::String(snap.id.clone()))
         .with_resource_property("kind", Value::String(snap.kind.clone()))
-        .with_resource_property("type", Value::String(snap.kind.clone()))
         .with_resource_property("node", Value::String(snap.node.clone()))
         .with_resource_property(
             "name",
@@ -318,7 +314,6 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, ty: &KindMeta) -> EmbeddedEntity {
     EmbeddedEntity::new([rels::TYPE, "item"])
         .with_class("type")
         .with_property("kind", Value::String(resource.kind.clone()))
-        .with_property("type", Value::String(resource.kind.clone()))
         .with_property(
             "name",
             resource
@@ -335,7 +330,7 @@ pub(crate) fn meta_type_sub_entity(h: &Hrefs, ty: &KindMeta) -> EmbeddedEntity {
         .with_property(
             "properties",
             Value::Array(
-                ["id", "kind", "type", "node", "state"]
+                ["id", "kind", "node", "state"]
                     .iter()
                     .map(|s| Value::String(s.to_string()))
                     .collect(),
@@ -484,13 +479,11 @@ mod tests {
     }
 
     #[test]
-    fn render_resource_sub_entity_from_resource_snapshot_includes_kind_and_type_for_compat() {
+    fn render_resource_sub_entity_from_resource_snapshot_includes_kind() {
         let h = hrefs();
         let snap = led_snapshot();
         let sub = resource_sub_entity(&h, &snap);
         let v = serde_json::to_value(&sub).unwrap();
-        // Both the canonical `kind` (via class) and the compat
-        // property `type` are present.
         let classes: Vec<&str> = v["class"]
             .as_array()
             .unwrap()
@@ -498,7 +491,8 @@ mod tests {
             .map(|x| x.as_str().unwrap())
             .collect();
         assert!(classes.contains(&"led"));
-        assert_eq!(v["properties"]["type"], "led");
+        assert_eq!(v["properties"]["kind"], "led");
+        assert!(v["properties"].get("type").is_none());
     }
 
     #[test]
@@ -508,7 +502,7 @@ mod tests {
         let sub = meta_type_sub_entity(&h, &ty);
         let v = serde_json::to_value(&sub).unwrap();
         assert_eq!(v["properties"]["kind"], "led");
-        assert_eq!(v["properties"]["type"], "led");
+        assert!(v["properties"].get("type").is_none());
     }
 
     #[test]
@@ -544,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn render_user_property_named_type_does_not_overwrite_compat_alias() {
+    fn render_user_property_named_type_survives_without_kind_alias() {
         let h = hrefs();
         let mut snap = led_snapshot();
         snap.properties
@@ -554,15 +548,14 @@ mod tests {
 
         let sub = resource_sub_entity(&h, &snap);
         let v = serde_json::to_value(&sub).unwrap();
-        // Canonical alias wins.
-        assert_eq!(v["properties"]["type"], "led");
+        assert_eq!(v["properties"]["type"], "shadow-led");
         // Other extras still present.
         assert_eq!(v["properties"]["color"], "red");
 
         // Same guarantee on the full device render.
         let dev = render_device(&h, &snap);
         let v = serde_json::to_value(&dev).unwrap();
-        assert_eq!(v["properties"]["type"], "led");
+        assert_eq!(v["properties"]["type"], "shadow-led");
         assert_eq!(v["properties"]["color"], "red");
     }
 
@@ -586,7 +579,6 @@ mod tests {
         let v = serde_json::to_value(&dev).unwrap();
 
         assert_eq!(v["properties"]["kind"], "led");
-        assert_eq!(v["properties"]["type"], "led");
         assert_eq!(v["properties"]["labels"]["room"], "kitchen");
         assert_eq!(v["properties"]["revision"], "rev-7");
 

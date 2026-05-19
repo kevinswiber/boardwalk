@@ -110,7 +110,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(entities[0]["properties"]["type"], "led");
+    assert_eq!(entities[0]["properties"]["kind"], "led");
     assert_eq!(entities[0]["properties"]["state"], "off");
 
     // Forward a transition POST through the cloud gateway.

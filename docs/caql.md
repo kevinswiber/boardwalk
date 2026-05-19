@@ -63,14 +63,10 @@ value        = string | number | bool | "null" | "[" valueList "]"
   every segment of `path` resolves, including when the final value
   is `null`.
 
-## `kind` vs `type`
+## Resource Kinds
 
-The canonical resource field is `kind`. The query evaluator accepts
-`type` as a compatibility alias at the top level: `where type = "led"`
-is equivalent to `where kind = "led"`. The alias applies only at the
-root segment — `where properties.type = "X"` continues to look up the
-literal `type` key inside `properties`, so resources that carry their
-own user-defined `type` property are not aliased.
+The canonical resource field is `kind`. CaQL does not define aliases
+for resource fields.
 
 ## Resource query shape
 
@@ -109,7 +105,6 @@ queries.
 
 ```
 where kind = "led"
-where type = "led"                          -- alias for kind = "led"
 where kind = "thermostat" and state = "on"
 where data > 85
 select data.degreesC where data.degreesF > 85
@@ -131,7 +126,7 @@ Invalid CaQL at HTTP `?ql=` returns `400 Bad Request` with an
 {
   "error":   "query-parse-error",
   "message": "parse error at offset 13: expected literal value",
-  "ql":      "where type ="
+  "ql":      "where kind ="
 }
 ```
 

@@ -53,12 +53,9 @@ fn eval_pred(p: &Predicate, t: &Json) -> Result<bool, QueryError> {
 
 fn lookup<'a>(p: &FieldPath, t: &'a Json) -> Option<&'a Json> {
     let mut cur = t;
-    for (i, seg) in p.segments().iter().enumerate() {
-        // `type` is a compatibility alias for `kind` at the root segment
-        // only. Nested paths like `properties.type` resolve normally.
-        let key: &str = if i == 0 && seg == "type" { "kind" } else { seg };
+    for seg in p.segments() {
         match cur {
-            Json::Object(m) => match m.get(key) {
+            Json::Object(m) => match m.get(seg) {
                 Some(v) => cur = v,
                 None => return None,
             },
@@ -193,20 +190,19 @@ mod tests {
     }
 
     #[test]
-    fn type_alias_matches_kind_field() {
+    fn type_field_does_not_alias_kind_field() {
         let q = q_with(cmp("type", ComparisonOp::Eq, Literal::String("led".into())));
-        assert!(matches(&q, &json!({"kind": "led"})).unwrap());
+        assert!(!matches(&q, &json!({"kind": "led"})).unwrap());
+        assert!(matches(&q, &json!({"type": "led"})).unwrap());
     }
 
     #[test]
-    fn nested_properties_type_is_not_aliased() {
+    fn nested_properties_type_resolves_literally() {
         let q = q_with(cmp(
             "properties.type",
             ComparisonOp::Eq,
             Literal::String("shadow".into()),
         ));
-        // Only the root segment aliases — `properties.type` must look
-        // up `type` inside `properties`, not `kind`.
         assert!(
             matches(
                 &q,

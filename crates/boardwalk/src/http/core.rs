@@ -354,7 +354,7 @@ impl DeviceSnapshot {
     /// Bridges a `DeviceSnapshot` to the canonical `ResourceSnapshot`.
     /// `node` is the local server's name (the `Resource` lives on
     /// some node). Reserved field names are stripped from
-    /// device-supplied properties; `type` maps to `kind`.
+    /// device-supplied properties.
     pub fn to_resource_snapshot(&self, node: &str) -> ResourceSnapshot {
         let properties = sanitize_properties(self.properties.clone());
         let allowed: std::collections::BTreeSet<&str> = self
@@ -469,13 +469,10 @@ pub struct StreamSpec {
 /// Top-level field names that `ResourceSnapshot` owns directly.
 /// User-supplied properties carrying any of these names are stripped
 /// by `sanitize_properties` so that user data cannot shadow
-/// Boardwalk-owned fields or render aliases. `"type"` is reserved
-/// alongside `"kind"`: it is a derived alias for `kind` exposed in
-/// query values and Siren renders.
+/// Boardwalk-owned fields.
 pub const RESERVED_FIELDS: &[&str] = &[
     "id",
     "kind",
-    "type",
     "name",
     "state",
     "node",
@@ -514,14 +511,12 @@ pub fn sanitize_properties(
 impl ResourceSnapshot {
     /// Produces the JSON shape the query evaluator targets. `None`
     /// fields serialize as `Null` so `Exists(path)` semantics remain
-    /// truthful (the key is always present). `type` is exposed as a
-    /// render/query alias for `kind`; do not store it separately.
+    /// truthful (the key is always present).
     pub fn to_query_value(&self) -> JsonValue {
         use serde_json::Map;
         let mut o = Map::new();
         o.insert("id".into(), JsonValue::String(self.id.clone()));
         o.insert("kind".into(), JsonValue::String(self.kind.clone()));
-        o.insert("type".into(), JsonValue::String(self.kind.clone()));
         o.insert(
             "name".into(),
             self.name
