@@ -425,7 +425,7 @@ pub struct ResourceSnapshot {
 
 /// One transition affordance on a resource. Carries the full
 /// declared `TransitionSpec` so metadata renderers can read schema,
-/// safety, idempotency, and required scopes directly from a snapshot.
+/// effect, idempotency, and required scopes directly from a snapshot.
 /// `available` reflects whether the transition can fire in the
 /// resource's current state; `unavailable_reason` carries an optional,
 /// human-readable hint when `available` is false.
@@ -616,12 +616,12 @@ fn transition_affordance_to_query_json(t: &TransitionAffordance) -> JsonValue {
         ),
     );
     m.insert(
-        "safety".into(),
+        "effect".into(),
         JsonValue::String(
-            match spec.safety {
-                crate::core::Safety::Safe => "safe",
-                crate::core::Safety::Idempotent => "idempotent",
-                crate::core::Safety::Unsafe => "unsafe",
+            match spec.effect {
+                crate::core::Effect::Safe => "safe",
+                crate::core::Effect::UnsafeIdempotent => "unsafe-idempotent",
+                crate::core::Effect::Unsafe => "unsafe",
             }
             .into(),
         ),

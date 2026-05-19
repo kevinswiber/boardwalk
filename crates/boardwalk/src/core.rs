@@ -127,11 +127,15 @@ pub enum Idempotency {
     Required,
 }
 
-/// HTTP-style safety classification for the transition.
+/// Effect classification for the transition. Combines HTTP's safety and
+/// idempotency axes into one ordinal: `Safe` is read-only (implies idempotent),
+/// `UnsafeIdempotent` mutates but repeats cleanly (PUT/DELETE-like), and
+/// `Unsafe` makes no idempotency claim (POST-like). For Idempotency-Key
+/// participation, see [`Idempotency`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Safety {
+pub enum Effect {
     Safe,
-    Idempotent,
+    UnsafeIdempotent,
     #[default]
     Unsafe,
 }
@@ -145,7 +149,7 @@ pub struct TransitionSpec {
     pub output_schema: Option<Value>,
     pub result: TransitionResultKind,
     pub idempotency: Idempotency,
-    pub safety: Safety,
+    pub effect: Effect,
     pub required_scopes: Vec<String>,
     /// Renderer-only adapter for the current Siren `fields` surface.
     /// Will eventually be derived from `input_schema`; the field stays

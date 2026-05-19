@@ -72,7 +72,7 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
                 output_schema: None,
                 result: boardwalk::core::TransitionResultKind::Sync,
                 idempotency: boardwalk::core::Idempotency::Required,
-                safety: boardwalk::core::Safety::Idempotent,
+                effect: boardwalk::core::Effect::UnsafeIdempotent,
                 required_scopes: vec!["job.cancel".into()],
                 fields: vec![],
             },
@@ -114,7 +114,7 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
     assert_eq!(t["inputSchema"], serde_json::json!({"type": "object"}));
     assert_eq!(t["result"], "sync");
     assert_eq!(t["idempotency"], "required");
-    assert_eq!(t["safety"], "idempotent");
+    assert_eq!(t["effect"], "unsafe-idempotent");
     assert_eq!(t["requiredScopes"], serde_json::json!(["job.cancel"]));
     assert_eq!(t["available"], true);
     assert_eq!(t["unavailableReason"], Json::Null);
@@ -216,7 +216,7 @@ fn to_query_value_transitions_and_streams_shape() {
     // stable across resources whose actor declared no extra metadata.
     assert_eq!(transitions[0]["allowedStates"], serde_json::json!([]));
     assert_eq!(transitions[0]["result"], "sync");
-    assert_eq!(transitions[0]["safety"], "unsafe");
+    assert_eq!(transitions[0]["effect"], "unsafe");
     assert_eq!(transitions[0]["idempotency"], "none");
     assert_eq!(transitions[0]["requiredScopes"], serde_json::json!([]));
 

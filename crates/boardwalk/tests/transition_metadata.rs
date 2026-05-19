@@ -10,13 +10,13 @@
 use std::collections::BTreeMap;
 
 use boardwalk::core::{
-    ActorSpec, FieldSpec, Idempotency, JobHandle, ResourceSpec, Safety, StreamKind, StreamSpec,
+    ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceSpec, StreamKind, StreamSpec,
     TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
 use serde_json::json;
 
 #[test]
-fn transition_spec_serializes_schema_safety_idempotency_and_scopes() {
+fn transition_spec_serializes_schema_effect_idempotency_and_scopes() {
     let spec = TransitionSpec {
         name: "submit".into(),
         title: Some("Submit job".into()),
@@ -25,7 +25,7 @@ fn transition_spec_serializes_schema_safety_idempotency_and_scopes() {
         output_schema: Some(json!({"$ref": "#/defs/JobHandle"})),
         result: TransitionResultKind::AsyncJob,
         idempotency: Idempotency::Supported,
-        safety: Safety::Unsafe,
+        effect: Effect::Unsafe,
         required_scopes: vec!["transition.invoke".into()],
         fields: vec![],
     };
@@ -39,7 +39,7 @@ fn transition_spec_serializes_schema_safety_idempotency_and_scopes() {
     );
     assert_eq!(spec.result, TransitionResultKind::AsyncJob);
     assert_eq!(spec.idempotency, Idempotency::Supported);
-    assert_eq!(spec.safety, Safety::Unsafe);
+    assert_eq!(spec.effect, Effect::Unsafe);
     assert_eq!(spec.required_scopes, vec!["transition.invoke".to_string()]);
 }
 
@@ -82,7 +82,7 @@ fn actor_spec_carries_transition_specs() {
         output_schema: None,
         result: TransitionResultKind::Sync,
         idempotency: Idempotency::Required,
-        safety: Safety::Idempotent,
+        effect: Effect::UnsafeIdempotent,
         required_scopes: vec![],
         fields: vec![FieldSpec {
             name: "reason".into(),
