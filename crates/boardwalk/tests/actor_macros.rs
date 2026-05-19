@@ -229,3 +229,64 @@ async fn transition_macro_propagates_domain_errors_verbatim() {
         other => panic!("expected Conflict, got {other:?}"),
     }
 }
+
+// Regression: a `#[cfg(...)]`-gated `#[transition]` method must not
+// leave a dangling match arm referencing a non-existent inherent
+// method when the cfg evaluates to false. `cfg(any())` is never
+// true, so `gated_off` is compiled out and its match arm in the
+// generated `Actor::transition` is suppressed.
+#[derive(Default)]
+pub struct GatedActor;
+
+impl Resource for GatedActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "gated".into(),
+            ..Default::default()
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        let snapshot = ResourceSnapshot {
+            id: "gated/test".into(),
+            kind: "gated".into(),
+            name: None,
+            state: None,
+            node: "test".into(),
+            properties: serde_json::Map::new(),
+            labels: BTreeMap::new(),
+            transitions: Vec::new(),
+            streams: Vec::new(),
+            revision: None,
+            metadata: serde_json::Map::new(),
+        };
+        Box::pin(async move { Ok(snapshot) })
+    }
+}
+
+#[boardwalk::actor]
+impl GatedActor {
+    #[cfg(any())]
+    #[boardwalk::transition]
+    async fn gated_off(
+        &mut self,
+        _ctx: TransitionCtx,
+        _input: TransitionInput,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        unreachable!("cfg(any()) is never true")
+    }
+}
+
+#[tokio::test]
+async fn cfg_gated_transitions_are_suppressed_from_dispatch() {
+    let mut actor = GatedActor;
+    let ctx = TransitionCtx::new_test();
+    let err =
+        <GatedActor as Actor>::transition(&mut actor, ctx, "gated-off", TransitionInput::default())
+            .await
+            .expect_err("gated-off should not be dispatchable when cfg is false");
+    assert!(matches!(err, TransitionError::NotAllowed(_)));
+}
