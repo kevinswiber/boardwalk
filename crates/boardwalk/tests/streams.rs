@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::core::{DeviceCtx, ResourceSpec, StreamKind, StreamSpec, TransitionInput, TransitionOutcome};
+use boardwalk::core::{
+    DeviceCtx, ResourceSpec, StreamKind, StreamSpec, TransitionInput, TransitionOutcome,
+};
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::{
@@ -19,8 +21,7 @@ use boardwalk::runtime::{
 use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
-use serde_json::Value as Json;
-use serde_json::json;
+use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Default)]

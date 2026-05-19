@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod bus;
+mod coalesce;
 mod envelope;
 mod policy;
 mod replay;
@@ -10,7 +11,10 @@ mod sequencer;
 mod topic;
 mod wire;
 
-pub use bus::{EventBus, REASON_SLOW_CONSUMER, SlowConsumerNotice, Subscription, SubscriptionId};
+pub use bus::{
+    EventBus, REASON_SLOW_CONSUMER, SlowConsumerNotice, Subscription, SubscriptionId,
+    SubscriptionRx, TryRecvError,
+};
 pub use envelope::{
     CausationId, CorrelationId, ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId,
     TraceContext,

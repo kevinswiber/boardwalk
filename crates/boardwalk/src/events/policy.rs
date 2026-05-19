@@ -1,13 +1,16 @@
 //! Subscriber options and publish-result types.
 //!
-//! `OverflowPolicy::Coalesce` is intentionally absent: a truthful
-//! coalesce policy needs a sidecar queue with iterable-replace, which
-//! `mpsc` does not provide. `Backpressure` on the synchronous
-//! `try_publish` path still behaves as `DropNewest` (the sync path
-//! cannot await capacity); the asynchronous `EventBus::publish`
-//! honors `Lossy + Backpressure` by awaiting `tx.send`.
+//! `Coalesce` is a real policy backed by a per-subscription sidecar
+//! queue with iterable replace-by-key; it requires `Lossy` safety
+//! (`Lossless + Coalesce` falls back to the lossless disconnect
+//! contract because the safety guarantee overrides the policy).
+//! `Backpressure` on the synchronous `try_publish` path still behaves
+//! as `DropNewest` (the sync path cannot await capacity); the
+//! asynchronous `EventBus::publish` honors `Lossy + Backpressure` by
+//! awaiting `tx.send`.
 
 use crate::events::SubscriptionId;
+use crate::query::FieldPath;
 
 pub const DEFAULT_OUTBOUND_CAPACITY: usize = 64;
 
@@ -23,11 +26,19 @@ pub enum StreamSafety {
     Lossy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum OverflowPolicy {
     #[default]
     Backpressure,
     DropNewest,
+    /// Replace any queued envelope whose payload at `key_path`
+    /// matches the incoming envelope's; falls back to drop-newest when
+    /// the queue is full and no replacement target exists. Requires
+    /// `StreamSafety::Lossy` — under `Lossless`, the safety contract
+    /// wins and the subscription is disconnected on overflow.
+    Coalesce {
+        key_path: FieldPath,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +59,12 @@ impl SubscribeOpts {
 pub struct PublishResult {
     pub delivered: usize,
     pub dropped: usize,
+    /// Number of fan-outs that hit a same-key entry already queued on
+    /// a `Coalesce` subscription and replaced it in place. `coalesced`
+    /// is mutually exclusive with `delivered` on a per-subscription
+    /// basis — a coalesced publish never lands in the consumer's queue
+    /// as a new item.
+    pub coalesced: usize,
     pub disconnected_lossless: Vec<SubscriptionId>,
 }
 
@@ -80,6 +97,7 @@ mod tests {
         let r = PublishResult::default();
         assert_eq!(r.delivered, 0);
         assert_eq!(r.dropped, 0);
+        assert_eq!(r.coalesced, 0);
         assert!(r.disconnected_lossless.is_empty());
     }
 
@@ -91,15 +109,15 @@ mod tests {
     }
 
     #[test]
-    fn overflow_policy_is_only_two_variants() {
-        // Exhaustive match: re-adding a third variant makes this fail
-        // to compile — an intentional speed bump because any new
-        // variant needs a real implementation, not a thinly-disguised
-        // alias.
+    fn overflow_policy_variants_are_exhaustively_covered() {
+        // Exhaustive match: any new variant makes this fail to compile
+        // — an intentional speed bump because a new variant needs a
+        // real implementation in the bus, not a thinly-disguised alias.
         fn _exhaust(o: OverflowPolicy) {
             match o {
                 OverflowPolicy::Backpressure => {}
                 OverflowPolicy::DropNewest => {}
+                OverflowPolicy::Coalesce { .. } => {}
             }
         }
     }

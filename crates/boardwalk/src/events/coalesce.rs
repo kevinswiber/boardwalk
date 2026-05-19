@@ -1,0 +1,217 @@
+//! Per-subscription sidecar queue backing `OverflowPolicy::Coalesce`.
+//!
+//! Coalesce subscriptions hold a bounded `VecDeque<EventEnvelope>`
+//! protected by a mutex plus a `Notify`. The bus replaces any queued
+//! envelope whose payload key matches the incoming envelope; if no
+//! match exists the queue tail accepts the envelope until capacity,
+//! and overflow without a replacement target falls back to drop-newest.
+//! The receiving side awaits the notify and pops from the front, so a
+//! consumer that drains slowly still observes the *latest* same-key
+//! envelope rather than a backlog.
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use serde_json::Value as Json;
+use tokio::sync::Notify;
+
+use super::envelope::EventEnvelope;
+use crate::query::FieldPath;
+
+/// Outcome of a coalesce push. The bus translates this into the
+/// matching counter on `PublishResult`.
+pub(crate) enum CoalescePushOutcome {
+    /// Envelope appended to the queue (no same-key match was found and
+    /// the queue had room).
+    Pushed,
+    /// A queued envelope with the same key was overwritten with the
+    /// incoming envelope.
+    Replaced,
+    /// The queue was full and no same-key match existed; the incoming
+    /// envelope was dropped (drop-newest fallback).
+    Dropped,
+}
+
+pub(crate) struct CoalesceState {
+    queue: Mutex<VecDeque<EventEnvelope>>,
+    capacity: usize,
+    key_path: FieldPath,
+    notify: Notify,
+    closed: AtomicBool,
+}
+
+impl CoalesceState {
+    pub(crate) fn new(capacity: usize, key_path: FieldPath) -> Self {
+        let cap = capacity.max(1);
+        Self {
+            queue: Mutex::new(VecDeque::with_capacity(cap)),
+            capacity: cap,
+            key_path,
+            notify: Notify::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn push(&self, env: EventEnvelope) -> CoalescePushOutcome {
+        let incoming_key = extract_key(&env, &self.key_path);
+        let mut q = self.queue.lock().unwrap();
+        for slot in q.iter_mut() {
+            let slot_key = extract_key(slot, &self.key_path);
+            if slot_key == incoming_key {
+                *slot = env;
+                drop(q);
+                self.notify.notify_one();
+                return CoalescePushOutcome::Replaced;
+            }
+        }
+        if q.len() < self.capacity {
+            q.push_back(env);
+            drop(q);
+            self.notify.notify_one();
+            CoalescePushOutcome::Pushed
+        } else {
+            CoalescePushOutcome::Dropped
+        }
+    }
+
+    /// Block until the queue has an item to deliver or the sender side
+    /// signals close.
+    pub(crate) async fn recv(&self) -> Option<EventEnvelope> {
+        loop {
+            {
+                let mut q = self.queue.lock().unwrap();
+                if let Some(env) = q.pop_front() {
+                    return Some(env);
+                }
+                if self.closed.load(Ordering::Acquire) {
+                    return None;
+                }
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    pub(crate) fn try_recv(&self) -> Result<EventEnvelope, super::bus::TryRecvError> {
+        let mut q = self.queue.lock().unwrap();
+        if let Some(env) = q.pop_front() {
+            return Ok(env);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            Err(super::bus::TryRecvError::Disconnected)
+        } else {
+            Err(super::bus::TryRecvError::Empty)
+        }
+    }
+
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+/// Extract a coalesce key from an envelope. Paths rooted at `data` are
+/// the common shape (e.g. `data.jobId`); they walk `env.data` directly
+/// to avoid serializing the full envelope. Any other root falls back
+/// to a JSON view of the envelope.
+fn extract_key(env: &EventEnvelope, path: &FieldPath) -> Option<Json> {
+    let segs = path.segments();
+    if let Some(first) = segs.first()
+        && first == "data"
+    {
+        let mut cur = &env.data;
+        for seg in &segs[1..] {
+            match cur {
+                Json::Object(m) => match m.get(seg) {
+                    Some(v) => cur = v,
+                    None => return None,
+                },
+                _ => return None,
+            }
+        }
+        return Some(cur.clone());
+    }
+    let full = serde_json::to_value(env).ok()?;
+    path.extract(&full).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::events::envelope::{ENVELOPE_VERSION, EventId, NodeId, StreamId};
+
+    fn env(job_id: &str, percent: u32) -> EventEnvelope {
+        let node_id = NodeId::new("hub");
+        let stream_id = StreamId::for_resource(&node_id, "q", "progress");
+        EventEnvelope {
+            envelope_version: ENVELOPE_VERSION,
+            event_id: EventId::from_raw(format!("{job_id}-{percent}")),
+            node_id,
+            resource_id: "q".into(),
+            resource_kind: "job".into(),
+            resource_version: 1,
+            stream_id,
+            stream: "progress".into(),
+            sequence: u64::from(percent),
+            timestamp: time::OffsetDateTime::UNIX_EPOCH,
+            payload_kind: "job.progress".into(),
+            payload_version: 1,
+            payload_schema: None,
+            correlation_id: None,
+            causation_id: None,
+            trace_context: None,
+            data: json!({"jobId": job_id, "percent": percent}),
+        }
+    }
+
+    #[tokio::test]
+    async fn replace_collapses_same_key_to_latest() {
+        let state = CoalesceState::new(1, FieldPath::parse("data.jobId"));
+        assert!(matches!(
+            state.push(env("a", 10)),
+            CoalescePushOutcome::Pushed
+        ));
+        assert!(matches!(
+            state.push(env("a", 20)),
+            CoalescePushOutcome::Replaced
+        ));
+        let got = state.recv().await.unwrap();
+        assert_eq!(got.data["percent"], 20);
+    }
+
+    #[tokio::test]
+    async fn distinct_keys_both_persist_up_to_capacity() {
+        let state = CoalesceState::new(2, FieldPath::parse("data.jobId"));
+        assert!(matches!(
+            state.push(env("a", 10)),
+            CoalescePushOutcome::Pushed
+        ));
+        assert!(matches!(
+            state.push(env("b", 20)),
+            CoalescePushOutcome::Pushed
+        ));
+        let first = state.recv().await.unwrap();
+        let second = state.recv().await.unwrap();
+        let mut ids: Vec<_> = [&first, &second]
+            .iter()
+            .map(|e| e.data["jobId"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn overflow_without_replacement_target_drops() {
+        let state = CoalesceState::new(1, FieldPath::parse("data.jobId"));
+        assert!(matches!(
+            state.push(env("a", 10)),
+            CoalescePushOutcome::Pushed
+        ));
+        assert!(matches!(
+            state.push(env("b", 20)),
+            CoalescePushOutcome::Dropped
+        ));
+    }
+}

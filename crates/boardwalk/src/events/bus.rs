@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use super::coalesce::{CoalescePushOutcome, CoalesceState};
 use super::envelope::{EventEnvelope, StreamId};
 use super::policy::{
     DEFAULT_MAX_EVENT_SIZE_BYTES, OverflowPolicy, PublishError, PublishResult, StreamSafety,
@@ -32,7 +33,7 @@ pub type SubscriptionId = u64;
 pub struct Subscription {
     pub id: SubscriptionId,
     pub topic: TopicPattern,
-    pub rx: mpsc::Receiver<EventEnvelope>,
+    pub rx: SubscriptionRx,
     /// Resolves once when a `Lossless` subscription's queue overflows;
     /// fires *before* the bus removes the entry. WebSocket and HTTP
     /// NDJSON forwarders `select!` on this alongside `rx.recv()` so
@@ -41,11 +42,62 @@ pub struct Subscription {
     pub slow_consumer_rx: tokio::sync::oneshot::Receiver<SlowConsumerNotice>,
 }
 
+/// Consumer-side receiver for a `Subscription`. Hides the difference
+/// between the default mpsc-backed delivery and the Coalesce-backed
+/// sidecar queue so consumers can `select!` on `rx.recv()` regardless
+/// of policy.
+pub struct SubscriptionRx {
+    inner: SubscriptionRxInner,
+}
+
+enum SubscriptionRxInner {
+    Mpsc(mpsc::Receiver<EventEnvelope>),
+    Coalesce(Arc<CoalesceState>),
+}
+
+impl SubscriptionRx {
+    pub async fn recv(&mut self) -> Option<EventEnvelope> {
+        match &mut self.inner {
+            SubscriptionRxInner::Mpsc(rx) => rx.recv().await,
+            SubscriptionRxInner::Coalesce(state) => state.recv().await,
+        }
+    }
+
+    /// Non-blocking pop. Returns the next queued envelope when one is
+    /// available, or [`TryRecvError::Empty`] when the subscription is
+    /// open with nothing queued. [`TryRecvError::Disconnected`] is
+    /// returned once the sender side has been removed.
+    pub fn try_recv(&mut self) -> Result<EventEnvelope, TryRecvError> {
+        match &mut self.inner {
+            SubscriptionRxInner::Mpsc(rx) => rx.try_recv().map_err(|e| match e {
+                mpsc::error::TryRecvError::Empty => TryRecvError::Empty,
+                mpsc::error::TryRecvError::Disconnected => TryRecvError::Disconnected,
+            }),
+            SubscriptionRxInner::Coalesce(state) => state.try_recv(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryRecvError {
+    Empty,
+    Disconnected,
+}
+
+enum Outbound {
+    Mpsc(mpsc::Sender<EventEnvelope>),
+    Coalesce(Arc<CoalesceState>),
+}
+
 struct SubscriptionInner {
     topic: TopicPattern,
-    tx: mpsc::Sender<EventEnvelope>,
+    outbound: Outbound,
     remaining: Option<u64>,
     stream_safety: StreamSafety,
+    /// Overflow policy as the subscriber requested it. `Coalesce` is
+    /// only honored when the subscription is `Outbound::Coalesce`-
+    /// backed; the mpsc path treats it as `DropNewest` (e.g. for
+    /// `Lossless + Coalesce`, where lossless safety overrides).
     overflow_policy: OverflowPolicy,
     /// Number of concurrent `publish` calls that have claimed a slot
     /// on this subscription and not yet applied their outcome. A
@@ -132,17 +184,32 @@ impl EventBus {
     pub fn subscribe(&self, topic: TopicPattern, opts: SubscribeOpts) -> Subscription {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let capacity = opts.resolved_outbound_capacity();
-        let (tx, rx) = mpsc::channel::<EventEnvelope>(capacity);
         let (notify_tx, notify_rx) = tokio::sync::oneshot::channel::<SlowConsumerNotice>();
+        // Coalesce only applies under Lossy safety. Lossless + Coalesce
+        // falls through to the mpsc path so the lossless disconnect
+        // contract still wins on overflow.
+        let (outbound, rx_inner) = match (&opts.overflow_policy, opts.stream_safety) {
+            (OverflowPolicy::Coalesce { key_path }, StreamSafety::Lossy) => {
+                let state = Arc::new(CoalesceState::new(capacity, key_path.clone()));
+                (
+                    Outbound::Coalesce(state.clone()),
+                    SubscriptionRxInner::Coalesce(state),
+                )
+            }
+            _ => {
+                let (tx, rx) = mpsc::channel::<EventEnvelope>(capacity);
+                (Outbound::Mpsc(tx), SubscriptionRxInner::Mpsc(rx))
+            }
+        };
         let mut subs = self.inner.subs.lock().unwrap();
         subs.insert(
             id,
             SubscriptionInner {
                 topic: topic.clone(),
-                tx,
+                outbound,
                 remaining: opts.limit,
                 stream_safety: opts.stream_safety,
-                overflow_policy: opts.overflow_policy,
+                overflow_policy: opts.overflow_policy.clone(),
                 in_flight: 0,
                 last_delivered: None,
                 slow_consumer_notify: Some(notify_tx),
@@ -151,14 +218,22 @@ impl EventBus {
         Subscription {
             id,
             topic,
-            rx,
+            rx: SubscriptionRx { inner: rx_inner },
             slow_consumer_rx: notify_rx,
         }
     }
 
     pub fn unsubscribe(&self, id: SubscriptionId) -> bool {
         let mut subs = self.inner.subs.lock().unwrap();
-        subs.remove(&id).is_some()
+        match subs.remove(&id) {
+            Some(sub) => {
+                if let Outbound::Coalesce(state) = sub.outbound {
+                    state.close();
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     /// Publish an envelope. Fans out to all matching subscriptions.
@@ -201,52 +276,71 @@ impl EventBus {
                 if !sub.topic.matches_event(&topic, &envelope.data) {
                     continue;
                 }
-                match sub.tx.try_send(envelope.clone()) {
-                    Ok(()) => {
-                        result.delivered += 1;
-                        sub.last_delivered = Some((envelope.stream_id.clone(), envelope.sequence));
-                        if let Some(rem) = sub.remaining.as_mut() {
-                            *rem = rem.saturating_sub(1);
-                            if *rem == 0 {
-                                to_remove.push(*id);
+                match &sub.outbound {
+                    Outbound::Mpsc(tx) => match tx.try_send(envelope.clone()) {
+                        Ok(()) => {
+                            result.delivered += 1;
+                            sub.last_delivered =
+                                Some((envelope.stream_id.clone(), envelope.sequence));
+                            if let Some(rem) = sub.remaining.as_mut() {
+                                *rem = rem.saturating_sub(1);
+                                if *rem == 0 {
+                                    to_remove.push(*id);
+                                }
                             }
                         }
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => match sub.stream_safety {
-                        StreamSafety::Lossless => {
-                            // Lossless slow-consumer disconnect:
-                            // remove the subscription, fire the
-                            // out-of-band oneshot so the forwarder
-                            // can emit a final `stream-gap`, and
-                            // record the id in the publish result.
-                            let last = sub.last_delivered.clone();
-                            if let Some(notify) = sub.slow_consumer_notify.take() {
-                                let _ = notify.send(SlowConsumerNotice {
-                                    stream_id: last.as_ref().map(|(s, _)| s.clone()),
-                                    last_delivered_sequence: last.as_ref().map(|(_, n)| *n),
-                                    reason: REASON_SLOW_CONSUMER,
-                                });
+                        Err(mpsc::error::TrySendError::Full(_)) => match sub.stream_safety {
+                            StreamSafety::Lossless => {
+                                disconnect_lossless(sub, *id, &mut to_remove, &mut result);
                             }
-                            to_remove.push(*id);
-                            result.disconnected_lossless.push(*id);
-                        }
-                        StreamSafety::Lossy => match sub.overflow_policy {
-                            // `Backpressure` becomes real awaiting
-                            // backpressure once the publish path is
-                            // async. Today it cannot await, so it
-                            // behaves identically to `DropNewest`.
-                            OverflowPolicy::Backpressure | OverflowPolicy::DropNewest => {
+                            // Lossy + (Backpressure | DropNewest |
+                            // Coalesce-fell-back). `Backpressure`
+                            // becomes real awaiting backpressure on
+                            // the async `publish` path; this sync
+                            // path cannot await, so it behaves
+                            // identically to `DropNewest`.
+                            StreamSafety::Lossy => {
                                 result.dropped += 1;
                             }
                         },
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            to_remove.push(*id);
+                        }
                     },
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        to_remove.push(*id);
+                    Outbound::Coalesce(state) => {
+                        match state.push(envelope.clone()) {
+                            CoalescePushOutcome::Pushed => {
+                                result.delivered += 1;
+                                sub.last_delivered =
+                                    Some((envelope.stream_id.clone(), envelope.sequence));
+                                if let Some(rem) = sub.remaining.as_mut() {
+                                    *rem = rem.saturating_sub(1);
+                                    if *rem == 0 {
+                                        to_remove.push(*id);
+                                    }
+                                }
+                            }
+                            CoalescePushOutcome::Replaced => {
+                                result.coalesced += 1;
+                            }
+                            CoalescePushOutcome::Dropped => {
+                                // Coalesce fallback when the queue is
+                                // full and no same-key replacement
+                                // exists. The bus does not disconnect
+                                // here: by construction Coalesce only
+                                // backs Lossy subscriptions.
+                                result.dropped += 1;
+                            }
+                        }
                     }
                 }
             }
             for id in &to_remove {
-                subs.remove(id);
+                if let Some(sub) = subs.remove(id)
+                    && let Outbound::Coalesce(state) = sub.outbound
+                {
+                    state.close();
+                }
             }
         }
         Ok(result)
@@ -255,7 +349,27 @@ impl EventBus {
     pub fn active_subscriptions(&self) -> usize {
         self.inner.subs.lock().unwrap().len()
     }
+}
 
+fn disconnect_lossless(
+    sub: &mut SubscriptionInner,
+    id: SubscriptionId,
+    to_remove: &mut Vec<SubscriptionId>,
+    result: &mut PublishResult,
+) {
+    let last = sub.last_delivered.clone();
+    if let Some(notify) = sub.slow_consumer_notify.take() {
+        let _ = notify.send(SlowConsumerNotice {
+            stream_id: last.as_ref().map(|(s, _)| s.clone()),
+            last_delivered_sequence: last.as_ref().map(|(_, n)| *n),
+            reason: REASON_SLOW_CONSUMER,
+        });
+    }
+    to_remove.push(id);
+    result.disconnected_lossless.push(id);
+}
+
+impl EventBus {
     /// Async publish that respects `OverflowPolicy::Backpressure` by
     /// awaiting subscriber queue capacity instead of dropping. For
     /// every other policy/safety combination the behavior matches
@@ -319,6 +433,10 @@ impl EventBus {
         // path only removes a quota-exhausted subscription when
         // `in_flight == 0`, so a concurrent refund (cancellation or
         // `Dropped`) cannot lose its target.
+        //
+        // Coalesce-backed matches are pushed inline under the lock
+        // (no await needed) and never enter the per-match send loop;
+        // their bookkeeping is finalized before we drop the lock.
         struct Match {
             id: SubscriptionId,
             tx: mpsc::Sender<EventEnvelope>,
@@ -329,30 +447,62 @@ impl EventBus {
         let topic = envelope.topic();
         let mut matches: Vec<Match> = Vec::new();
         let mut guards: Vec<ClaimGuard> = Vec::new();
+        let mut result = PublishResult::default();
+        let mut to_remove: Vec<SubscriptionId> = Vec::new();
         {
             let mut subs = self.inner.subs.lock().unwrap();
             for (id, sub) in subs.iter_mut() {
                 if !sub.topic.matches_event(&topic, &envelope.data) {
                     continue;
                 }
-                if let Some(rem) = sub.remaining.as_mut() {
-                    if *rem == 0 {
-                        continue;
+                match &sub.outbound {
+                    Outbound::Coalesce(state) => match state.push(envelope.clone()) {
+                        CoalescePushOutcome::Pushed => {
+                            result.delivered += 1;
+                            sub.last_delivered =
+                                Some((envelope.stream_id.clone(), envelope.sequence));
+                            if let Some(rem) = sub.remaining.as_mut() {
+                                *rem = rem.saturating_sub(1);
+                                if *rem == 0 {
+                                    to_remove.push(*id);
+                                }
+                            }
+                        }
+                        CoalescePushOutcome::Replaced => {
+                            result.coalesced += 1;
+                        }
+                        CoalescePushOutcome::Dropped => {
+                            result.dropped += 1;
+                        }
+                    },
+                    Outbound::Mpsc(tx) => {
+                        if let Some(rem) = sub.remaining.as_mut() {
+                            if *rem == 0 {
+                                continue;
+                            }
+                            *rem -= 1;
+                        }
+                        sub.in_flight += 1;
+                        matches.push(Match {
+                            id: *id,
+                            tx: tx.clone(),
+                            stream_safety: sub.stream_safety,
+                            overflow_policy: sub.overflow_policy.clone(),
+                        });
+                        guards.push(ClaimGuard {
+                            inner: self.inner.clone(),
+                            id: *id,
+                            active: true,
+                        });
                     }
-                    *rem -= 1;
                 }
-                sub.in_flight += 1;
-                matches.push(Match {
-                    id: *id,
-                    tx: sub.tx.clone(),
-                    stream_safety: sub.stream_safety,
-                    overflow_policy: sub.overflow_policy,
-                });
-                guards.push(ClaimGuard {
-                    inner: self.inner.clone(),
-                    id: *id,
-                    active: true,
-                });
+            }
+            for id in &to_remove {
+                if let Some(sub) = subs.remove(id)
+                    && let Outbound::Coalesce(state) = sub.outbound
+                {
+                    state.close();
+                }
             }
         }
 
@@ -369,7 +519,6 @@ impl EventBus {
         // by the time we mark the guard inactive, the bookkeeping is
         // already done. The only cancellable point inside the loop is
         // `Sender::send.await` (cancel-safe in tokio).
-        let mut result = PublishResult::default();
         for (i, m) in matches.iter().enumerate() {
             // Fast path: try_send first to avoid yielding when the
             // buffer has room.
@@ -377,7 +526,7 @@ impl EventBus {
                 Ok(()) => SendResult::Delivered,
                 Err(mpsc::error::TrySendError::Closed(_)) => SendResult::Closed,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    match (m.stream_safety, m.overflow_policy) {
+                    match (m.stream_safety, &m.overflow_policy) {
                         (StreamSafety::Lossy, OverflowPolicy::Backpressure) => {
                             if m.tx.send(envelope.clone()).await.is_ok() {
                                 SendResult::Delivered
@@ -385,7 +534,14 @@ impl EventBus {
                                 SendResult::Closed
                             }
                         }
-                        (StreamSafety::Lossy, OverflowPolicy::DropNewest) => SendResult::Dropped,
+                        // `Coalesce` on an mpsc-backed match only
+                        // occurs under `Lossless` (where the lossless
+                        // disconnect path runs first). Any other
+                        // Lossy combination drops newest on overflow.
+                        (StreamSafety::Lossy, OverflowPolicy::DropNewest)
+                        | (StreamSafety::Lossy, OverflowPolicy::Coalesce { .. }) => {
+                            SendResult::Dropped
+                        }
                         (StreamSafety::Lossless, _) => SendResult::DisconnectLossless,
                     }
                 }

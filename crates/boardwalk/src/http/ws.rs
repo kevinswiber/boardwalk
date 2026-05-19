@@ -335,7 +335,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
 /// queued envelopes until the bus-side sender closes, then exit.
 async fn local_forwarder(
     app_id: u64,
-    mut rx: mpsc::Receiver<EventEnvelope>,
+    mut rx: crate::events::SubscriptionRx,
     slow_consumer_rx: tokio::sync::oneshot::Receiver<crate::events::SlowConsumerNotice>,
     out_tx: mpsc::Sender<OutboundMessage>,
     terminal_tx: mpsc::Sender<OutboundMessage>,
