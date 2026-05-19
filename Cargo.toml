@@ -5,6 +5,7 @@ members = [
     "crates/boardwalk-macros",
     "examples/hello-led",
     "examples/hello-led/boardwalk-mock-led",
+    "examples/job-runner",
     "examples/tunnel-poc",
 ]
 
