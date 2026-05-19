@@ -88,6 +88,10 @@ impl TransitionCtx {
         &self.node_id
     }
 
+    pub fn resource_id(&self) -> Option<&str> {
+        self.actor.as_ref().map(|actor| actor.resource_id())
+    }
+
     /// Register an actor-created resource on the same node and return
     /// its newly assigned resource id. Requires a context built via
     /// `TransitionCtx::with_node`; otherwise returns `Internal`.
