@@ -1,8 +1,8 @@
 //! Runtime-owned transition, resource, and actor contract types.
 //!
 //! These are model contracts shared by actors, the node runtime, and
-//! HTTP renderers. Legacy server-adapter code may import them while it
-//! is still being replaced, but it does not own their definitions.
+//! HTTP renderers. The runtime owns them so in-process nodes and the
+//! reusable Boardwalk route stack use the same transition model.
 
 use std::collections::BTreeMap;
 
@@ -105,7 +105,7 @@ pub struct TransitionSpec {
     pub idempotency: Idempotency,
     pub effect: Effect,
     pub required_scopes: Vec<String>,
-    /// Renderer-only adapter for the current Siren `fields` surface.
+    /// Renderer-only projection for the current Siren `fields` surface.
     /// Will eventually be derived from `input_schema`; the field stays
     /// for now so existing form-based renders keep working.
     pub fields: Vec<FieldSpec>,

@@ -37,7 +37,7 @@ impl ResourceCtx {
     }
 }
 
-/// Read-only failure modes for `Resource::snapshot`. HTTP adapters can
+/// Read-only failure modes for `Resource::snapshot`. HTTP renderers can
 /// map these onto 404 / 503 / 500 responses.
 #[derive(Debug)]
 pub enum ResourceError {

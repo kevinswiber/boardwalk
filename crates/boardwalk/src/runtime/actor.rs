@@ -294,7 +294,7 @@ impl ActorCtx {
     }
 }
 
-/// Failure modes for `Actor::transition`. HTTP adapters can map these
+/// Failure modes for `Actor::transition`. HTTP renderers can map these
 /// onto 400 / 405 / 409 / 503 / 504 / 404 / 500 responses.
 #[derive(Debug)]
 pub enum TransitionError {

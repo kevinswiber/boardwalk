@@ -23,7 +23,7 @@ fn job_runner_example_uses_reusable_boardwalk_runtime() {
     ] {
         assert!(
             !example_source.contains(forbidden),
-            "job-runner should not keep example-local HTTP adapter code: `{forbidden}`"
+            "job-runner should use the reusable route stack instead of local route/render/stream code: `{forbidden}`"
         );
     }
 }

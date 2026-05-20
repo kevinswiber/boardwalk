@@ -5,6 +5,10 @@
 //! / `Node` runtime, and renders queryable [`ResourceSnapshot`] values
 //! through resource routes such as `/resources`,
 //! `/resources/{id}`, and `/resources/{id}/transitions/{transition}`.
+//! `Boardwalk::new().use_actor(...).listen(...)` assembles that `Node`
+//! with the reusable HTTP, WebSocket, and peer route stack. Use
+//! [`NodeBuilder`] directly when an application wants the in-process
+//! Resource/Actor runtime without starting Boardwalk's HTTP server.
 //!
 //! Common imports for the Resource/Actor surface:
 //!
@@ -35,7 +39,7 @@ mod siren;
 mod tunnel;
 
 #[cfg(test)]
-mod internal_adapter_tests;
+mod internal_runtime_tests;
 
 pub use boardwalk_macros::{actor, transition};
 

@@ -77,6 +77,11 @@ The crate root exports the authoring facade: `Boardwalk`, `Resource`,
 `Actor`, `NodeBuilder`, `ResourceSnapshot`, transition metadata, and
 stream specs. Curated submodules cover focused domains:
 
+Use `Boardwalk::new().use_actor(...).listen(...)` when you want the
+supplied HTTP, WebSocket, and peer routes. That builder creates the
+same actor-backed `Node` runtime that `NodeBuilder` exposes for
+in-process use.
+
 | Module               | What's in it                                                        |
 | -------------------- | ------------------------------------------------------------------- |
 | `boardwalk::runtime` | Node runtime, handles, lifecycle contexts, Resource/Actor traits     |

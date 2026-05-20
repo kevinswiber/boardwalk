@@ -19,9 +19,11 @@ POST /resources/{id}/transitions/{transition}
 The reusable Boardwalk router serves those routes from a `Node` runtime.
 Actors registered with `Boardwalk::new().use_actor(...)` are exposed
 through the local resource routes. Code that builds a `Node` directly
-with `NodeBuilder` keeps owning that node and can wrap it with custom
-HTTP when needed; the `examples/job-runner` package uses the reusable
-builder so the example exercises the same route stack.
+with `NodeBuilder` uses the same Resource/Actor runtime without
+starting the supplied HTTP server; use the `Boardwalk` builder when the
+application should serve the reusable HTTP, WebSocket, and peer routes.
+The `examples/job-runner` package uses that builder so the example
+exercises the same route stack as applications.
 
 Peer-forwarded routes mirror the same vocabulary under a server name:
 
@@ -126,6 +128,10 @@ job handle when transition work continues through another resource.
 
 `NodeBuilder` builds a named node. The node owns the resource directory,
 the event bus, the shared stream registry, and per-actor command queues.
+`Boardwalk::new().use_actor(...)` is the server builder on top of that
+runtime: it registers actors into a `Node`, wraps the node with the
+reusable route stack, and starts peer tasks when `.link(...)` is
+configured.
 
 ```rust,ignore
 use std::sync::Arc;

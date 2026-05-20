@@ -170,6 +170,50 @@ fn legacy_adapter_vocabulary_is_removed_from_source_surface() {
     );
 }
 
+#[test]
+fn source_surface_does_not_describe_transitional_runtime_adapters() {
+    let roots = [
+        repo_path("crates/boardwalk/src"),
+        repo_path("examples"),
+        repo_path("docs"),
+        repo_path("README.md"),
+    ];
+    let mut paths = Vec::new();
+    for root in roots {
+        if root.is_dir() {
+            collect_files(&root, &mut paths);
+        } else {
+            paths.push(root);
+        }
+    }
+
+    let forbidden = [
+        "server adapter",
+        "server-adapter",
+        "legacy adapter",
+        "private adapter",
+        "example-local HTTP adapter",
+        "example-local actor-backed adapter",
+        "internal_adapter_tests",
+    ];
+    let mut offenders = Vec::new();
+    for path in paths {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("could not read {path:?}: {e}"));
+        for snippet in forbidden {
+            if source.contains(snippet) {
+                offenders.push(format!("{} contains `{snippet}`", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "final runtime docs/source must not describe transitional adapter paths:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[derive(Default)]
 struct FacadeLed;
 
@@ -343,6 +387,26 @@ fn runtime_owns_final_resource_and_transition_contracts() {
         assert!(
             offenders.is_empty(),
             "runtime facade must not publicly re-export implementation helper `{snippet}`; found {offenders:#?}"
+        );
+    }
+}
+
+#[test]
+fn registry_uses_resources_table_without_old_table_fallback() {
+    let registry = read("crates/boardwalk/src/registry.rs");
+    assert!(
+        registry.contains("TableDefinition::new(\"resources\")"),
+        "resource registry should persist records in the `resources` table"
+    );
+    for snippet in [
+        "TableDefinition::new(\"devices\")",
+        "open_table(DEVICES",
+        "DEVICE_TABLE",
+        "devices table",
+    ] {
+        assert!(
+            !registry.contains(snippet),
+            "resource registry must not keep old persistence fallback `{snippet}`"
         );
     }
 }

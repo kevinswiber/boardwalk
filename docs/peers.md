@@ -22,11 +22,12 @@ gets forwarded over the tunnel.
 
 ## Setting up a link
 
-Federation today is configured through the `Boardwalk::new()` server adapter.
-Actors registered with `Boardwalk::new().use_actor(...)` are served by the
-same local resource routes that peer-forwarded requests target. Actors built
-separately with `NodeBuilder` need to be registered through Boardwalk or wrapped
-with custom HTTP before they are reachable over peer-forwarded requests.
+Federation today is configured through the `Boardwalk::new()` builder.
+Actors registered with `Boardwalk::new().use_actor(...)` are placed into
+the same `Node` that serves local resource routes and peer-forwarded
+requests. A `Node` built directly with `NodeBuilder` is the lower-level
+in-process runtime; register actors through `Boardwalk` when they should
+be reachable through the supplied HTTP and peer routes.
 
 **Hub side:**
 

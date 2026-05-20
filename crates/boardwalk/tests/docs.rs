@@ -17,6 +17,8 @@ const PUBLIC_DOCS: &[&str] = &[
     "docs/event-envelope.md",
     "docs/caql.md",
     "docs/peers.md",
+    "examples/hello-led/README.md",
+    "examples/job-runner/README.md",
     "crates/boardwalk/src/lib.rs",
 ];
 
@@ -28,6 +30,8 @@ const PUBLIC_MARKDOWN_DOCS: &[&str] = &[
     "docs/event-envelope.md",
     "docs/caql.md",
     "docs/peers.md",
+    "examples/hello-led/README.md",
+    "examples/job-runner/README.md",
 ];
 
 fn public_docs(paths: &[&str]) -> String {
@@ -171,6 +175,30 @@ fn docs_describe_reusable_actor_http_runtime() {
         "peers.md should explain the relationship to the actor runtime"
     );
 
+    let hello_led = read("examples/hello-led/README.md");
+    assert!(
+        hello_led.contains("NodeBuilder"),
+        "hello-led README should explain the in-process NodeBuilder path"
+    );
+    assert!(
+        hello_led.contains("Boardwalk"),
+        "hello-led README should point HTTP users at Boardwalk"
+    );
+
+    let job_runner = read("examples/job-runner/README.md");
+    assert!(
+        job_runner.contains("Boardwalk::new()"),
+        "job-runner README should show the reusable Boardwalk builder"
+    );
+    assert!(
+        job_runner.contains("use_actor_with_id"),
+        "job-runner README should show stable actor registration"
+    );
+    assert!(
+        job_runner.contains("reusable HTTP, WebSocket, and peer route stack"),
+        "job-runner README should describe the final reusable route stack"
+    );
+
     let crate_docs = read("crates/boardwalk/src/lib.rs");
     assert!(
         crate_docs.contains("Common imports for the Resource/Actor surface"),
@@ -180,6 +208,24 @@ fn docs_describe_reusable_actor_http_runtime() {
         !crate_docs.contains("older server-adapter exports"),
         "crate rustdoc should not describe transitional root exports"
     );
+}
+
+#[test]
+fn docs_do_not_describe_transitional_runtime_adapter_caveats() {
+    let s = public_docs(PUBLIC_DOCS);
+    for forbidden in [
+        "server adapter",
+        "server-adapter",
+        "legacy adapter",
+        "private adapter",
+        "example-local HTTP adapter",
+        "example-local actor-backed adapter",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public docs should not describe transitional runtime caveat `{forbidden}`"
+        );
+    }
 }
 
 #[test]
