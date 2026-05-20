@@ -295,6 +295,31 @@ fn boardwalk_builder_does_not_expose_private_adapter_surface() {
 }
 
 #[test]
+fn peer_and_stream_routes_do_not_carry_parallel_private_runtime_handles() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+    let peer_streams = read("crates/boardwalk/src/http/peer_streams.rs");
+    let routes = read("crates/boardwalk/src/http/routes.rs");
+
+    for (name, source) in [
+        ("src/peer.rs", peer.as_str()),
+        ("src/http/peer_streams.rs", peer_streams.as_str()),
+        ("src/http/routes.rs", routes.as_str()),
+    ] {
+        for ident in ["DeviceSnapshot", "DeviceHandle"] {
+            assert!(
+                !contains_ident(source, ident),
+                "{name} must not route peers or streams through legacy `{ident}` lookups"
+            );
+        }
+    }
+
+    assert!(
+        !peer.contains("Arc<Core>"),
+        "PeerClient must use the router's AppState instead of carrying a parallel Core handle"
+    );
+}
+
+#[test]
 fn proc_macros_no_longer_generate_device_surface() {
     let macros = read("crates/boardwalk-macros/src/lib.rs");
     let snippets = [

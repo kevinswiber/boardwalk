@@ -3,52 +3,12 @@
 
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::Value as Json;
 use tokio_tungstenite::tungstenite::Message;
 
+use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError};
-use crate::runtime::TransitionInput;
-
-#[derive(Default)]
-struct Led {
-    on: bool,
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("LED")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on" => {
-                    self.on = true;
-                    Ok(())
-                }
-                "turn-off" => {
-                    self.on = false;
-                    Ok(())
-                }
-                _ => Err(DeviceError::Invalid("?".into())),
-            }
-        })
-    }
-}
 
 #[tokio::test]
 async fn hub_links_to_cloud_and_cloud_forwards_queries() {
@@ -64,7 +24,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     // Boot hub with an LED, linking to cloud.
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -153,10 +113,6 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
 
 #[tokio::test]
 async fn cloud_dedups_peer_subscriptions() {
-    use std::sync::Arc;
-
-    use crate::http::Core;
-
     let cloud = Boardwalk::new().name("cloud").build().unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
@@ -169,7 +125,7 @@ async fn cloud_dedups_peer_subscriptions() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -226,8 +182,6 @@ async fn cloud_dedups_peer_subscriptions() {
         1,
         "two subscribers to the same (peer, topic) should share one stream"
     );
-    let _ = Arc::<Core>::clone(&cloud.core);
-
     let client = reqwest::Client::new();
     let _ = client
         .post(format!(
@@ -270,7 +224,7 @@ async fn unsubscribe_tears_down_forwarded_stream() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -352,7 +306,7 @@ async fn cloud_ws_forwards_peer_events() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();

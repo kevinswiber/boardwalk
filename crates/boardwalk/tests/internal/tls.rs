@@ -9,39 +9,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::Value as Json;
 use tokio_rustls::TlsAcceptor;
 
+use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError};
-use crate::runtime::TransitionInput;
-
-#[derive(Default)]
-struct Led {
-    on: bool,
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("LED")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"]);
-    }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
-    fn transition<'a>(
-        &'a mut self,
-        _name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
 
 /// Stand up an HTTPS listener wrapping `router` with a self-signed cert
 /// for "localhost"/"127.0.0.1". Returns its address.
@@ -99,7 +72,7 @@ async fn hub_links_to_cloud_over_tls() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("https://localhost:{}/", tls_addr.port()))
         .build()
         .unwrap();

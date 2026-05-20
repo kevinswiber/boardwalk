@@ -14,55 +14,21 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::core::{Device, DeviceConfig, DeviceError};
-use crate::http::{Core, CoreBuilder, router};
-use crate::runtime::TransitionInput;
+use super::actor_led_fixture::ActorLed;
+use crate::http::{Core, router};
+use crate::runtime::NodeBuilder;
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-#[derive(Default)]
-struct Led {
-    on: bool,
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("LED")
-            .state(if self.on { "on" } else { "off" })
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> futures::future::BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on" => {
-                    self.on = true;
-                    Ok(())
-                }
-                "turn-off" => {
-                    self.on = false;
-                    Ok(())
-                }
-                other => Err(DeviceError::Invalid(format!("unknown {other}"))),
-            }
-        })
-    }
-}
-
 async fn boot() -> (SocketAddr, Arc<Core>, tokio::task::JoinHandle<()>) {
-    let mut b = CoreBuilder::new("hub");
-    b.add_device(Led::default());
-    let core = b.build();
+    let node = Arc::new(
+        NodeBuilder::new("hub")
+            .register_with_id("actor-led", ActorLed::default())
+            .expect("actor registers")
+            .build(),
+    );
+    let core = Core::from_node(node);
     let app = router(core.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

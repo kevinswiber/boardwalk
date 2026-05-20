@@ -1,3 +1,5 @@
+#[path = "../tests/internal/actor_led_fixture.rs"]
+mod actor_led_fixture;
 #[path = "../tests/internal/apps.rs"]
 mod apps;
 #[path = "../tests/internal/boardwalk_builder.rs"]

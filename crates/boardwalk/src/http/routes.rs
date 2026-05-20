@@ -847,33 +847,33 @@ async fn server_events_stream(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("topic: {e}")).into_response(),
     };
-    let sub = state.core.bus.subscribe(
+    let sub = state.core.subscribe_events(
         pattern,
         crate::events::SubscribeOpts {
             outbound_capacity: q.outbound_capacity,
             ..Default::default()
         },
     );
-    let bus_for_guard = state.core.bus.clone();
+    let core_for_guard = state.core.clone();
     let sub_id = sub.id;
     let mut rx = sub.rx;
     let mut slow_consumer_rx = sub.slow_consumer_rx;
     // Drop guard: when the response body is dropped (client
     // disconnect, axum tear-down, etc.), `_guard.drop()` runs and
-    // eagerly calls `bus.unsubscribe(id)`. Without this, the bus
+    // eagerly calls `core.unsubscribe_events(id)`. Without this, the bus
     // only prunes the subscription on the next `try_publish` that
     // notices the closed receiver.
     struct UnsubOnDrop {
-        bus: crate::events::EventBus,
+        core: Arc<Core>,
         id: crate::events::SubscriptionId,
     }
     impl Drop for UnsubOnDrop {
         fn drop(&mut self) {
-            self.bus.unsubscribe(self.id);
+            self.core.unsubscribe_events(self.id);
         }
     }
     let stream = async_stream::stream! {
-        let _guard = UnsubOnDrop { bus: bus_for_guard, id: sub_id };
+        let _guard = UnsubOnDrop { core: core_for_guard, id: sub_id };
         loop {
             tokio::select! {
                 biased;

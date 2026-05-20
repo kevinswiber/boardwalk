@@ -126,7 +126,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
                     ForwarderEvent::LocalTerminated { app_id } => {
                         if let Some(bus_id) = conn.local_subs.remove(&app_id) {
-                            state.core.bus.unsubscribe(bus_id);
+                            state.core.unsubscribe_events(bus_id);
                         }
                     }
                 }
@@ -242,7 +242,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                                 },
                             );
                         } else {
-                            let bus_sub = state.core.bus.subscribe(
+                            let bus_sub = state.core.subscribe_events(
                                 pattern,
                                 SubscribeOpts {
                                     limit,
@@ -267,7 +267,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                     Ok(InboundMessage::Unsubscribe { subscription_id }) => {
                         tracing::debug!(subscription_id, "events ws unsubscribe");
                         if let Some(bus_id) = conn.local_subs.remove(&subscription_id) {
-                            state.core.bus.unsubscribe(bus_id);
+                            state.core.unsubscribe_events(bus_id);
                         }
                         if let Some(fwd) = conn.fwd_subs.remove(&subscription_id) {
                             fwd.abort.abort();
@@ -317,7 +317,7 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
     let _ = writer.await;
 
     for (_, bus_id) in conn.local_subs.drain() {
-        state.core.bus.unsubscribe(bus_id);
+        state.core.unsubscribe_events(bus_id);
     }
     for (_, fwd) in conn.fwd_subs.drain() {
         fwd.abort.abort();

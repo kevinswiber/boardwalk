@@ -15,7 +15,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-use crate::http::{Core, PeerInitState, PeerSenders};
+use crate::http::{PeerInitState, PeerSenders};
 use crate::registry::{PeerDirection, PeerRecord, PeerStatus, Registry};
 
 #[derive(Debug, Error)]
@@ -39,7 +39,6 @@ pub(crate) struct PeerClient {
     pub local_name: String,
     pub router: Router,
     pub peer_init: PeerInitState,
-    pub _core: Arc<Core>,
     pub shutdown: Arc<tokio::sync::Notify>,
 }
 
@@ -49,14 +48,12 @@ impl PeerClient {
         local_name: String,
         router: Router,
         peer_init: PeerInitState,
-        core: Arc<Core>,
     ) -> Self {
         Self {
             remote_url,
             local_name,
             router,
             peer_init,
-            _core: core,
             shutdown: Arc::new(tokio::sync::Notify::new()),
         }
     }

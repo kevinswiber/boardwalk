@@ -6,56 +6,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
+use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::PeerStreamHub;
-use crate::runtime::TransitionInput;
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-#[derive(Default)]
-struct Led {
-    on: bool,
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("LED")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on" => {
-                    self.on = true;
-                    Ok(())
-                }
-                "turn-off" => {
-                    self.on = false;
-                    Ok(())
-                }
-                _ => Err(DeviceError::Invalid("?".into())),
-            }
-        })
-    }
-}
 
 struct Pair {
     cloud_addr: SocketAddr,
@@ -74,7 +34,7 @@ async fn boot_pair() -> Pair {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_actor(Led::default())
+        .use_actor(ActorLed::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();

@@ -278,13 +278,7 @@ impl Boardwalk {
         let mut peer_tasks = Vec::new();
         for url in self.peers {
             let local_name = self.name.clone();
-            let pc = PeerClient::new(
-                url,
-                local_name,
-                router.clone(),
-                peer_init.clone(),
-                core.clone(),
-            );
+            let pc = PeerClient::new(url, local_name, router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
 

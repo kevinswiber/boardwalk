@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::core::{Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink};
 use crate::events::{
-    ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry, TraceContext,
+    ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry, SubscribeOpts,
+    Subscription, SubscriptionId, TopicPattern, TraceContext,
 };
 use crate::runtime::{
     ActorSpec, CommandId, EmissionContext, EnvelopePlan, Node, NodeHandle, RequestCtx,
@@ -321,6 +322,18 @@ impl Core {
                 .map(DeviceSnapshot::to_actor_spec),
         );
         out
+    }
+
+    pub(crate) fn subscribe_events(
+        &self,
+        pattern: TopicPattern,
+        opts: SubscribeOpts,
+    ) -> Subscription {
+        self.bus.subscribe(pattern, opts)
+    }
+
+    pub(crate) fn unsubscribe_events(&self, id: SubscriptionId) -> bool {
+        self.bus.unsubscribe(id)
     }
 
     pub async fn run_resource_transition(

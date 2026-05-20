@@ -9,68 +9,31 @@
 
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
-use uuid::Uuid;
-
-use crate::core::{Device, DeviceConfig, DeviceError};
+use super::actor_led_fixture::ActorLed;
 use crate::events::{SubscribeOpts, TopicPattern};
-use crate::http::{Core, CoreBuilder};
-use crate::runtime::{RequestCtx, TransitionInput};
+use crate::http::Core;
+use crate::runtime::{NodeBuilder, RequestCtx, TransitionInput};
 
-#[derive(Default)]
-struct Led {
-    on: bool,
-}
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("LED")
-            .state(if self.on { "on" } else { "off" })
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on" => {
-                    self.on = true;
-                    Ok(())
-                }
-                "turn-off" => {
-                    self.on = false;
-                    Ok(())
-                }
-                other => Err(DeviceError::Invalid(format!("unknown {other}"))),
-            }
-        })
-    }
-}
-
-async fn boot() -> (Arc<Core>, Uuid) {
-    let mut b = CoreBuilder::new("hub");
-    let id = b.add_device(Led::default());
-    let core = b.build();
-    (core, id)
+async fn boot() -> (Arc<Core>, String) {
+    let id = "actor-led".to_string();
+    let node = Arc::new(
+        NodeBuilder::new("hub")
+            .register_with_id(id.clone(), ActorLed::default())
+            .expect("actor registers")
+            .build(),
+    );
+    (Core::from_node(node), id)
 }
 
 #[tokio::test]
 async fn event_id_resolves_to_stream_via_registry() {
     let (core, id) = boot().await;
-    let mut sub = core.bus.subscribe(
+    let mut sub = core.subscribe_events(
         TopicPattern::parse(&format!("hub/led/{id}/state")).unwrap(),
         SubscribeOpts::default(),
     );
 
-    core.run_transition(
+    core.run_resource_transition(
         &id,
         "turn-on",
         TransitionInput::default(),
@@ -89,12 +52,12 @@ async fn event_id_resolves_to_stream_via_registry() {
 #[tokio::test]
 async fn event_id_then_replay_cache_returns_origin_envelope() {
     let (core, id) = boot().await;
-    let mut sub = core.bus.subscribe(
+    let mut sub = core.subscribe_events(
         TopicPattern::parse(&format!("hub/led/{id}/state")).unwrap(),
         SubscribeOpts::default(),
     );
 
-    core.run_transition(
+    core.run_resource_transition(
         &id,
         "turn-on",
         TransitionInput::default(),
