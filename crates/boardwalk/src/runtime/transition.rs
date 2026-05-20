@@ -9,8 +9,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::resource::ResourceSnapshot;
-
 /// Wire-level identity of a transition (kebab-case in Siren responses).
 pub type TransitionName = String;
 
@@ -130,28 +128,4 @@ pub struct ResourceSpec {
 pub struct ActorSpec {
     pub resource: ResourceSpec,
     pub transitions: Vec<TransitionSpec>,
-}
-
-/// Typed handle for an async transition's downstream job resource.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobHandle {
-    pub id: String,
-    pub kind: ResourceKind,
-    pub location: String,
-    pub created: bool,
-}
-
-/// Typed return type for invoking a transition. `Sync` transitions
-/// produce `Completed`; async ones produce `Accepted` with a typed
-/// `JobHandle`.
-#[derive(Debug, Clone)]
-pub enum TransitionOutcome {
-    Completed {
-        output: Option<Value>,
-        snapshot: ResourceSnapshot,
-    },
-    Accepted {
-        job: JobHandle,
-        output: Option<Value>,
-    },
 }

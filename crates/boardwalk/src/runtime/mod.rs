@@ -21,14 +21,14 @@ pub use directory::ResourceDirectory;
 pub use executor::{ActorHandle, NodePolicy, PendingTransition};
 pub use handle::{ActorProxy, NodeHandle, NodeHandleError, ResourceProxy};
 pub use node::{Node, NodeBuilder};
+pub(crate) use resource::sanitize_properties;
 pub use resource::{
-    DynFuture, RESERVED_FIELDS, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
-    SnapshotStreamSpec, TransitionAffordance, sanitize_properties,
+    DynFuture, JobHandle, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
+    SnapshotStreamSpec, TransitionAffordance, TransitionOutcome,
 };
 pub use transition::{
-    ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSpec, StateName,
-    StreamKind, StreamSpec, TransitionInput, TransitionName, TransitionOutcome,
-    TransitionResultKind, TransitionSpec,
+    ActorSpec, Effect, FieldSpec, Idempotency, ResourceKind, ResourceSpec, StateName, StreamKind,
+    StreamSpec, TransitionInput, TransitionName, TransitionResultKind, TransitionSpec,
 };
 
 /// Query types re-exported under `runtime::query` so apps depend on

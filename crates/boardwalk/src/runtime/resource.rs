@@ -11,7 +11,9 @@ use std::pin::Pin;
 
 use serde_json::{Map, Value as JsonValue};
 
-use super::transition::{Effect, Idempotency, ResourceSpec, TransitionResultKind, TransitionSpec};
+use super::transition::{
+    Effect, Idempotency, ResourceKind, ResourceSpec, TransitionResultKind, TransitionSpec,
+};
 
 /// Pinned, boxed `Future` alias used by the trait methods so the
 /// signatures stay readable while still being object-safe.
@@ -97,7 +99,7 @@ pub struct SnapshotStreamSpec {
 /// User-supplied properties carrying any of these names are stripped
 /// by `sanitize_properties` so that user data cannot shadow
 /// Boardwalk-owned fields.
-pub const RESERVED_FIELDS: &[&str] = &[
+pub(crate) const RESERVED_FIELDS: &[&str] = &[
     "id",
     "kind",
     "name",
@@ -113,7 +115,7 @@ pub const RESERVED_FIELDS: &[&str] = &[
 ];
 
 /// Strips reserved top-level field names from a properties map.
-pub fn sanitize_properties(mut props: Map<String, JsonValue>) -> Map<String, JsonValue> {
+pub(crate) fn sanitize_properties(mut props: Map<String, JsonValue>) -> Map<String, JsonValue> {
     let offenders: Vec<&str> = RESERVED_FIELDS
         .iter()
         .filter(|k| props.contains_key(**k))
@@ -275,6 +277,30 @@ fn transition_affordance_to_query_json(t: &TransitionAffordance) -> JsonValue {
             .unwrap_or(JsonValue::Null),
     );
     JsonValue::Object(m)
+}
+
+/// Typed handle for an async transition's downstream job resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobHandle {
+    pub id: String,
+    pub kind: ResourceKind,
+    pub location: String,
+    pub created: bool,
+}
+
+/// Typed return type for invoking a transition. `Sync` transitions
+/// produce `Completed`; async ones produce `Accepted` with a typed
+/// `JobHandle`.
+#[derive(Debug, Clone)]
+pub enum TransitionOutcome {
+    Completed {
+        output: Option<JsonValue>,
+        snapshot: ResourceSnapshot,
+    },
+    Accepted {
+        job: JobHandle,
+        output: Option<JsonValue>,
+    },
 }
 
 /// Addressable read-only projection on a node.

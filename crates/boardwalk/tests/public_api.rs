@@ -189,6 +189,22 @@ fn runtime_owns_final_resource_and_transition_contracts() {
             "final Resource/Actor contract definition still lives in core.rs: `{snippet}`"
         );
     }
+
+    let runtime = read("crates/boardwalk/src/runtime/mod.rs");
+    let runtime_public_uses = pub_use_blocks(&runtime);
+    for snippet in ["RESERVED_FIELDS", "sanitize_properties"] {
+        let offenders: Vec<_> = runtime_public_uses
+            .iter()
+            .filter(|block| {
+                block.starts_with("pub use resource::") && contains_ident(block, snippet)
+            })
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "runtime facade must not publicly re-export implementation helper `{snippet}`; found {offenders:#?}"
+        );
+    }
 }
 
 #[test]
