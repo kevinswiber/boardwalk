@@ -1,4 +1,4 @@
-//! Characterization tests for the multiplex events WebSocket protocol.
+//! Contract tests for the multiplex resource events WebSocket protocol.
 //!
 //! Locks down the subscribe → ack → event → unsubscribe → ack cycle,
 //! plus ping/pong, error framing for invalid topics, and the

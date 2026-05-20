@@ -294,8 +294,8 @@ impl ActorCtx {
     }
 }
 
-/// Failure modes for `Actor::transition`. The HTTP boundary maps
-/// these onto 400 / 405 / 409 / 503 / 504 / 404 / 500 in later phases.
+/// Failure modes for `Actor::transition`. HTTP adapters can map these
+/// onto 400 / 405 / 409 / 503 / 504 / 404 / 500 responses.
 #[derive(Debug)]
 pub enum TransitionError {
     InvalidInput(String),

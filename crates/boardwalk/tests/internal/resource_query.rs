@@ -1,10 +1,7 @@
-//! Characterization tests for the current `?ql=` and `ServerHandle::query`
-//! behaviors.
+//! Contract tests for `?ql=` resource search and internal query adapter behavior.
 //!
-//! Several tests lock in behaviors that are explicitly slated for later
-//! replacement (the HTTP swallow-on-error, the app-side swallow-on-error,
-//! and the query target's narrow projection). Replacing them will require
-//! intentional updates to these tests plus a paired source change.
+//! These pin the final resource query target: `kind` is canonical,
+//! user properties stay under `properties`, and invalid CaQL is surfaced.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

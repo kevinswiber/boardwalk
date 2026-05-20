@@ -142,7 +142,7 @@ pub(crate) fn resource_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> Embedde
         .with_link(Link::rels([rels::UP, rels::RESOURCES], h.resources_url()))
 }
 
-pub(crate) fn render_device(h: &Hrefs, snap: &ResourceSnapshot) -> Entity {
+pub(crate) fn render_resource(h: &Hrefs, snap: &ResourceSnapshot) -> Entity {
     let mut e = Entity::new()
         .with_class("resource")
         .with_class(snap.kind.clone());
@@ -552,9 +552,9 @@ mod tests {
         // Other extras still present.
         assert_eq!(v["properties"]["color"], "red");
 
-        // Same guarantee on the full device render.
-        let dev = render_device(&h, &snap);
-        let v = serde_json::to_value(&dev).unwrap();
+        // Same guarantee on the full resource render.
+        let resource = render_resource(&h, &snap);
+        let v = serde_json::to_value(&resource).unwrap();
         assert_eq!(v["properties"]["type"], "shadow-led");
         assert_eq!(v["properties"]["color"], "red");
     }
@@ -575,8 +575,8 @@ mod tests {
                 value: Some(Json::from(42)),
             });
 
-        let dev = render_device(&h, &snap);
-        let v = serde_json::to_value(&dev).unwrap();
+        let resource = render_resource(&h, &snap);
+        let v = serde_json::to_value(&resource).unwrap();
 
         assert_eq!(v["properties"]["kind"], "led");
         assert_eq!(v["properties"]["labels"]["room"], "kitchen");

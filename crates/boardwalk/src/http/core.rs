@@ -14,7 +14,8 @@ use crate::events::{
 use crate::runtime::{CommandId, EmissionContext, EnvelopePlan, RequestCtx, publish_envelope};
 
 /// Runtime owned by the HTTP layer (and reused by the peer tunnel
-/// handler). Holds the registered devices and the event bus.
+/// handler). Holds private server-adapter resources and projects them
+/// into the final Resource wire contract.
 pub struct Core {
     pub name: String,
     pub bus: EventBus,
@@ -25,12 +26,13 @@ pub struct Core {
     pub stream_registry: StreamRegistry,
     devices: RwLock<Vec<DeviceHandle>>,
     /// Fires once per `register_device`. Subscribers see one tick per
-    /// new device. Used by `ServerHandle::observe`.
+    /// new adapter resource. Used by `ServerHandle::observe`.
     pub(crate) device_changes: tokio::sync::broadcast::Sender<()>,
 }
 
-/// One registered device. The runtime owns the device behind a lock so
-/// transitions can mutate state safely.
+/// One registered private adapter resource. The `Device*` name remains
+/// internal compatibility vocabulary until this adapter is rebuilt
+/// directly around `Actor`.
 pub struct DeviceHandle {
     pub id: DeviceId,
     pub config: DeviceConfig,
@@ -43,8 +45,8 @@ impl DeviceHandle {
     }
 }
 
-/// Builder used by `boardwalk-server`. Devices are held un-Mutex'd until
-/// `build()` so `on_start` can be called with `&self`.
+/// Builder used by `boardwalk-server`. Adapter resources are held
+/// un-Mutex'd until `build()` so `on_start` can be called with `&self`.
 pub struct CoreBuilder {
     name: String,
     pending: Vec<PendingDevice>,
@@ -71,7 +73,7 @@ impl CoreBuilder {
         id
     }
 
-    /// Add a device with a caller-supplied id. Used when persistence is
+    /// Add an adapter resource with a caller-supplied id. Used when persistence is
     /// enabled and a stable id was retrieved from the registry.
     #[allow(dead_code)]
     pub fn add_device_with_id<D: Device + 'static>(&mut self, id: DeviceId, device: D) {
@@ -80,7 +82,7 @@ impl CoreBuilder {
         self.add_device_full(id, cfg, Box::new(device));
     }
 
-    /// Add a device when both the id and the config have already been
+    /// Add an adapter resource when both the id and the config have already been
     /// resolved (e.g. via a registry lookup).
     pub fn add_device_full(&mut self, id: DeviceId, config: DeviceConfig, device: Box<dyn Device>) {
         self.pending.push(PendingDevice { id, config, device });
@@ -342,7 +344,8 @@ impl Core {
     }
 }
 
-/// A frozen view of a device, safe to render into Siren responses.
+/// A frozen view of a private adapter resource, safe to render into
+/// Siren responses.
 #[derive(Debug, Clone)]
 pub struct DeviceSnapshot {
     pub id: DeviceId,
@@ -354,10 +357,11 @@ pub struct DeviceSnapshot {
 }
 
 impl DeviceSnapshot {
-    /// Bridges a `DeviceSnapshot` to the canonical `ResourceSnapshot`.
+    /// Bridges the private adapter snapshot to the canonical
+    /// `ResourceSnapshot`.
     /// `node` is the local server's name (the `Resource` lives on
     /// some node). Reserved field names are stripped from
-    /// device-supplied properties.
+    /// adapter-supplied properties.
     pub fn to_resource_snapshot(&self, node: &str) -> ResourceSnapshot {
         let properties = sanitize_properties(self.properties.clone());
         let allowed: std::collections::BTreeSet<&str> = self

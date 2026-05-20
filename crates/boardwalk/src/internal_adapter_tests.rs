@@ -1,19 +1,5 @@
 #[path = "../tests/internal/apps.rs"]
 mod apps;
-#[path = "../tests/internal/characterization_event_wire_shape.rs"]
-mod characterization_event_wire_shape;
-#[path = "../tests/internal/characterization_hypermedia.rs"]
-mod characterization_hypermedia;
-#[path = "../tests/internal/characterization_peer_event_wire_shape.rs"]
-mod characterization_peer_event_wire_shape;
-#[path = "../tests/internal/characterization_peers.rs"]
-mod characterization_peers;
-#[path = "../tests/internal/characterization_ql.rs"]
-mod characterization_ql;
-#[path = "../tests/internal/characterization_transitions.rs"]
-mod characterization_transitions;
-#[path = "../tests/internal/characterization_ws_lifecycle.rs"]
-mod characterization_ws_lifecycle;
 #[path = "../tests/internal/event_envelope_minting.rs"]
 mod event_envelope_minting;
 #[path = "../tests/internal/event_envelope_state_change.rs"]
@@ -36,14 +22,28 @@ mod observe;
 mod peer;
 #[path = "../tests/internal/peer_broadcast_lag_emits_stream_gap.rs"]
 mod peer_broadcast_lag_emits_stream_gap;
+#[path = "../tests/internal/peer_event_wire_shape.rs"]
+mod peer_event_wire_shape;
 #[path = "../tests/internal/peer_ndjson_envelope_preserved.rs"]
 mod peer_ndjson_envelope_preserved;
+#[path = "../tests/internal/peer_resources.rs"]
+mod peer_resources;
 #[path = "../tests/internal/persist.rs"]
 mod persist;
 #[path = "../tests/internal/replay_records_on_publish.rs"]
 mod replay_records_on_publish;
+#[path = "../tests/internal/resource_event_wire_shape.rs"]
+mod resource_event_wire_shape;
+#[path = "../tests/internal/resource_hypermedia.rs"]
+mod resource_hypermedia;
+#[path = "../tests/internal/resource_query.rs"]
+mod resource_query;
 #[path = "../tests/internal/resource_snapshot_shape.rs"]
 mod resource_snapshot_shape;
+#[path = "../tests/internal/resource_transitions.rs"]
+mod resource_transitions;
+#[path = "../tests/internal/resource_ws_lifecycle.rs"]
+mod resource_ws_lifecycle;
 #[path = "../tests/internal/scout.rs"]
 mod scout;
 #[path = "../tests/internal/shutdown.rs"]

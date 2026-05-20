@@ -44,7 +44,7 @@ pub trait PeerSenders: Send + Sync + 'static {
 
 /// Inputs to the hubless resource registration flow (`POST /resources`).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct DeviceRegistration {
+pub(crate) struct ResourceRegistration {
     pub type_: String,
     pub name: Option<String>,
     pub id: Option<Uuid>,
@@ -52,10 +52,10 @@ pub(crate) struct DeviceRegistration {
 }
 
 /// Callback supplied by `boardwalk-server` that consumes a registration,
-/// runs the appropriate factory, registers the device with the Core
-/// (and the persistent registry), and returns its ID.
-pub(crate) type DeviceRegistrar = Arc<
-    dyn Fn(DeviceRegistration) -> BoxFuture<'static, Result<Uuid, crate::core::DeviceError>>
+/// runs the appropriate private adapter factory, registers it with the Core
+/// (and the persistent registry), and returns its resource ID.
+pub(crate) type ResourceRegistrar = Arc<
+    dyn Fn(ResourceRegistration) -> BoxFuture<'static, Result<Uuid, crate::core::DeviceError>>
         + Send
         + Sync,
 >;
@@ -84,7 +84,7 @@ pub(crate) struct AppState {
     pub peer_init: PeerInitState,
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: super::peer_streams::PeerStreamHub,
-    pub device_registrar: Option<DeviceRegistrar>,
+    pub resource_registrar: Option<ResourceRegistrar>,
 }
 
 #[allow(dead_code)]
@@ -95,7 +95,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_init: PeerInitState::default(),
         peer_senders: None,
         peer_streams: super::peer_streams::PeerStreamHub::new(),
-        device_registrar: None,
+        resource_registrar: None,
     })
 }
 
@@ -488,7 +488,7 @@ async fn resources_post(
     uri: Uri,
     body_bytes: bytes::Bytes,
 ) -> Response {
-    let Some(registrar) = state.device_registrar.clone() else {
+    let Some(registrar) = state.resource_registrar.clone() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
             "no factories registered; call Boardwalk::register_factory(...)",
@@ -507,7 +507,7 @@ async fn resources_post(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("bad form: {e}")).into_response(),
     };
-    let mut reg = DeviceRegistration::default();
+    let mut reg = ResourceRegistration::default();
     for (k, v) in pairs {
         match k.as_str() {
             "kind" => reg.type_ = v,
@@ -540,7 +540,7 @@ async fn resources_post(
             .into_response();
     };
     let rsnap = snap.to_resource_snapshot(&state.core.name);
-    let mut resp = siren_response(render::render_device(&h, &rsnap));
+    let mut resp = siren_response(render::render_resource(&h, &rsnap));
     *resp.status_mut() = StatusCode::CREATED;
     resp.headers_mut().insert(
         http::header::LOCATION,
@@ -567,7 +567,7 @@ async fn resource_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri, id:
     match core.get_device(&id).await {
         Some(d) => {
             let rsnap = d.to_resource_snapshot(&core.name);
-            siren_response(render::render_device(&h, &rsnap))
+            siren_response(render::render_resource(&h, &rsnap))
         }
         None => (StatusCode::NOT_FOUND, "unknown resource").into_response(),
     }

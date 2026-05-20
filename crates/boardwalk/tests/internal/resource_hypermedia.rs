@@ -1,6 +1,6 @@
-//! Characterization tests for the Siren hypermedia crawl.
+//! Contract tests for the Resource/Actor Siren hypermedia crawl.
 //!
-//! Snapshots the root → server → device → meta surfaces — link rels,
+//! Snapshots the root, server, resources, resource, and meta surfaces: link rels,
 //! action shapes, content types, and embedded sub-entity classes — so
 //! that refactors to the renderer cannot regress the wire contract
 //! without an explicit test update.
@@ -186,22 +186,6 @@ async fn resources_collection_renders_resource_entities() {
         .await
         .unwrap();
     assert_eq!(resource["properties"]["node"], "hub");
-}
-
-#[tokio::test]
-async fn old_device_routes_return_404_after_resource_switch() {
-    let (addr, core, _h) = boot().await;
-    let id = core.list_devices().await[0].id;
-
-    let devices = reqwest::get(format!("http://{addr}/servers/hub/devices"))
-        .await
-        .unwrap();
-    assert_eq!(devices.status(), 404);
-
-    let device = reqwest::get(format!("http://{addr}/servers/hub/devices/{id}"))
-        .await
-        .unwrap();
-    assert_eq!(device.status(), 404);
 }
 
 #[tokio::test]

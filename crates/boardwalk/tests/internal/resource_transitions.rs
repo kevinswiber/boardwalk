@@ -1,4 +1,4 @@
-//! Characterization tests for state-gated transition affordances.
+//! Contract tests for state-gated Resource transition affordances.
 //!
 //! Pins three rules that the renderer + transition runner enforce:
 //!   * only currently-allowed transitions render as Siren actions,
@@ -222,10 +222,9 @@ async fn form_urlencoded_transition_is_rejected_after_device_removal() {
     assert_eq!(resp.status(), 415);
 }
 
-/// Survivor characterization for the JSON resource transition path and
-/// the envelope it mints.
+/// Pins the JSON resource transition path and the envelope it mints.
 ///
-/// Pins three rules together so each is renamed deliberately later:
+/// Pins three rules together:
 ///   * `POST /resources/{id}/transitions/{transition}` with JSON
 ///     returns 200 and an outcome body carrying the new snapshot,
 ///   * the bus emits one envelope with `payloadKind ==

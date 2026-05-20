@@ -1,7 +1,8 @@
-//! Characterization tests for the peer link: cloud advertises hub as
-//! a peer, forwarded GETs reach the hub, peer subscriptions to the same
-//! topic share one upstream stream, and the upstream is torn down when
-//! the last subscriber leaves.
+//! Contract tests for peer resource forwarding and shared upstream streams.
+//!
+//! Cloud advertises hub as a peer, forwarded resource GETs render cloud-facing
+//! hrefs, peer subscriptions to the same topic share one upstream stream, and
+//! the upstream is torn down when the last subscriber leaves.
 
 use std::net::SocketAddr;
 use std::time::Duration;

@@ -1,4 +1,4 @@
-//! Persistent registries for devices and peers, backed by redb.
+//! Persistent registries for server-adapter resources and peers, backed by redb.
 
 #![forbid(unsafe_code)]
 // redb's error variants are intentionally large (rich diagnostic info).
@@ -66,6 +66,7 @@ pub enum PeerStatus {
     Failed,
 }
 
+// On-disk table name kept for compatibility with existing Boardwalk registries.
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 
@@ -104,7 +105,7 @@ impl Registry {
         Ok(Self { db })
     }
 
-    // -- devices ----------------------------------------------------------
+    // -- server-adapter resources ----------------------------------------
 
     pub fn put_device(&self, rec: &DeviceRecord) -> Result<(), RegistryError> {
         let bytes = serde_json::to_vec(rec)?;

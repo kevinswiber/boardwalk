@@ -1,8 +1,8 @@
-//! App support: user code that reacts to device state.
+//! Private app/scout support for the server adapter.
 //!
 //! An app implements [`App::run`] and is handed a [`ServerHandle`] when
 //! the server boots. The handle lets the app run CaQL queries against
-//! the local registry and operate on devices.
+//! the local resource registry through compatibility proxies.
 
 // App/Scout compatibility is private until the actor-backed HTTP facade lands.
 #![allow(dead_code)]
@@ -23,8 +23,8 @@ pub trait App: Send + Sync + 'static {
     async fn run(self: Arc<Self>, server: ServerHandle) -> Result<(), AppError>;
 }
 
-/// A scout discovers devices over a protocol (mDNS, USB, Bluetooth,
-/// etc.) and registers them with the running server.
+/// A scout discovers private adapter resources over a protocol (mDNS,
+/// USB, Bluetooth, etc.) and registers them with the running server.
 #[async_trait::async_trait]
 pub trait Scout: Send + Sync + 'static {
     async fn run(self: Arc<Self>, ctx: ScoutCtx) -> Result<(), DeviceError>;
@@ -47,8 +47,8 @@ impl ScoutCtx {
         &self.core.name
     }
 
-    /// Register a newly-discovered device with the running server.
-    /// Returns the assigned device ID. The device is immediately
+    /// Register a newly-discovered adapter resource with the running server.
+    /// Returns the assigned resource ID. The resource is immediately
     /// visible via the HTTP API.
     pub async fn discover<D: Device + 'static>(&self, device: D) -> DeviceId {
         let id = Uuid::new_v4();
@@ -58,7 +58,7 @@ impl ScoutCtx {
         id
     }
 
-    /// Get a `ServerHandle` for inspecting existing devices (e.g. to
+    /// Get a `ServerHandle` for inspecting existing resources (e.g. to
     /// avoid duplicate discovery).
     pub fn server(&self) -> ServerHandle {
         ServerHandle::new_internal(self.core.clone())
@@ -83,8 +83,8 @@ impl ServerHandle {
         &self.core.name
     }
 
-    /// Run a CaQL query against the local device registry. Returns a
-    /// `DeviceProxy` for each match. Invalid CaQL surfaces as
+    /// Run a CaQL query against the local resource projection. Returns a
+    /// compatibility proxy for each match. Invalid CaQL surfaces as
     /// `Err(AppError)` so callers can react explicitly.
     pub async fn query(&self, ql: &str) -> Result<Vec<DeviceProxy>, AppError> {
         let q = crate::caql::parse(ql)
@@ -107,7 +107,7 @@ impl ServerHandle {
         Ok(out)
     }
 
-    /// Get a proxy by exact device id, if known.
+    /// Get a proxy by exact resource id, if known.
     pub async fn device(&self, id: DeviceId) -> Option<DeviceProxy> {
         self.core.get_device(&id).await.map(|_| DeviceProxy {
             core: self.core.clone(),
@@ -115,7 +115,7 @@ impl ServerHandle {
         })
     }
 
-    /// Wait until *all* of `queries` have at least one matching device,
+    /// Wait until *all* of `queries` have at least one matching resource,
     /// then invoke `callback` with one proxy per query (the first match
     /// in registration order). If a query never matches, `observe`
     /// waits forever (drop the future to cancel).

@@ -207,3 +207,31 @@ fn tests_and_examples_do_not_import_device_root_surface() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn final_resource_contract_replaces_device_characterizations() {
+    let root = repo_path("crates/boardwalk/tests/internal");
+    let mut paths = Vec::new();
+    collect_files(&root, &mut paths);
+
+    let mut offenders = Vec::new();
+    for path in paths {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("could not read {path:?}: {e}"));
+        if source.contains("__pending_replacement") {
+            offenders.push(format!(
+                "{} contains `__pending_replacement`",
+                path.display()
+            ));
+        }
+        if source.contains("/servers/hub/devices") {
+            offenders.push(format!("{} fetches `/servers/hub/devices`", path.display()));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "old characterization tests still need final Resource/Actor/Node replacements:\n{}",
+        offenders.join("\n")
+    );
+}

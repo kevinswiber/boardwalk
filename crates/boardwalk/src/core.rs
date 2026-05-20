@@ -1,8 +1,9 @@
-//! Core types for Boardwalk.
+//! Private compatibility types for the current HTTP server adapter.
 //!
-//! This crate defines the abstract building blocks (Device, Scout, App,
-//! transitions, streams) without committing to any transport or storage
-//! backend. Device implementations depend only on this crate.
+//! Public users should build around `Resource`, `Actor`, and `Node`.
+//! These `Device*` types remain crate-internal while the reusable HTTP
+//! adapter still projects its old registration/runtime model into the
+//! final Resource wire contract.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-/// Identifier assigned by the runtime to each device instance.
+/// Identifier assigned by the private server adapter to each resource.
 pub type DeviceId = uuid::Uuid;
 
 /// Wire-level identity of a transition (kebab-case in Siren responses).
@@ -37,7 +38,7 @@ pub enum DeviceError {
     Internal(String),
 }
 
-/// Inputs to a transition, parsed from the form-encoded HTTP body.
+/// Inputs to a transition, parsed at the HTTP boundary.
 #[derive(Debug, Default, Clone)]
 pub struct TransitionInput {
     pub fields: BTreeMap<String, Value>,
@@ -52,7 +53,7 @@ impl TransitionInput {
     }
 }
 
-/// What a legacy device implementation provides. Real wiring happens via `DeviceConfig`.
+/// What the private server adapter currently stores. Real wiring happens via `DeviceConfig`.
 pub trait Device: Send + Sync + 'static {
     /// Called once at registration. Sets type, initial state, allowed
     /// transitions per state, and stream metadata.
@@ -62,7 +63,7 @@ pub trait Device: Send + Sync + 'static {
     /// representation is produced.
     fn state(&self) -> &str;
 
-    /// Optional extra properties beyond `id`, `type`, `name`, `state`.
+    /// Optional extra properties beyond the reserved Resource fields.
     /// Default: none.
     fn properties(&self) -> Map<String, Value> {
         Map::new()
@@ -76,7 +77,7 @@ pub trait Device: Send + Sync + 'static {
         input: TransitionInput,
     ) -> BoxFuture<'a, Result<(), DeviceError>>;
 
-    /// Called once after registration. Device implementations spawn background tasks
+    /// Called once after registration. Adapter implementations spawn background tasks
     /// here (e.g. periodic telemetry) using `ctx.publish` to push to
     /// declared streams. `&self` — implementations needing mutable state
     /// during these background tasks use interior mutability.
@@ -206,7 +207,7 @@ pub enum TransitionOutcome {
 /// renaming usage.
 pub type ResourceKind = String;
 
-/// Builder accepted by `Device::config`.
+/// Builder accepted by `Device::config`; projected as Resource metadata.
 #[allow(dead_code)]
 #[derive(Default, Debug, Clone)]
 pub struct DeviceConfig {
@@ -286,7 +287,7 @@ impl DeviceConfig {
         self
     }
 
-    /// Declare a stream the device will publish to. Use `Stream::Object` or `Binary`.
+    /// Declare a stream the adapter resource will publish to.
     pub fn stream(&mut self, name: impl Into<String>, kind: StreamKind) -> &mut Self {
         self.streams.push(StreamSpec {
             name: name.into(),
@@ -295,7 +296,7 @@ impl DeviceConfig {
         self
     }
 
-    /// Auto-stream a property on the device — equivalent to the original's
+    /// Auto-stream a property on the adapter resource — equivalent to the original's
     /// `config.monitor('color')`. The runtime publishes events whenever the
     /// property changes between transitions.
     pub fn monitor(&mut self, name: impl Into<String>) -> &mut Self {
@@ -317,8 +318,8 @@ impl DeviceConfig {
     }
 }
 
-/// Context handed to a device's `run` task. Lets the device publish to
-/// its declared streams.
+/// Context handed to an adapter resource's startup hook. Lets it publish
+/// to declared streams.
 #[allow(dead_code)]
 pub struct DeviceCtx {
     pub id: DeviceId,
@@ -335,7 +336,7 @@ pub trait StreamSink: Send + Sync {
 
 // Scout + App live in boardwalk-http (they need Core access).
 
-/// Stable wire identity for a device — what gets serialized in Siren.
+/// Legacy adapter property bundle kept for compatibility tests.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProperties {

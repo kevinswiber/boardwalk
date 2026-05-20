@@ -1,4 +1,4 @@
-//! Characterization tests pinning the peer-forwarded NDJSON event
+//! Contract tests pinning the peer-forwarded NDJSON event
 //! shape on `/servers/{name}/events?topic=...`. Each line carries the
 //! legacy `{topic, timestamp, data}` keys plus the additive envelope
 //! fields (`eventId`, `streamId`, `sequence`, etc.).

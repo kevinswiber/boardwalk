@@ -1,4 +1,4 @@
-//! Characterization tests pinning the WS event wire shape.
+//! Contract tests pinning the resource event WebSocket wire shape.
 //!
 //! Locks the top-level key set (legacy quintet plus the optional
 //! envelope mirror), the epoch-milliseconds integer typing of

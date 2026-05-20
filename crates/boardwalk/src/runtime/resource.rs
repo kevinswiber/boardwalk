@@ -33,8 +33,8 @@ impl ResourceCtx {
     }
 }
 
-/// Read-only failure modes for `Resource::snapshot`. The HTTP boundary
-/// maps these onto 404 / 503 / 500 in later phases.
+/// Read-only failure modes for `Resource::snapshot`. HTTP adapters can
+/// map these onto 404 / 503 / 500 responses.
 #[derive(Debug)]
 pub enum ResourceError {
     NotFound(String),

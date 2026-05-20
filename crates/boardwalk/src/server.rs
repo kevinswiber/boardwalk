@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{
-    App, AppState, Core, CoreBuilder, DeviceRegistrar, DeviceRegistration, PeerHandler,
-    PeerInitState, Scout, ScoutCtx, ServerHandle, router_with,
+    App, AppState, Core, CoreBuilder, PeerHandler, PeerInitState, ResourceRegistrar,
+    ResourceRegistration, Scout, ScoutCtx, ServerHandle, router_with,
 };
 use crate::peer::{PeerAcceptors, PeerClient};
 use crate::registry::{DeviceRecord, Registry};
@@ -59,7 +59,8 @@ impl Boardwalk {
 
     /// Register an actor with this Boardwalk instance.
     ///
-    /// Actor implementations currently satisfy the core [`Device`] trait.
+    /// The HTTP server adapter still stores actors through the private
+    /// core [`Device`] compatibility trait.
     #[allow(dead_code)]
     pub(crate) fn use_actor<D: Device>(mut self, d: D) -> Self {
         self.devices.push(Box::new(d));
@@ -78,10 +79,10 @@ impl Boardwalk {
         self
     }
 
-    /// Register a factory for hubless device registration. The factory
+    /// Register a factory for hubless resource registration. The factory
     /// receives the form fields from `POST /resources` (minus the
-    /// standard `type`/`id`/`name` fields, which are extracted
-    /// separately) and returns a freshly-built device.
+    /// standard `kind`/`id`/`name` fields, which are extracted
+    /// separately) and returns a freshly-built private adapter resource.
     #[allow(dead_code)]
     pub(crate) fn register_factory<F>(mut self, type_name: impl Into<String>, factory: F) -> Self
     where
@@ -191,7 +192,7 @@ impl Boardwalk {
 
         // Hubless registration: build a registrar closure if any
         // factories are registered.
-        let device_registrar: Option<DeviceRegistrar> =
+        let resource_registrar: Option<ResourceRegistrar> =
             if self.factories.is_empty() {
                 None
             } else {
@@ -199,7 +200,7 @@ impl Boardwalk {
                 let core_for = core.clone();
                 let registry_for = registry.clone();
                 Some(Arc::new(
-                    move |reg: DeviceRegistration| -> futures::future::BoxFuture<
+                    move |reg: ResourceRegistration| -> futures::future::BoxFuture<
                         'static,
                         Result<uuid::Uuid, DeviceError>,
                     > {
@@ -230,7 +231,7 @@ impl Boardwalk {
             peer_init: peer_init.clone(),
             peer_senders: Some(peer_senders),
             peer_streams: peer_streams.clone(),
-            device_registrar,
+            resource_registrar,
         };
         let router = router_with(state);
 
