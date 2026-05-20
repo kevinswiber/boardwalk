@@ -6,10 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::http::CoreBuilder;
-use boardwalk::{
-    App, AppError, Boardwalk, Device, DeviceConfig, DeviceError, ServerHandle, TransitionInput,
-};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::http::{App, AppError, CoreBuilder, ServerHandle};
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
 
@@ -127,7 +126,7 @@ async fn app_runs_and_transitions_device() {
     let fired = Arc::new(AtomicBool::new(false));
     let built = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .use_app(TurnAllOn {
             fired: fired.clone(),
         })

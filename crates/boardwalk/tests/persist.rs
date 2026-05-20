@@ -1,6 +1,7 @@
 //! Verify that .persist(path) gives devices stable IDs across restarts.
 
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 
 #[derive(Default)]
@@ -36,7 +37,7 @@ async fn device_id_is_stable_across_builds() {
     let first = Boardwalk::new()
         .name("hub")
         .persist(&db_path)
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .build()
         .unwrap();
     let first_devices = first.core.list_devices().await;
@@ -49,7 +50,7 @@ async fn device_id_is_stable_across_builds() {
     let second = Boardwalk::new()
         .name("hub")
         .persist(&db_path)
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .build()
         .unwrap();
     let second_devices = second.core.list_devices().await;
@@ -93,8 +94,8 @@ async fn current_registry_identity_is_type_and_name() {
     let first = Boardwalk::new()
         .name("hub")
         .persist(&db_path)
-        .use_device(NamedLed { name: "kitchen" })
-        .use_device(NamedLed { name: "pantry" })
+        .use_actor(NamedLed { name: "kitchen" })
+        .use_actor(NamedLed { name: "pantry" })
         .build()
         .unwrap();
     let mut first_devices = first.core.list_devices().await;
@@ -121,8 +122,8 @@ async fn current_registry_identity_is_type_and_name() {
     let second = Boardwalk::new()
         .name("hub")
         .persist(&db_path)
-        .use_device(NamedLed { name: "kitchen" })
-        .use_device(NamedLed { name: "pantry" })
+        .use_actor(NamedLed { name: "kitchen" })
+        .use_actor(NamedLed { name: "pantry" })
         .build()
         .unwrap();
     let second_devices = second.core.list_devices().await;
@@ -144,12 +145,12 @@ async fn current_registry_identity_is_type_and_name() {
 async fn device_id_random_without_persist() {
     let a = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .build()
         .unwrap();
     let b = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .build()
         .unwrap();
     let a_id = a.core.list_devices().await[0].id;

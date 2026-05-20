@@ -1,6 +1,6 @@
 [package]
 name = "boardwalk-macros"
-description = "Proc macros for ergonomic Boardwalk actors and legacy devices"
+description = "Proc macros for ergonomic Boardwalk actors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,8 +19,3 @@ syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
 proc-macro-crate = "3"
-
-[dev-dependencies]
-# The macro generates code referencing `::boardwalk::Device` etc., so
-# any test that actually instantiates the generated impl lives in the
-# `boardwalk` crate's own `tests/` directory to avoid a dev-dep cycle.

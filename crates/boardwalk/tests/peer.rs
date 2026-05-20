@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::Value as Json;
@@ -61,7 +62,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     // Boot hub with an LED, linking to cloud.
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -166,7 +167,7 @@ async fn cloud_dedups_peer_subscriptions() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -267,7 +268,7 @@ async fn unsubscribe_tears_down_forwarded_stream() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();
@@ -349,7 +350,7 @@ async fn cloud_ws_forwards_peer_events() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();

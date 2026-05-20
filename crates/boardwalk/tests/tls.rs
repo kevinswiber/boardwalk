@@ -9,7 +9,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::Value as Json;
@@ -96,7 +97,7 @@ async fn hub_links_to_cloud_over_tls() {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("https://localhost:{}/", tls_addr.port()))
         .build()
         .unwrap();

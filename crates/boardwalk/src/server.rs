@@ -58,7 +58,7 @@ impl Boardwalk {
         self
     }
 
-    pub fn use_device<D: Device>(mut self, d: D) -> Self {
+    pub fn use_actor<D: Device>(mut self, d: D) -> Self {
         self.devices.push(Box::new(d));
         self
     }

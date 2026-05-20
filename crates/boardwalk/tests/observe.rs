@@ -5,10 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::{
-    App, AppError, Boardwalk, Device, DeviceConfig, DeviceError, Scout, ScoutCtx, ServerHandle,
-    TransitionInput,
-};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::http::{App, AppError, Scout, ScoutCtx, ServerHandle};
 use futures::future::BoxFuture;
 
 #[derive(Default)]
@@ -121,7 +120,7 @@ async fn current_server_handle_observe_fires_on_resource_snapshot_match() {
     let saw_two = Arc::new(AtomicBool::new(false));
     let _built = Boardwalk::new()
         .name("hub")
-        .use_device(Led)
+        .use_actor(Led)
         .use_scout(LatePhotocell)
         .use_app(ObservePin {
             fired: fired.clone(),
@@ -148,7 +147,7 @@ async fn observe_fires_when_all_queries_satisfied() {
     let fired = Arc::new(AtomicBool::new(false));
     let _built = Boardwalk::new()
         .name("hub")
-        .use_device(Led)
+        .use_actor(Led)
         .use_scout(LatePhotocell)
         .use_app(DuskDawn {
             fired: fired.clone(),

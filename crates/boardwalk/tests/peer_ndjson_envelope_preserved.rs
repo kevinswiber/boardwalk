@@ -6,7 +6,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -66,7 +67,7 @@ async fn boot_pair() -> Pair {
 
     let hub = Boardwalk::new()
         .name("hub")
-        .use_device(Led::default())
+        .use_actor(Led::default())
         .link(format!("http://{cloud_addr}"))
         .build()
         .unwrap();

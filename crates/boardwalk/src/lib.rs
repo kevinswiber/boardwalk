@@ -6,11 +6,6 @@
 //! through resource routes such as `/resources`,
 //! `/resources/{id}`, and `/resources/{id}/transitions/{transition}`.
 //!
-//! The crate root still includes older server-adapter exports during
-//! the API transition. New Resource/Actor code should use the module
-//! imports below until the crate-root facade is narrowed around the new
-//! runtime vocabulary.
-//!
 //! Common imports for the Resource/Actor surface:
 //!
 //! ```rust
@@ -40,9 +35,7 @@ pub mod server;
 pub mod siren;
 pub mod tunnel;
 
-pub use boardwalk_macros::{actor, device, transition};
+pub use boardwalk_macros::{actor, transition};
 
-// Existing crate-root re-exports while the Resource/Actor facade settles.
-pub use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-pub use crate::http::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
+pub use crate::core::{TransitionInput, TransitionOutcome};
 pub use crate::server::Boardwalk;

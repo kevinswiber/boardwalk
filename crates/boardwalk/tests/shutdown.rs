@@ -3,7 +3,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use tokio::sync::oneshot;
 
@@ -36,7 +37,7 @@ async fn listen_until_returns_on_signal() {
     let server = tokio::spawn(async move {
         Boardwalk::new()
             .name("hub")
-            .use_device(Led)
+            .use_actor(Led)
             .listen_until(addr, async move {
                 let _ = rx.await;
             })

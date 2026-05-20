@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use boardwalk::events::{ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId};
 use boardwalk::http::{Core, CoreBuilder, router};
-use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::future::BoxFuture;

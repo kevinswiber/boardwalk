@@ -9,8 +9,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use boardwalk::Boardwalk;
 use boardwalk::core::{
-    DeviceCtx, ResourceSpec, StreamKind, StreamSpec, TransitionInput, TransitionOutcome,
+    Device, DeviceConfig, DeviceCtx, DeviceError, ResourceSpec, StreamKind, StreamSpec,
+    TransitionInput, TransitionOutcome,
 };
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::ResourceSnapshot;
@@ -18,7 +20,6 @@ use boardwalk::runtime::{
     Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
@@ -63,7 +64,7 @@ impl Device for Photocell {
 async fn device_publishes_to_declared_stream() {
     let built = Boardwalk::new()
         .name("hub")
-        .use_device(Photocell)
+        .use_actor(Photocell)
         .build()
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

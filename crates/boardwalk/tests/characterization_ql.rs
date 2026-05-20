@@ -9,8 +9,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use boardwalk::http::{Core, CoreBuilder, router};
-use boardwalk::{Device, DeviceConfig, DeviceError, ServerHandle, TransitionInput};
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::http::{Core, CoreBuilder, ServerHandle, router};
 use serde_json::{Map, Value as Json};
 
 #[derive(Default)]

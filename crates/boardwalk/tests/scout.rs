@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, Scout, ScoutCtx, TransitionInput};
+use boardwalk::Boardwalk;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use boardwalk::http::{Scout, ScoutCtx};
 use futures::future::BoxFuture;
 
 #[derive(Default)]

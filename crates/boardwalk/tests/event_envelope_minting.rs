@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
-use boardwalk::core::{DeviceCtx, StreamKind, StreamSink};
+use boardwalk::core::{
+    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
+};
 use boardwalk::events::{StreamRegistry, SubscribeOpts, TopicPattern};
 use boardwalk::http::{Core, CoreBuilder};
-use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use serde_json::json;
 use uuid::Uuid;
 

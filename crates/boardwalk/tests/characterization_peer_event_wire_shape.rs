@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use boardwalk::http::{Core, CoreBuilder, router};
-use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{Value as Json, json};

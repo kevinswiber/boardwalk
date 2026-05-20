@@ -7,14 +7,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, HeaderValue};
-use boardwalk::core::{ResourceSpec, StreamSpec, TransitionInput, TransitionOutcome};
+use boardwalk::core::{
+    Device, DeviceConfig, DeviceError, ResourceSpec, StreamSpec, TransitionInput, TransitionOutcome,
+};
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::{Core, CoreBuilder, ResourceSnapshot, router};
 use boardwalk::runtime::{
     Actor, DynFuture, NodeBuilder, NodeHandle, RequestCtx, Resource, ResourceCtx, ResourceError,
     TransitionCtx, TransitionError,
 };
-use boardwalk::{Device, DeviceConfig, DeviceError};
 use futures::future::BoxFuture;
 use uuid::Uuid;
 

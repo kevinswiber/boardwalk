@@ -5,10 +5,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use boardwalk::core::TransitionSpec;
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput, TransitionSpec};
 use boardwalk::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
 use boardwalk::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
-use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
 

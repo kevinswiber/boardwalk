@@ -165,8 +165,12 @@ fn docs_disclose_current_actor_http_adapter_boundaries() {
 
     let crate_docs = read("crates/boardwalk/src/lib.rs");
     assert!(
-        crate_docs.contains("older server-adapter exports"),
-        "crate rustdoc should explain the crate-root exports during the API transition"
+        crate_docs.contains("Common imports for the Resource/Actor surface"),
+        "crate rustdoc should introduce the Resource/Actor import surface"
+    );
+    assert!(
+        !crate_docs.contains("older server-adapter exports"),
+        "crate rustdoc should not describe transitional root device exports"
     );
 }
 
@@ -194,9 +198,16 @@ fn events_docs_show_transition_correlation_and_causation() {
 #[test]
 fn public_docs_have_no_private_planning_terms() {
     let s = public_docs(PUBLIC_DOCS);
-    for private in ["Gumbo", ".gumbo", "Plan 0003", "Task 7.4", "findings/"] {
+    let private_terms = [
+        format!("{}bo", "Gum"),
+        format!(".{}", "gumbo"),
+        format!("Plan {}", "0003"),
+        format!("Task {}", "7.4"),
+        format!("{}/", "findings"),
+    ];
+    for private in private_terms {
         assert!(
-            !s.contains(private),
+            !s.contains(private.as_str()),
             "public docs should not mention private planning term `{private}`"
         );
     }
@@ -205,18 +216,19 @@ fn public_docs_have_no_private_planning_terms() {
 #[test]
 fn markdown_docs_do_not_teach_old_device_identifiers() {
     let s = public_docs(PUBLIC_MARKDOWN_DOCS);
-    for old in [
-        "DeviceConfig",
-        "DeviceError",
-        "DeviceProxy",
-        "ServerHandle",
-        "use_device",
-        "#[device]",
-        "docs/devices",
-        "devices.md",
-    ] {
+    let old_identifiers = [
+        "DeviceConfig".to_string(),
+        "DeviceError".to_string(),
+        "DeviceProxy".to_string(),
+        "ServerHandle".to_string(),
+        format!("use_{}", "device"),
+        format!("#[{}]", "device"),
+        format!("docs/{}", "devices"),
+        format!("{}.md", "devices"),
+    ];
+    for old in old_identifiers {
         assert!(
-            !s.contains(old),
+            !s.contains(old.as_str()),
             "markdown docs should not teach old device scaffolding identifier `{old}`"
         );
     }

@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
+use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::http::{Core, CoreBuilder};
 use boardwalk::runtime::RequestCtx;
-use boardwalk::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use uuid::Uuid;
 
