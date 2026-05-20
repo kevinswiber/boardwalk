@@ -20,7 +20,6 @@ pub mod rels {
     pub const SERVER: &str = "https://rels.boardwalk.to/server";
     pub const RESOURCE: &str = "https://rels.boardwalk.to/resource";
     pub const RESOURCES: &str = "https://rels.boardwalk.to/resources";
-    pub const DEVICE: &str = "https://rels.boardwalk.to/device";
     pub const PEER: &str = "https://rels.boardwalk.to/peer";
     pub const PEER_MANAGEMENT: &str = "https://rels.boardwalk.to/peer-management";
     pub const EVENTS: &str = "https://rels.boardwalk.to/events";

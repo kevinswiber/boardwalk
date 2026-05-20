@@ -101,10 +101,9 @@ send `unsubscribe` or for the socket to close.
 `StreamRegistry` keeps a reverse `EventId -> StreamId` map so consumers
 don't have to parse opaque event ids. The map is bounded by replay-cache
 retention: when `StreamReplayCache` evicts an envelope from its
-per-stream ring, it calls `StreamRegistry::evict(&event_id)`. `Core`,
-`EventBus`, every `BusSink`, and the replay cache all share the same
-`Arc<Inner>` (asserted by
-`tests/event_envelope_minting.rs::bus_and_core_expose_the_same_registry_instance`).
+per-stream ring, it calls `StreamRegistry::evict(&event_id)`. `Node`,
+`EventBus`, and the replay cache all share the same registry instance
+(asserted by the replay-focused runtime tests).
 
 ## Limits
 
@@ -113,7 +112,7 @@ per-stream ring, it calls `StreamRegistry::evict(&event_id)`. `Core`,
 | Per-subscriber outbound queue capacity | 64 envelopes | `SubscribeOpts.outbound_capacity` |
 | WS connection outbound capacity        | 64 messages | (internal constant) |
 | WS subscriptions per connection        | 64          | (internal constant) |
-| Per-stream replay ring capacity        | 1000 envelopes | `CoreBuilder::build_with_replay_capacity` (test-only) |
+| Per-stream replay ring capacity        | 1000 envelopes | `EventBus::with_registry_and_replay_capacity` (crate-internal) |
 | Max serialized event size              | 256 KiB     | `EventBus::with_max_event_size` |
 
 Subscribing past the per-connection cap returns

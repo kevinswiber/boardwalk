@@ -34,7 +34,7 @@ async fn boot_hub() -> (SocketAddr, Arc<Core>, tokio::task::JoinHandle<()>) {
     (addr, core, handle)
 }
 
-async fn device_id(addr: SocketAddr) -> String {
+async fn resource_id(addr: SocketAddr) -> String {
     let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
         .unwrap()
@@ -108,7 +108,7 @@ async fn first_ndjson_line(addr: SocketAddr, id: &str, topic: &str) -> Json {
 #[tokio::test]
 async fn peer_ndjson_line_keys_include_legacy_and_envelope_fields() {
     let (addr, _core, _h) = boot_hub().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let line = first_ndjson_line(addr, &id, &topic).await;
@@ -141,7 +141,7 @@ async fn peer_ndjson_line_keys_include_legacy_and_envelope_fields() {
 #[tokio::test]
 async fn peer_ndjson_timestamp_is_epoch_milliseconds_i64() {
     let (addr, _core, _h) = boot_hub().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let before = now_ms();
@@ -162,7 +162,7 @@ async fn peer_ndjson_timestamp_is_epoch_milliseconds_i64() {
 #[tokio::test]
 async fn peer_ndjson_topic_matches_subscribed_topic() {
     let (addr, _core, _h) = boot_hub().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let line = first_ndjson_line(addr, &id, &topic).await;
@@ -176,7 +176,7 @@ async fn peer_ndjson_topic_matches_subscribed_topic() {
 #[tokio::test]
 async fn peer_ndjson_replay_query_returns_cached_resource_stream_event() {
     let (addr, _core, _h) = boot_hub().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let topic = format!("hub/led/{id}/state");
 
     assert_eq!(post_action(addr, &id, "turn-on").await, 200);
@@ -220,7 +220,7 @@ async fn peer_ndjson_replay_query_returns_cached_resource_stream_event() {
 #[tokio::test]
 async fn peer_ndjson_replay_requires_resource_stream_topic() {
     let (addr, _core, _h) = boot_hub().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let topic = format!("hub/led/{id}");
 
     let url = format!("http://{addr}/servers/hub/events?topic={topic}&replay=true");

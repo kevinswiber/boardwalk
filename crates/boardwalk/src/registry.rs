@@ -1,4 +1,4 @@
-//! Persistent registries for server-adapter resources and peers, backed by redb.
+//! Persistent registries for resources and peers, backed by redb.
 
 #![forbid(unsafe_code)]
 // redb's error variants are intentionally large (rich diagnostic info).
@@ -32,7 +32,7 @@ pub enum RegistryError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceRecord {
+pub struct ResourceRecord {
     pub id: Uuid,
     #[serde(rename = "type")]
     pub type_: String,
@@ -66,8 +66,7 @@ pub enum PeerStatus {
     Failed,
 }
 
-// On-disk table name kept for compatibility with existing Boardwalk registries.
-const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
+const RESOURCE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("resources");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 
 #[allow(dead_code)]
@@ -99,19 +98,19 @@ impl Registry {
         let db = Database::create(path)?;
         // Materialize the tables so first reads don't fail.
         let txn = db.begin_write()?;
-        txn.open_table(DEVICES)?;
+        txn.open_table(RESOURCE_TABLE)?;
         txn.open_table(PEERS)?;
         txn.commit()?;
         Ok(Self { db })
     }
 
-    // -- server-adapter resources ----------------------------------------
+    // -- resources -------------------------------------------------------
 
-    pub fn put_device(&self, rec: &DeviceRecord) -> Result<(), RegistryError> {
+    pub fn put_resource(&self, rec: &ResourceRecord) -> Result<(), RegistryError> {
         let bytes = serde_json::to_vec(rec)?;
         let txn = self.db.begin_write()?;
         {
-            let mut t = txn.open_table(DEVICES)?;
+            let mut t = txn.open_table(RESOURCE_TABLE)?;
             t.insert(rec.id.to_string().as_str(), bytes.as_slice())?;
         }
         txn.commit()?;
@@ -119,18 +118,18 @@ impl Registry {
     }
 
     #[allow(dead_code)]
-    pub fn get_device(&self, id: &Uuid) -> Result<Option<DeviceRecord>, RegistryError> {
+    pub fn get_resource(&self, id: &Uuid) -> Result<Option<ResourceRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
-        let t = txn.open_table(DEVICES)?;
+        let t = txn.open_table(RESOURCE_TABLE)?;
         match t.get(id.to_string().as_str())? {
             Some(av) => Ok(Some(serde_json::from_slice(av.value())?)),
             None => Ok(None),
         }
     }
 
-    pub fn list_devices(&self) -> Result<Vec<DeviceRecord>, RegistryError> {
+    pub fn list_resources(&self) -> Result<Vec<ResourceRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
-        let t = txn.open_table(DEVICES)?;
+        let t = txn.open_table(RESOURCE_TABLE)?;
         let mut out = Vec::new();
         for item in t.iter()? {
             let (_, av) = item?;
@@ -140,24 +139,24 @@ impl Registry {
     }
 
     #[allow(dead_code)]
-    pub fn delete_device(&self, id: &Uuid) -> Result<bool, RegistryError> {
+    pub fn delete_resource(&self, id: &Uuid) -> Result<bool, RegistryError> {
         let txn = self.db.begin_write()?;
         let removed = {
-            let mut t = txn.open_table(DEVICES)?;
+            let mut t = txn.open_table(RESOURCE_TABLE)?;
             t.remove(id.to_string().as_str())?.is_some()
         };
         txn.commit()?;
         Ok(removed)
     }
 
-    /// Find an existing device by (type, name) identity. Returns the
-    /// first match. Used at boot to restore stable device IDs.
-    pub fn find_device_by_identity(
+    /// Find an existing resource by (kind, name) identity. Returns the
+    /// first match. Used at boot to restore stable resource IDs.
+    pub fn find_resource_by_identity(
         &self,
         type_: &str,
         name: Option<&str>,
-    ) -> Result<Option<DeviceRecord>, RegistryError> {
-        for rec in self.list_devices()? {
+    ) -> Result<Option<ResourceRecord>, RegistryError> {
+        for rec in self.list_resources()? {
             if rec.type_ == type_ && rec.name.as_deref() == name {
                 return Ok(Some(rec));
             }
@@ -226,22 +225,22 @@ mod tests {
     }
 
     #[test]
-    fn devices_round_trip() {
+    fn resources_round_trip() {
         let (reg, _dir) = temp_db();
         let id = Uuid::new_v4();
-        let rec = DeviceRecord {
+        let rec = ResourceRecord {
             id,
             type_: "led".into(),
             name: Some("L".into()),
             properties: Map::new(),
         };
-        reg.put_device(&rec).unwrap();
-        let got = reg.get_device(&id).unwrap().unwrap();
+        reg.put_resource(&rec).unwrap();
+        let got = reg.get_resource(&id).unwrap().unwrap();
         assert_eq!(got.id, id);
         assert_eq!(got.type_, "led");
-        assert_eq!(reg.list_devices().unwrap().len(), 1);
-        assert!(reg.delete_device(&id).unwrap());
-        assert!(reg.get_device(&id).unwrap().is_none());
+        assert_eq!(reg.list_resources().unwrap().len(), 1);
+        assert!(reg.delete_resource(&id).unwrap());
+        assert!(reg.get_resource(&id).unwrap().is_none());
     }
 
     #[test]

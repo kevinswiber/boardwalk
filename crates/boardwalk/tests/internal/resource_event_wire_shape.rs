@@ -39,7 +39,7 @@ async fn boot() -> (SocketAddr, Arc<Core>, tokio::task::JoinHandle<()>) {
     (addr, core, handle)
 }
 
-async fn device_id(addr: SocketAddr) -> String {
+async fn resource_id(addr: SocketAddr) -> String {
     let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
         .unwrap()
@@ -110,7 +110,7 @@ async fn subscribe_state_and_fire(addr: SocketAddr, ws: &mut Ws, id: &str) -> (u
 #[tokio::test]
 async fn event_wire_keys_include_legacy_and_envelope_fields() {
     let (addr, _core, _h) = boot().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let mut ws = open_ws(addr).await;
 
     let (_sub_id, evt) = subscribe_state_and_fire(addr, &mut ws, &id).await;
@@ -148,7 +148,7 @@ async fn event_wire_keys_include_legacy_and_envelope_fields() {
 #[tokio::test]
 async fn event_wire_timestamp_is_epoch_milliseconds_i64() {
     let (addr, _core, _h) = boot().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let mut ws = open_ws(addr).await;
 
     let before = now_ms();
@@ -172,7 +172,7 @@ async fn event_wire_timestamp_is_epoch_milliseconds_i64() {
 #[tokio::test]
 async fn event_wire_envelope_fields_match_runtime_envelope() {
     let (addr, _core, _h) = boot().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let mut ws = open_ws(addr).await;
 
     let (_sub_id, evt) = subscribe_state_and_fire(addr, &mut ws, &id).await;
@@ -209,7 +209,7 @@ async fn event_wire_envelope_fields_match_runtime_envelope() {
 #[tokio::test]
 async fn event_wire_subscription_id_matches_subscribe_ack() {
     let (addr, _core, _h) = boot().await;
-    let id = device_id(addr).await;
+    let id = resource_id(addr).await;
     let mut ws = open_ws(addr).await;
 
     let (sub_id, evt) = subscribe_state_and_fire(addr, &mut ws, &id).await;

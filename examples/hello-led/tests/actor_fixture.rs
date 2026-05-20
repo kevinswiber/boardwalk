@@ -18,10 +18,6 @@ fn hello_led_fixture_builds_with_actor_api() {
         source.contains("register_actor"),
         "hello-led should register the fixture through the actor runtime"
     );
-    assert!(
-        !source.contains("use_device"),
-        "hello-led should not use the legacy device builder"
-    );
 }
 
 #[tokio::test]

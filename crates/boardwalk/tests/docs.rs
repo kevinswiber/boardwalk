@@ -87,7 +87,7 @@ fn resources_docs_mention_resource_actor_contract() {
 }
 
 #[test]
-fn docs_reference_resource_routes_not_device_routes() {
+fn docs_reference_resource_routes_only() {
     let s = public_docs(PUBLIC_DOCS);
 
     for required in [
@@ -108,7 +108,7 @@ fn docs_reference_resource_routes_not_device_routes() {
     ] {
         assert!(
             !s.contains(old_route),
-            "public docs should not present old device route `{old_route}`"
+            "public docs should not present old resource route `{old_route}`"
         );
     }
 }
@@ -178,7 +178,7 @@ fn docs_describe_reusable_actor_http_runtime() {
     );
     assert!(
         !crate_docs.contains("older server-adapter exports"),
-        "crate rustdoc should not describe transitional root device exports"
+        "crate rustdoc should not describe transitional root exports"
     );
 }
 
@@ -222,22 +222,22 @@ fn public_docs_have_no_private_planning_terms() {
 }
 
 #[test]
-fn markdown_docs_do_not_teach_old_device_identifiers() {
+fn markdown_docs_do_not_teach_old_identifiers() {
     let s = public_docs(PUBLIC_MARKDOWN_DOCS);
     let old_identifiers = [
-        "DeviceConfig".to_string(),
-        "DeviceError".to_string(),
-        "DeviceProxy".to_string(),
-        "ServerHandle".to_string(),
-        format!("use_{}", "device"),
-        format!("#[{}]", "device"),
-        format!("docs/{}", "devices"),
-        format!("{}.md", "devices"),
+        "DeviceConfig",
+        "DeviceError",
+        "DeviceProxy",
+        "ServerHandle",
+        "use_device",
+        "#[device]",
+        "docs/devices",
+        "devices.md",
     ];
     for old in old_identifiers {
         assert!(
-            !s.contains(old.as_str()),
-            "markdown docs should not teach old device scaffolding identifier `{old}`"
+            !s.contains(old),
+            "markdown docs should not teach old scaffolding identifier `{old}`"
         );
     }
 }

@@ -98,7 +98,77 @@ fn collect_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-const PERMITTED_LEGACY_PUBLIC_REFERENCES: &[&str] = &[];
+fn legacy_source_roots() -> Vec<PathBuf> {
+    vec![
+        repo_path("crates/boardwalk/src"),
+        repo_path("crates/boardwalk/tests"),
+        repo_path("examples"),
+        repo_path("docs"),
+        repo_path("README.md"),
+    ]
+}
+
+const LEGACY_GUARD_TEST_FILES: &[&str] = &[
+    "crates/boardwalk/tests/docs.rs",
+    "crates/boardwalk/tests/public_api.rs",
+];
+
+fn is_legacy_guard_test_file(path: &Path) -> bool {
+    let rel = path.strip_prefix(Path::new("../..")).unwrap_or(path);
+    LEGACY_GUARD_TEST_FILES
+        .iter()
+        .any(|guard| rel == Path::new(guard))
+}
+
+#[test]
+fn legacy_adapter_vocabulary_is_removed_from_source_surface() {
+    let mut paths = Vec::new();
+    for root in legacy_source_roots() {
+        if root.is_dir() {
+            collect_files(&root, &mut paths);
+        } else {
+            paths.push(root);
+        }
+    }
+
+    let forbidden = [
+        "device",
+        "devices",
+        "Device",
+        "DEVICE",
+        "DeviceConfig",
+        "DeviceSnapshot",
+        "DeviceCtx",
+        "DeviceProxy",
+        "DeviceHandle",
+        "DeviceRecord",
+        "DeviceError",
+        "ServerHandle",
+        "CoreBuilder",
+    ];
+
+    let mut offenders = Vec::new();
+    for path in paths {
+        if is_legacy_guard_test_file(&path) {
+            continue;
+        }
+
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("could not read {path:?}: {e}"));
+
+        for snippet in forbidden {
+            if source.contains(snippet) {
+                offenders.push(format!("{} contains `{snippet}`", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "legacy adapter vocabulary must be removed from the source surface:\n{}",
+        offenders.join("\n")
+    );
+}
 
 #[derive(Default)]
 struct FacadeLed;
@@ -151,7 +221,7 @@ fn boardwalk_builder_accepts_resource_actor_without_private_adapter_traits() {
 }
 
 #[test]
-fn public_api_no_longer_exports_device_names() {
+fn public_api_exports_resource_actor_names() {
     let lib = read("crates/boardwalk/src/lib.rs");
     let blocks = pub_use_blocks(&lib);
 
@@ -255,25 +325,10 @@ fn runtime_owns_final_resource_and_transition_contracts() {
         runtime_offenders.join("\n")
     );
 
-    let core = read("crates/boardwalk/src/core.rs");
-    for snippet in [
-        "pub struct TransitionInput",
-        "pub struct StreamSpec",
-        "pub struct FieldSpec",
-        "pub enum TransitionResultKind",
-        "pub enum Idempotency",
-        "pub enum Effect",
-        "pub struct TransitionSpec",
-        "pub struct ResourceSpec",
-        "pub struct ActorSpec",
-        "pub struct JobHandle",
-        "pub enum TransitionOutcome",
-    ] {
-        assert!(
-            !core.contains(snippet),
-            "final Resource/Actor contract definition still lives in core.rs: `{snippet}`"
-        );
-    }
+    assert!(
+        !repo_path("crates/boardwalk/src/core.rs").exists(),
+        "final Resource/Actor contracts should not require the removed compatibility module"
+    );
 
     let runtime = read("crates/boardwalk/src/runtime/mod.rs");
     let runtime_public_uses = pub_use_blocks(&runtime);
@@ -364,25 +419,25 @@ fn peer_and_stream_routes_do_not_carry_parallel_private_runtime_handles() {
 }
 
 #[test]
-fn proc_macros_no_longer_generate_device_surface() {
+fn proc_macros_generate_actor_surface_only() {
     let macros = read("crates/boardwalk-macros/src/lib.rs");
     let snippets = [
-        format!("pub fn {}(", "device"),
-        format!("::boardwalk::{}", "Device"),
-        format!("::boardwalk::{}", "DeviceConfig"),
-        format!("::boardwalk::{}", "DeviceError"),
-        format!("#[{}]", "device"),
+        "pub fn device(",
+        "::boardwalk::Device",
+        "::boardwalk::DeviceConfig",
+        "::boardwalk::DeviceError",
+        "#[device]",
     ];
     for snippet in snippets {
         assert!(
-            !macros.contains(snippet.as_str()),
-            "boardwalk-macros must not expose legacy device snippet `{snippet}`"
+            !macros.contains(snippet),
+            "boardwalk-macros must not expose legacy snippet `{snippet}`"
         );
     }
 }
 
 #[test]
-fn tests_and_examples_do_not_import_device_root_surface() {
+fn tests_and_examples_do_not_import_legacy_root_surface() {
     let roots = [
         repo_path("crates/boardwalk/tests"),
         repo_path("examples"),
@@ -399,26 +454,24 @@ fn tests_and_examples_do_not_import_device_root_surface() {
     }
 
     let forbidden = [
-        format!("boardwalk::{{{}", "Device"),
-        format!("boardwalk::{{Boardwalk, {}", "Device"),
-        format!("boardwalk::{}", "Device"),
-        format!("boardwalk::{}", "device"),
-        format!("#[boardwalk::{}]", "device"),
-        format!("#[{}]", "device"),
-        format!(".use_{}(", "device"),
+        "boardwalk::{Device",
+        "boardwalk::{Boardwalk, Device",
+        "boardwalk::Device",
+        "boardwalk::device",
+        "#[boardwalk::device]",
+        "#[device]",
+        ".use_device(",
     ];
     let mut offenders = Vec::new();
     for path in paths {
-        let rel = path.strip_prefix(Path::new("../..")).unwrap_or(&path);
-        let rel = rel.to_string_lossy();
-        if PERMITTED_LEGACY_PUBLIC_REFERENCES.contains(&rel.as_ref()) {
+        if is_legacy_guard_test_file(&path) {
             continue;
         }
 
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("could not read {path:?}: {e}"));
         for snippet in &forbidden {
-            if source.contains(snippet.as_str()) {
+            if source.contains(snippet) {
                 offenders.push(format!("{} contains `{snippet}`", path.display()));
             }
         }
@@ -426,13 +479,13 @@ fn tests_and_examples_do_not_import_device_root_surface() {
 
     assert!(
         offenders.is_empty(),
-        "public tests/examples/docs still use legacy root device surface:\n{}",
+        "public tests/examples/docs still use legacy root surface:\n{}",
         offenders.join("\n")
     );
 }
 
 #[test]
-fn final_resource_contract_replaces_device_characterizations() {
+fn final_resource_contract_replaces_old_characterizations() {
     let root = repo_path("crates/boardwalk/tests/internal");
     let mut paths = Vec::new();
     collect_files(&root, &mut paths);
@@ -447,10 +500,10 @@ fn final_resource_contract_replaces_device_characterizations() {
                 path.display()
             ));
         }
-        if source.contains("/servers/hub/devices") {
+        let old_route = "/servers/hub/devices";
+        if source.contains(old_route) {
             offenders.push(format!(
-                "{} fetches `/servers/hub/devices`; legacy route behavior belongs in \
-                 `src/http/routes.rs` router-level tests",
+                "{} fetches `{old_route}`; stale route behavior belongs in router-level tests",
                 path.display()
             ));
         }

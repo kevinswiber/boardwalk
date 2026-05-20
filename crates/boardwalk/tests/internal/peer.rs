@@ -68,8 +68,11 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
         .unwrap();
     assert_eq!(server["properties"]["name"], "hub");
     let entities = server["entities"].as_array().expect("entities");
-    assert!(!entities.is_empty(), "hub should have at least one device");
-    let dev_id = entities[0]["properties"]["id"]
+    assert!(
+        !entities.is_empty(),
+        "hub should have at least one resource"
+    );
+    let resource_id = entities[0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -81,7 +84,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
-            "http://{cloud_addr}/servers/hub/resources/{dev_id}/transitions/turn-on"
+            "http://{cloud_addr}/servers/hub/resources/{resource_id}/transitions/turn-on"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -93,7 +96,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
 
     // Forward GET resource for verification.
     let dev: Json = reqwest::get(format!(
-        "http://{cloud_addr}/servers/hub/resources/{dev_id}"
+        "http://{cloud_addr}/servers/hub/resources/{resource_id}"
     ))
     .await
     .unwrap()
@@ -103,7 +106,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     assert_eq!(dev["properties"]["state"], "on");
 
     // Direct check on the hub returns the same.
-    let dev_direct: Json = reqwest::get(format!("http://{hub_addr}/resources/{dev_id}"))
+    let dev_direct: Json = reqwest::get(format!("http://{hub_addr}/resources/{resource_id}"))
         .await
         .unwrap()
         .json()
@@ -138,7 +141,7 @@ async fn cloud_dedups_peer_subscriptions() {
 
     assert!(cloud_acceptors.wait_for_first(Duration::from_secs(5)).await);
 
-    // Discover device id.
+    // Discover resource id.
     let server: Json = reqwest::get(format!("http://{cloud_addr}/servers/hub"))
         .await
         .unwrap()
@@ -146,11 +149,11 @@ async fn cloud_dedups_peer_subscriptions() {
         .await
         .unwrap();
     assert_eq!(server["entities"][0]["properties"]["fixture"], "actor-led");
-    let dev_id = server["entities"][0]["properties"]["id"]
+    let resource_id = server["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let topic = format!("hub/led/{dev_id}/state");
+    let topic = format!("hub/led/{resource_id}/state");
 
     // Two WS clients subscribe to the same topic.
     let (mut ws1, _) = tokio_tungstenite::connect_async(format!("ws://{cloud_addr}/events"))
@@ -187,7 +190,7 @@ async fn cloud_dedups_peer_subscriptions() {
     let client = reqwest::Client::new();
     let _ = client
         .post(format!(
-            "http://{hub_addr}/resources/{dev_id}/transitions/turn-on"
+            "http://{hub_addr}/resources/{resource_id}/transitions/turn-on"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -243,11 +246,11 @@ async fn unsubscribe_tears_down_forwarded_stream() {
         .json()
         .await
         .unwrap();
-    let dev_id = server["entities"][0]["properties"]["id"]
+    let resource_id = server["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let topic = format!("hub/led/{dev_id}/state");
+    let topic = format!("hub/led/{resource_id}/state");
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{cloud_addr}/events"))
         .await
@@ -327,7 +330,7 @@ async fn cloud_ws_forwards_peer_events() {
         .json()
         .await
         .unwrap();
-    let dev_id = server["entities"][0]["properties"]["id"]
+    let resource_id = server["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -337,7 +340,7 @@ async fn cloud_ws_forwards_peer_events() {
         .await
         .unwrap();
 
-    let topic = format!("hub/led/{dev_id}/state");
+    let topic = format!("hub/led/{resource_id}/state");
     let sub = serde_json::json!({"type": "subscribe", "topic": topic});
     ws.send(Message::Text(sub.to_string().into()))
         .await
@@ -359,7 +362,7 @@ async fn cloud_ws_forwards_peer_events() {
     let client = reqwest::Client::new();
     let _ = client
         .post(format!(
-            "http://{hub_addr}/resources/{dev_id}/transitions/turn-on"
+            "http://{hub_addr}/resources/{resource_id}/transitions/turn-on"
         ))
         .json(&serde_json::json!({}))
         .send()

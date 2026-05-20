@@ -3,18 +3,14 @@
 
 #![forbid(unsafe_code)]
 
-mod app;
 mod core;
 mod peer_streams;
 mod render;
 mod routes;
 mod ws;
 
-#[allow(unused_imports)]
-pub(crate) use core::{Core, CoreBuilder, DeviceHandle};
+pub(crate) use core::Core;
 
-#[allow(unused_imports)]
-pub(crate) use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
 pub(crate) use peer_streams::PeerStreamHub;
 // Internal-only assembly types; surfaced to sibling modules
 // (`crate::server`, `crate::peer`) but not re-exported.

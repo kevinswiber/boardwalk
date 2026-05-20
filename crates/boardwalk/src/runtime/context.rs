@@ -119,9 +119,8 @@ pub(crate) struct EmissionContext<'a> {
 }
 
 /// Mint an envelope through `registry` and publish it on `bus`. Shared
-/// by `ActorCtx::publish`, `TransitionCtx::publish`, and the legacy
-/// `Core::run_transition` bridge so all three paths build envelopes
-/// the same way.
+/// by `ActorCtx::publish` and `TransitionCtx::publish` so lifecycle
+/// and transition emissions build envelopes the same way.
 pub(crate) async fn publish_envelope(
     bus: &EventBus,
     registry: &StreamRegistry,

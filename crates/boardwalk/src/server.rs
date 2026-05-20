@@ -13,11 +13,11 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::http::{
-    App, AppState, Core, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
-    ResourceRegistrationError, Scout, ScoutCtx, ServerHandle, router_with,
+    AppState, Core, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
+    ResourceRegistrationError, router_with,
 };
 use crate::peer::{PeerAcceptors, PeerClient};
-use crate::registry::{DeviceRecord, Registry};
+use crate::registry::{Registry, ResourceRecord};
 use crate::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, Resource, ResourceCtx,
     ResourceError, ResourceSnapshot, ResourceSpec, TransitionCtx, TransitionError, TransitionInput,
@@ -29,8 +29,6 @@ pub struct Boardwalk {
     peers: Vec<Url>,
     actors: Vec<PendingActor>,
     actor_factories: HashMap<String, ActorFactory>,
-    apps: Vec<Arc<dyn App>>,
-    scouts: Vec<Arc<dyn Scout>>,
     persist_path: Option<PathBuf>,
 }
 
@@ -128,8 +126,6 @@ impl Boardwalk {
             peers: Vec::new(),
             actors: Vec::new(),
             actor_factories: HashMap::new(),
-            apps: Vec::new(),
-            scouts: Vec::new(),
             persist_path: None,
         }
     }
@@ -165,18 +161,6 @@ impl Boardwalk {
             kind.into(),
             Arc::new(move |registration| Ok(FactoryActor::new(factory(registration)?))),
         );
-        self
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn use_app<A: App>(mut self, a: A) -> Self {
-        self.apps.push(Arc::new(a));
-        self
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn use_scout<S: Scout>(mut self, s: S) -> Self {
-        self.scouts.push(Arc::new(s));
         self
     }
 
@@ -240,12 +224,6 @@ impl Boardwalk {
         for t in built.peer_tasks {
             t.abort();
         }
-        for t in built.app_tasks {
-            t.abort();
-        }
-        for t in built.scout_tasks {
-            t.abort();
-        }
         built.node.shutdown(Duration::from_secs(1)).await;
         res
     }
@@ -300,12 +278,8 @@ impl Boardwalk {
         let peer_senders: Arc<dyn crate::http::PeerSenders> = Arc::new(acceptors.clone());
         let peer_streams = crate::http::PeerStreamHub::new();
 
-        let resource_registrar = build_resource_registrar(
-            self.actor_factories,
-            node.clone(),
-            core.clone(),
-            registry.clone(),
-        );
+        let resource_registrar =
+            build_resource_registrar(self.actor_factories, node.clone(), registry.clone());
 
         let state = AppState {
             core: core.clone(),
@@ -324,37 +298,10 @@ impl Boardwalk {
             peer_tasks.push(pc.spawn());
         }
 
-        // Spawn apps. The server handle is shared across them; each
-        // app's `run` runs to completion in its own task. Errors are logged.
-        let mut app_tasks = Vec::new();
-        for app in self.apps {
-            let handle = ServerHandle::new_internal(core.clone());
-            let h = tokio::spawn(async move {
-                if let Err(e) = app.run(handle).await {
-                    tracing::warn!(error = %e, "app exited with error");
-                }
-            });
-            app_tasks.push(h);
-        }
-
-        // Spawn scouts. Same shape — long-running, errors logged.
-        let mut scout_tasks = Vec::new();
-        for scout in self.scouts {
-            let ctx = ScoutCtx::new_internal(core.clone());
-            let h = tokio::spawn(async move {
-                if let Err(e) = scout.run(ctx).await {
-                    tracing::warn!(error = %e, "scout exited with error");
-                }
-            });
-            scout_tasks.push(h);
-        }
-
         Ok(Built {
             core,
             node,
             peer_tasks,
-            app_tasks,
-            scout_tasks,
             router,
             acceptors,
             peer_streams,
@@ -366,7 +313,6 @@ impl Boardwalk {
 fn build_resource_registrar(
     factories: HashMap<String, ActorFactory>,
     node: Arc<Node>,
-    core: Arc<Core>,
     registry: Option<Arc<Registry>>,
 ) -> Option<ResourceRegistrar> {
     if factories.is_empty() {
@@ -382,7 +328,6 @@ fn build_resource_registrar(
             > {
                 let factories = factories.clone();
                 let node = node.clone();
-                let core = core.clone();
                 let registry = registry.clone();
                 Box::pin(async move {
                     let kind = registration.kind.clone();
@@ -399,7 +344,6 @@ fn build_resource_registrar(
                         .await
                         .map_err(registration_resource_error)?;
                     persist_registered_resource(&registry, &spec, id)?;
-                    core.notify_resource_registered();
                     Ok(id.to_string())
                 })
             },
@@ -419,13 +363,13 @@ fn resolve_resource_id(
     let type_ = spec.kind.clone();
     let name = spec.name.clone();
     if let Some(existing) = reg
-        .find_device_by_identity(&type_, name.as_deref())
+        .find_resource_by_identity(&type_, name.as_deref())
         .context("registry find")?
     {
         return Ok(existing.id.to_string());
     }
     let id = Uuid::new_v4();
-    reg.put_device(&DeviceRecord {
+    reg.put_resource(&ResourceRecord {
         id,
         type_,
         name,
@@ -447,7 +391,7 @@ fn resolve_registration_id(
         return Ok(Uuid::new_v4());
     };
     if let Some(existing) = reg
-        .find_device_by_identity(&spec.kind, spec.name.as_deref())
+        .find_resource_by_identity(&spec.kind, spec.name.as_deref())
         .map_err(registration_registry_error)?
     {
         return Ok(existing.id);
@@ -463,7 +407,7 @@ fn persist_registered_resource(
     let Some(reg) = registry.as_ref() else {
         return Ok(());
     };
-    reg.put_device(&DeviceRecord {
+    reg.put_resource(&ResourceRecord {
         id,
         type_: spec.kind.clone(),
         name: spec.name.clone(),
@@ -495,8 +439,6 @@ pub(crate) struct Built {
     pub(crate) core: Arc<Core>,
     pub(crate) node: Arc<Node>,
     pub(crate) peer_tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub(crate) app_tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub(crate) scout_tasks: Vec<tokio::task::JoinHandle<()>>,
     pub(crate) router: axum::Router,
     pub(crate) acceptors: PeerAcceptors,
     pub(crate) peer_streams: crate::http::PeerStreamHub,

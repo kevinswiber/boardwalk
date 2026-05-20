@@ -1,6 +1,5 @@
 //! Pins the runtime-side `NodeHandle` / `ResourceProxy` / `ActorProxy`
-//! surface — the app-facing API that replaces `ServerHandle` /
-//! `DeviceProxy` once the device surface deletion lands.
+//! surface for app-facing Resource/Actor access.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

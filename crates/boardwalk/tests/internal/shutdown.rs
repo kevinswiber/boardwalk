@@ -3,31 +3,10 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use tokio::sync::oneshot;
 
+use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError};
-use crate::runtime::TransitionInput;
-
-#[derive(Default)]
-struct Led;
-
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led").state("off");
-    }
-    fn state(&self) -> &str {
-        "off"
-    }
-    fn transition<'a>(
-        &'a mut self,
-        _name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
 
 #[tokio::test]
 async fn listen_until_returns_on_signal() {
@@ -39,7 +18,7 @@ async fn listen_until_returns_on_signal() {
     let server = tokio::spawn(async move {
         Boardwalk::new()
             .name("hub")
-            .use_actor(Led)
+            .use_actor(ActorLed::default())
             .listen_until(addr, async move {
                 let _ = rx.await;
             })
@@ -71,7 +50,7 @@ async fn listen_until_on_serves_prebound_listener_and_returns_on_signal() {
     let server = tokio::spawn(async move {
         Boardwalk::new()
             .name("hub")
-            .use_actor(Led)
+            .use_actor(ActorLed::default())
             .listen_until_on(listener, async move {
                 let _ = rx.await;
             })

@@ -525,14 +525,6 @@ async fn resources_post(
             )
                 .into_response();
         }
-        Err(ResourceReadError::InvalidId) => {
-            return problem_response(
-                StatusCode::BAD_REQUEST,
-                "invalid-resource-id",
-                "resource id must be a UUID",
-                Some("id"),
-            );
-        }
         Err(ResourceReadError::NotFound) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -584,9 +576,6 @@ async fn resource_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri, id:
             &msg,
             None,
         ),
-        Err(ResourceReadError::InvalidId) => {
-            (StatusCode::BAD_REQUEST, "invalid resource id").into_response()
-        }
         Err(ResourceReadError::Internal(msg)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
         }
@@ -647,12 +636,6 @@ async fn transition_response(
         .await
     {
         Ok(outcome) => transition_outcome_response(outcome),
-        Err(ResourceTransitionError::InvalidId) => problem_response(
-            StatusCode::BAD_REQUEST,
-            "invalid-resource-id",
-            "resource id must be a UUID",
-            Some("id"),
-        ),
         Err(ResourceTransitionError::NotFound) => problem_response(
             StatusCode::NOT_FOUND,
             "resource-not-found",
@@ -882,12 +865,18 @@ fn subscribe_opts_from_query(query: &EventsQuery) -> Result<SubscribeOpts, Strin
 
 #[cfg(test)]
 mod event_route_query_tests {
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt;
 
     use super::*;
-    use crate::http::core::CoreBuilder;
+    use crate::runtime::NodeBuilder;
+
+    fn empty_core(name: &str) -> Arc<Core> {
+        Core::from_node(Arc::new(NodeBuilder::new(name).build()))
+    }
 
     fn events_query(topic: &str) -> EventsQuery {
         EventsQuery {
@@ -985,7 +974,7 @@ mod event_route_query_tests {
 
     #[tokio::test]
     async fn ndjson_replay_rejects_non_concrete_topics() {
-        let core = CoreBuilder::new("hub").build();
+        let core = empty_core("hub");
         let app = router(core);
 
         let response = app
@@ -1339,42 +1328,10 @@ fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use axum::body::Body;
-    use axum::http::Request as HttpRequest;
     use serde_json::Value as JsonValue;
-    use tower::ServiceExt;
 
     use super::*;
-    use crate::http::core::CoreBuilder;
     use crate::runtime::JobHandle;
-
-    #[tokio::test]
-    async fn legacy_device_routes_return_404() {
-        let core = CoreBuilder::new("hub").build();
-        let app = router(core);
-        let paths = [
-            "/servers/hub/devices",
-            "/servers/hub/devices/00000000-0000-0000-0000-000000000000",
-        ];
-
-        for path in paths {
-            let response = app
-                .clone()
-                .oneshot(
-                    HttpRequest::builder()
-                        .uri(path)
-                        .body(Body::empty())
-                        .expect("legacy route request builds"),
-                )
-                .await
-                .expect("legacy route request completes");
-            assert_eq!(
-                response.status(),
-                StatusCode::NOT_FOUND,
-                "{path} must not be restored as a resource alias"
-            );
-        }
-    }
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {

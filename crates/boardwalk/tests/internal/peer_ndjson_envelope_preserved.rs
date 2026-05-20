@@ -50,7 +50,7 @@ async fn boot_pair() -> Pair {
     }
 }
 
-async fn device_id_via(addr: SocketAddr) -> String {
+async fn resource_id_via(addr: SocketAddr) -> String {
     let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
         .unwrap()
@@ -75,7 +75,7 @@ async fn post_action(addr: SocketAddr, id: &str, action: &str) -> reqwest::Statu
 #[tokio::test]
 async fn peer_ndjson_line_envelope_fields_match_origin() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let url = format!("http://{}/servers/hub/events?topic={topic}", p.cloud_addr);

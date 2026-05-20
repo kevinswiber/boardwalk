@@ -24,7 +24,6 @@
 #![forbid(unsafe_code)]
 
 pub mod caql;
-mod core;
 pub mod events;
 mod http;
 mod peer;

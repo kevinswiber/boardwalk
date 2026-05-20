@@ -1,7 +1,7 @@
 //! App-facing handles into a `Node`: `NodeHandle`, `ResourceProxy`,
 //! `ActorProxy`. Apps query the node by CaQL, then read snapshots or
-//! invoke transitions on the returned proxies. None of this surface
-//! mentions devices.
+//! invoke transitions on the returned proxies. This surface uses only
+//! Resource/Actor/Node vocabulary.
 
 use std::sync::Arc;
 

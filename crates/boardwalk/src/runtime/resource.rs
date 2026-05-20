@@ -95,44 +95,6 @@ pub struct SnapshotStreamSpec {
     pub kind: String,
 }
 
-/// Top-level field names that `ResourceSnapshot` owns directly.
-/// User-supplied properties carrying any of these names are stripped
-/// by `sanitize_properties` so that user data cannot shadow
-/// Boardwalk-owned fields.
-pub(crate) const RESERVED_FIELDS: &[&str] = &[
-    "id",
-    "kind",
-    "name",
-    "state",
-    "node",
-    "properties",
-    "labels",
-    "transitions",
-    "streams",
-    "revision",
-    "affordances",
-    "metadata",
-];
-
-/// Strips reserved top-level field names from a properties map.
-pub(crate) fn sanitize_properties(mut props: Map<String, JsonValue>) -> Map<String, JsonValue> {
-    let offenders: Vec<&str> = RESERVED_FIELDS
-        .iter()
-        .filter(|k| props.contains_key(**k))
-        .copied()
-        .collect();
-    if !offenders.is_empty() {
-        tracing::trace!(
-            ?offenders,
-            "reserved field collision in resource properties; stripped"
-        );
-        for k in &offenders {
-            props.remove(*k);
-        }
-    }
-    props
-}
-
 impl ResourceSnapshot {
     /// Produces the JSON shape the query evaluator targets. `None`
     /// fields serialize as `Null` so `Exists(path)` semantics remain

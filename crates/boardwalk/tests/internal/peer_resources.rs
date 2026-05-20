@@ -60,7 +60,7 @@ async fn boot_pair() -> Pair {
     }
 }
 
-async fn device_id_via(addr: SocketAddr) -> String {
+async fn resource_id_via(addr: SocketAddr) -> String {
     let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
         .unwrap()
@@ -134,7 +134,7 @@ async fn cloud_root_advertises_peer_link_after_peer_dials() {
 #[tokio::test]
 async fn forwarded_resource_get_renders_cloud_external_hrefs() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
 
     let via_cloud: Json = reqwest::get(format!(
         "http://{}/servers/hub/resources/{id}",
@@ -226,7 +226,7 @@ fn collect_hrefs<'a>(value: &'a Json, out: &mut Vec<&'a str>) {
 #[tokio::test]
 async fn forwarded_event_stream_shares_one_upstream_per_topic() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let mut ws1 = open_ws(p.cloud_addr).await;
@@ -267,7 +267,7 @@ async fn forwarded_event_stream_shares_one_upstream_per_topic() {
 #[tokio::test]
 async fn last_unsubscribe_tears_down_shared_upstream() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
     let topic = format!("hub/led/{id}/state");
 
     let mut ws1 = open_ws(p.cloud_addr).await;

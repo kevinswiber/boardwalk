@@ -54,7 +54,7 @@ async fn boot_pair() -> Pair {
     }
 }
 
-async fn device_id_via(addr: SocketAddr) -> String {
+async fn resource_id_via(addr: SocketAddr) -> String {
     let server: Json = reqwest::get(format!("http://{addr}/servers/hub"))
         .await
         .unwrap()
@@ -116,7 +116,7 @@ async fn flood_peer_broadcast(streams: &PeerStreamHub, peer: &str, topic: &str, 
 #[tokio::test]
 async fn peer_broadcast_lag_emits_stream_gap_and_closes() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
     let mut ws = open_ws(p.cloud_addr).await;
 
     let topic = format!("hub/led/{id}/state");
@@ -177,7 +177,7 @@ async fn peer_broadcast_lag_emits_stream_gap_and_closes() {
 #[tokio::test]
 async fn peer_broadcast_lag_drops_peer_stream_refcount_eagerly() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
     let mut ws = open_ws(p.cloud_addr).await;
 
     let topic = format!("hub/led/{id}/state");
@@ -218,7 +218,7 @@ async fn peer_broadcast_lag_drops_peer_stream_refcount_eagerly() {
 #[tokio::test]
 async fn peer_broadcast_lag_does_not_terminate_unrelated_subscriptions() {
     let p = boot_pair().await;
-    let id = device_id_via(p.cloud_addr).await;
+    let id = resource_id_via(p.cloud_addr).await;
 
     let topic_a = format!("hub/led/{id}/state");
     let topic_b = format!("hub/led/{id}/other");
