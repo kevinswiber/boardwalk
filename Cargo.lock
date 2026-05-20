@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "boardwalk"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "boardwalk-job-runner-example"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "boardwalk",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "boardwalk-macros"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "boardwalk-mock-led"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "boardwalk",
  "serde_json",
@@ -670,7 +670,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-led"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "boardwalk",
@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "tunnel-poc"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bytes",

@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file. See
 guidelines.
 
 - - -
+## [v1.0.0](https://github.com/kevinswiber/boardwalk/compare/v0.2.0..v1.0.0) - 2026-05-20
+
+- - -
+
 ## [v0.2.0](https://github.com/kevinswiber/boardwalk/compare/49873f07aa903cf7acd25f1e437b0fc556f75c5d..v0.2.0) - 2026-05-20
 #### Features
 - add graceful prebound listener serving - ([ba0712b](https://github.com/kevinswiber/boardwalk/commit/ba0712be5ff817a27b8a0de7fddf742f9d64edea)) - [@kevinswiber](https://github.com/kevinswiber)

@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -25,8 +25,8 @@ publish = false
 [workspace.dependencies]
 # Internal crates (path + version so they publish + resolve from
 # crates.io once the dependency chain lands there).
-boardwalk = { path = "crates/boardwalk", version = "0.2.0" }
-boardwalk-macros = { path = "crates/boardwalk-macros", version = "0.2.0" }
+boardwalk = { path = "crates/boardwalk", version = "1.0.0" }
+boardwalk-macros = { path = "crates/boardwalk-macros", version = "1.0.0" }
 
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
