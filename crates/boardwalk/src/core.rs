@@ -336,19 +336,6 @@ pub trait StreamSink: Send + Sync {
 
 // Scout + App live in boardwalk-http (they need Core access).
 
-/// Legacy adapter property bundle kept for compatibility tests.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceProperties {
-    pub id: DeviceId,
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub name: Option<String>,
-    pub state: StateName,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
 // -- Future-pin helper -----------------------------------------------------
 
 /// `BoxFuture` re-export so device implementations don't need a futures dependency.

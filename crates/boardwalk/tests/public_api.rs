@@ -225,7 +225,11 @@ fn final_resource_contract_replaces_device_characterizations() {
             ));
         }
         if source.contains("/servers/hub/devices") {
-            offenders.push(format!("{} fetches `/servers/hub/devices`", path.display()));
+            offenders.push(format!(
+                "{} fetches `/servers/hub/devices`; legacy route behavior belongs in \
+                 `src/http/routes.rs` router-level tests",
+                path.display()
+            ));
         }
     }
 

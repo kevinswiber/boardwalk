@@ -156,7 +156,7 @@ fn sanitize_properties_strips_all_reserved_resource_fields() {
     assert_eq!(
         cleaned.len(),
         2,
-        "expected every reserved field to be stripped; survivors: {cleaned:?}"
+        "expected every reserved field to be stripped; retained fields: {cleaned:?}"
     );
     assert_eq!(cleaned.get("type"), Some(&Json::String("user-type".into())));
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));

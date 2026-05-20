@@ -1093,8 +1093,41 @@ fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use tower::ServiceExt;
+
     use super::*;
     use crate::core::JobHandle;
+    use crate::http::core::CoreBuilder;
+
+    #[tokio::test]
+    async fn legacy_device_routes_return_404() {
+        let core = CoreBuilder::new("hub").build();
+        let app = router(core);
+        let paths = [
+            "/servers/hub/devices",
+            "/servers/hub/devices/00000000-0000-0000-0000-000000000000",
+        ];
+
+        for path in paths {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .expect("legacy route request builds"),
+                )
+                .await
+                .expect("legacy route request completes");
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{path} must not be restored as a resource alias"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {

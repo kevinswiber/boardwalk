@@ -177,10 +177,10 @@ async fn app_query_uses_resource_snapshot_target() {
 }
 
 #[tokio::test]
-async fn query_can_match_extra_device_properties() {
+async fn query_can_match_extra_resource_properties() {
     let (addr, _core) = boot_with(ColoredLed { color: "red" }).await;
 
-    // The new query target exposes device properties under a
+    // The query target exposes adapter properties under a
     // `properties` subobject, so `properties.color` resolves.
     let url = format!(
         "http://{addr}/resources?ql={}",

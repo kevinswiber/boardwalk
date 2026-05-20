@@ -207,7 +207,7 @@ async fn malformed_json_transition_returns_problem_400() {
 }
 
 #[tokio::test]
-async fn form_urlencoded_transition_is_rejected_after_device_removal() {
+async fn form_urlencoded_transition_returns_415() {
     let (addr, _core, _h) = boot().await;
     let id = device_id(addr).await;
 

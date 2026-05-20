@@ -67,7 +67,7 @@ async fn boot() -> (SocketAddr, Arc<Core>, tokio::task::JoinHandle<()>) {
 }
 
 /// Same as `boot` but pins the LED device id, so absolute hrefs are
-/// byte-stable across runs. Used by the survivor snapshot tests below.
+/// byte-stable across runs. Used by the resource snapshot tests below.
 async fn boot_pinned(device_id: Uuid) -> (SocketAddr, Arc<Core>, tokio::task::JoinHandle<()>) {
     let mut b = CoreBuilder::new("hub");
     b.add_device_with_id(device_id, Led::default());

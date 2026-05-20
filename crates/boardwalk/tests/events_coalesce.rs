@@ -63,7 +63,7 @@ async fn coalesce_replaces_queued_event_with_same_key() {
     bus.try_publish(progress_envelope("job-1", 1, 30, 3))
         .expect("publish 30 ok");
 
-    let env = sub.rx.recv().await.expect("queue has one survivor");
+    let env = sub.rx.recv().await.expect("queue has one retained event");
     assert_eq!(env.data["percent"], 30);
 
     let extra = tokio::time::timeout(std::time::Duration::from_millis(50), sub.rx.recv()).await;

@@ -1,4 +1,4 @@
-//! Lightweight checks that docs/ files cover the survivor public
+//! Lightweight checks that docs/ files cover the current public
 //! contracts. Greps for stable keywords so that any rename or
 //! omission breaks the test loudly. Not a substitute for hand-reading
 //! the docs.
