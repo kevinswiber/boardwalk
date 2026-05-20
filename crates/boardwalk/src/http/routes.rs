@@ -813,19 +813,19 @@ struct EventsQuery {
 }
 
 fn stream_id_from_concrete_pattern(pattern: &TopicPattern) -> Option<StreamId> {
-    let [node, _kind, resource, stream] = pattern.segments.as_slice() else {
+    let [node, kind, resource, stream] = pattern.segments.as_slice() else {
         return None;
     };
     let (
         Segment::Literal(node),
-        Segment::Literal(_kind),
+        Segment::Literal(kind),
         Segment::Literal(resource),
         Segment::Literal(stream),
-    ) = (node, _kind, resource, stream)
+    ) = (node, kind, resource, stream)
     else {
         return None;
     };
-    if node.is_empty() || _kind.is_empty() || resource.is_empty() || stream.is_empty() {
+    if node.is_empty() || kind.is_empty() || resource.is_empty() || stream.is_empty() {
         return None;
     }
     Some(StreamId::for_resource(&NodeId::new(node), resource, stream))
