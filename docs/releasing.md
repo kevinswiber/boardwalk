@@ -19,7 +19,9 @@ GitHub Release.
 ```sh
 ./scripts/run-release-plan.sh
 ./scripts/run-release-plan.sh plan 1.0.0
+./scripts/run-release-plan.sh plan --version 1.0.0
 ./scripts/run-release-plan.sh release 1.0.0
+./scripts/run-release-plan.sh release --version 1.0.0
 ```
 
 Set `RELEASE_PLAN_DIR=.` to keep the downloaded `release-plan.md`.

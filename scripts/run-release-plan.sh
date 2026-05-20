@@ -6,8 +6,10 @@
 # Usage:
 #   ./scripts/run-release-plan.sh                            # plan mode (default)
 #   ./scripts/run-release-plan.sh plan 1.0.0                 # plan exact version
+#   ./scripts/run-release-plan.sh plan --version 1.0.0       # plan exact version
 #   ./scripts/run-release-plan.sh release                    # release mode
 #   ./scripts/run-release-plan.sh release 1.0.0              # release exact version
+#   ./scripts/run-release-plan.sh release --version 1.0.0    # release exact version
 #   ./scripts/run-release-plan.sh plan -- glow               # custom viewer
 #   ./scripts/run-release-plan.sh plan -- bat --paging=always # custom bat flags
 #   RELEASE_PLAN_DIR=. ./scripts/run-release-plan.sh          # keep release-plan.md in cwd
@@ -21,15 +23,30 @@ VIEWER=()
 
 parsing_opts=true
 pos=0
-for arg in "$@"; do
+while [ "$#" -gt 0 ]; do
+  arg="$1"
+  shift
   if [ "$arg" = "--" ]; then
     parsing_opts=false
     continue
   fi
   if $parsing_opts; then
-    case $pos in
-      0) MODE="$arg" ;;
-      1) VERSION="$arg" ;;
+    case "$arg" in
+      --version)
+        if [ "$#" -eq 0 ]; then
+          echo "error: --version requires a value" >&2
+          exit 2
+        fi
+        VERSION="$1"
+        shift
+        continue
+        ;;
+      *)
+        case $pos in
+          0) MODE="$arg" ;;
+          1) VERSION="$arg" ;;
+        esac
+        ;;
     esac
     pos=$((pos + 1))
   else

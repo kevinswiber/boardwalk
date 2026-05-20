@@ -73,7 +73,10 @@ jobs:
 
           crate_version_published() {
             local crate="$1"
-            curl -fsS "https://crates.io/api/v1/crates/${crate}/${VERSION}" >/dev/null 2>&1
+            curl -fsS \
+              -H "User-Agent: boardwalk-release-workflow (https://github.com/kevinswiber/boardwalk)" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" \
+              >/dev/null 2>&1
           }
 
           publish_crate() {
