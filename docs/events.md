@@ -48,13 +48,22 @@ Optional fields:
   "payloadKind": "resource.state.changed",
   "payloadVersion": 1,
   "envelopeVersion": 1,
-  "isoTimestamp": "2026-05-18T17:00:00.123Z"
+  "isoTimestamp": "2026-05-18T17:00:00.123Z",
+  "correlationId": "req-123",
+  "causationId": "0f4c967c-9d36-4b38-8f97-cf5799df5c19"
 }
 ```
 
-The first five fields are the legacy wire shape; the bottom block is
-the additive envelope mirror. All envelope fields are optional on the
-wire — clients consuming only the legacy quintet stay correct.
+The first five fields are the subscription frame. The bottom block is
+the event envelope mirror, and optional envelope fields are omitted when
+their values are absent.
+
+Events emitted from an actor transition are populated from the
+transition context. `correlationId` copies the inbound `x-request-id`
+when one exists, and `causationId` is the command id minted for that
+transition invocation. Lifecycle emissions published through
+`ActorCtx::publish` do not have an inbound request, so they omit both
+fields unless a future caller supplies that context explicitly.
 
 ### Stream gap
 
@@ -124,7 +133,7 @@ line shape mirrors the WS `event` payload but without the
 `type`/`subscriptionId` fields:
 
 ```
-{"topic":"...","timestamp":...,"data":...,"eventId":"...","streamId":"...","sequence":1,"nodeId":"...","resourceId":"...","resourceKind":"...","payloadKind":"...","payloadVersion":1,"envelopeVersion":1,"isoTimestamp":"..."}
+{"topic":"...","timestamp":...,"data":...,"eventId":"...","streamId":"...","sequence":1,"nodeId":"...","resourceId":"...","resourceKind":"...","payloadKind":"...","payloadVersion":1,"envelopeVersion":1,"isoTimestamp":"...","correlationId":"req-123","causationId":"..."}
 ```
 
 The response body's lifetime is tied to the underlying subscription:
@@ -132,11 +141,7 @@ when the client disconnects, the runtime calls
 `EventBus::unsubscribe` immediately (no longer deferred until next
 publish).
 
-## Compatibility note
+## Envelope reference
 
-Legacy keys (`type`, `topic`, `subscriptionId`, `timestamp`, `data`)
-are byte-identical to the wire shape before the envelope fields
-landed. Envelope fields are additive; a client that strips them
-remains correct. See [`event-envelope.md`](./event-envelope.md) for
-the canonical envelope shape and for the slow-consumer /
-overflow-policy semantics.
+See [`event-envelope.md`](./event-envelope.md) for the canonical
+envelope shape and for the slow-consumer / overflow-policy semantics.

@@ -9,14 +9,14 @@ CaQL is a *syntax*. It compiles into a structured query model
 
 ## Where it's used
 
-1. **HTTP query filter** — `GET /servers/<name>?ql=where kind = "led"`.
+1. **HTTP query filter** — `GET /resources?ql=where kind = "led"`.
    Returns a Siren search-results entity with the matching resources.
 2. **Event-stream filter** — append `?ql=where data > 80` to a
    subscription topic to drop events whose payload doesn't match.
    The suffix uses URL query-string semantics: `ql=<caql>` is the
    parameter the parser reads.
-3. **`App::query` / `ScoutCtx`** — apps and scouts can run CaQL
-   programmatically inside the process via `ServerHandle::query(ql)`.
+3. **Runtime query** — code with a `NodeHandle` can run CaQL
+   programmatically inside the process via `NodeHandle::query(ql)`.
 
 ## Surface syntax
 
@@ -80,21 +80,41 @@ CaQL evaluates against the canonical `ResourceSnapshot` projection:
   "state":       "on",
   "node":        "hub",
   "properties":  { "color": "red", "brightness": 42 },
-  "labels":      ["kitchen"],
-  "affordances": {
-    "transitions": { "available": ["turn-off"] },
-    "streams":     { "available": ["state"] }
-  },
+  "labels":      { "room": "kitchen" },
+  "transitions": [
+    {
+      "name": "turn-off",
+      "allowedStates": ["on"],
+      "result": "sync",
+      "idempotency": "none",
+      "effect": "unsafe",
+      "requiredScopes": [],
+      "available": true,
+      "unavailableReason": null
+    }
+  ],
+  "streams": [
+    { "name": "state", "kind": "object" }
+  ],
+  "revision":    null,
   "metadata":    { ... }
 }
 ```
 
-So predicates can match into the affordances tree:
+Current field paths walk JSON objects, not arrays of objects. Use CaQL
+for scalar fields, nested `properties`, labels, and metadata; inspect
+the `transitions` and `streams` arrays from the returned snapshot when
+you need affordance details. Transition entries may also include optional
+fields such as `title`, `inputSchema`, and `outputSchema` when the
+resource exposes them.
 
 ```
-where affordances.transitions.available contains "cancel"
-where exists properties.owner
+where kind = "job"
+where state = "running"
+where labels.queue = "default"
 where properties.color = "red"
+where properties.tags contains "urgent"
+where exists metadata.owner
 ```
 
 For event-stream filters, the evaluator sees the event payload as-is
@@ -111,10 +131,10 @@ select data.degreesC where data.degreesF > 85
 where kind in ["led", "switch"]
 where name like "kitchen-*"
 where not (state = "off")
-where labels contains "urgent"
+where properties.tags contains "urgent"
+where labels.room = "kitchen"
 where exists properties.owner
 where not exists properties.deprecated_at
-where affordances.transitions.available contains "cancel"
 ```
 
 ## Error handling
@@ -130,10 +150,10 @@ Invalid CaQL at HTTP `?ql=` returns `400 Bad Request` with an
 }
 ```
 
-`ServerHandle::query`, `observe`, and `observe_loop` return `Result`
-and propagate parse and evaluation errors as `AppError`.
+`NodeHandle::query` returns `Result` and propagates parse and
+evaluation errors as `NodeHandleError`.
 
-## Not in v0.1
+## Not available yet
 
 - Aggregations (`count`, `sum`, `avg`) — express in Rust for now.
 - Joins across resources — express via multiple queries.

@@ -22,12 +22,15 @@ gets forwarded over the tunnel.
 
 ## Setting up a link
 
+Federation today is configured through the `Boardwalk::new()` server adapter.
+Actors built with `NodeBuilder` need an HTTP adapter, such as the job-runner
+example's local router, before they are reachable over peer-forwarded requests.
+
 **Hub side:**
 
 ```rust,ignore
 Boardwalk::new()
     .name("hub")
-    .use_device(Led::default())
     .link("wss://cloud.example.com")
     .listen("127.0.0.1:1338".parse()?)
     .await?
@@ -50,11 +53,13 @@ it just accepts whatever peers connect.
 Once linked, the cloud proxies everything for the hub:
 
 ```
-# Read a device on the hub via the cloud
-curl https://cloud.example.com/servers/hub/devices/<id>
+# Read a resource on the hub via the cloud
+curl https://cloud.example.com/servers/hub/resources/<id>
 
 # Drive a transition
-curl -d 'action=turn-on' https://cloud.example.com/servers/hub/devices/<id>
+curl -H 'content-type: application/json' \
+  -d '{}' \
+  https://cloud.example.com/servers/hub/resources/<id>/transitions/turn-on
 ```
 
 The cloud's Siren root advertises connected peers, so a client crawling

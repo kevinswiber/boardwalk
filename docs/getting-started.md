@@ -1,116 +1,98 @@
 # Getting started
 
-This walks through running a Boardwalk server with a single device, then
-hitting it with curl and a WebSocket client. Five minutes end-to-end.
+The fastest way to touch the current Boardwalk API is the Resource /
+Actor LED fixture. It builds a `Node`, registers an `Actor`, queries the
+resource directory, invokes a transition, and reads the explicitly
+published state event.
 
 ## Install
 
 ```toml
 [dependencies]
 boardwalk = "0.2"
-futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-## A minimal device
+## Run the workspace LED actor
 
-A device is a state machine plus a name, type, and a set of transitions
-allowed per state. The `Device` trait below is everything you need to
-serve an LED.
+From this workspace:
 
-```rust,no_run
-use boardwalk::{Boardwalk, Device, DeviceConfig, DeviceError, TransitionInput};
-use futures::future::BoxFuture;
+```sh
+cargo run -p hello-led
+```
 
-#[derive(Default)]
-struct Led { on: bool }
+The example uses `boardwalk_mock_led`, a workspace fixture from
+`examples/hello-led/boardwalk-mock-led`. That fixture is not published as
+an external crate; the code below is a tour of the example runtime flow,
+not an external dependency block.
 
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .name("kitchen")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"])
-            .monitor("state");
-    }
+The example performs the same steps an application would:
 
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
-    }
+```rust,ignore
+use std::sync::Arc;
 
-    fn transition<'a>(
-        &'a mut self,
-        name: &'a str,
-        _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
-        Box::pin(async move {
-            match name {
-                "turn-on"  => { self.on = true;  Ok(()) }
-                "turn-off" => { self.on = false; Ok(()) }
-                other      => Err(DeviceError::Invalid(other.into())),
-            }
-        })
-    }
-}
+use boardwalk::core::TransitionInput;
+use boardwalk::events::{SubscribeOpts, TopicPattern};
+use boardwalk::runtime::{NodeBuilder, NodeHandle};
+use boardwalk_mock_led::Led;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Boardwalk::new()
-        .name("hub")
-        .use_device(Led::default())
-        .listen("127.0.0.1:1337".parse()?)
-        .await
+async fn example() -> anyhow::Result<()> {
+    let node = Arc::new(NodeBuilder::new("hub").build());
+    let id = node.register_actor(Led::default()).await?;
+
+    let topic = format!("hub/led/{id}/state");
+    let mut events = node.events().subscribe(
+        TopicPattern::parse(&topic)?,
+        SubscribeOpts::default(),
+    );
+
+    let handle = NodeHandle::new(node.clone());
+    let led = handle
+        .query("where kind = \"led\"")
+        .await?
+        .into_iter()
+        .find(|resource| resource.id() == id)
+        .expect("registered LED is queryable");
+
+    led.transition("turn-on", TransitionInput::default()).await?;
+    let event = events.rx.recv().await.expect("state event");
+    assert_eq!(event.data, serde_json::json!("on"));
+    Ok(())
 }
 ```
 
-Run it:
+The fixture's `Led` type implements `Resource` and uses `#[actor]`
+transition dispatch. Its transition handler mutates state, calls
+`TransitionCtx::publish("state", "resource.state.changed", 1, ...)`,
+and returns `TransitionOutcome::Completed`.
 
-```
-cargo run
-```
+## HTTP resource entry points
 
-## Poke at it
+The current local resource entry points are:
 
-The server speaks Siren hypermedia (`application/vnd.siren+json`).
-Discover the device, then drive a transition:
-
-```
-curl -s http://127.0.0.1:1337/servers/hub | jq .
-DEV=$(curl -s http://127.0.0.1:1337/servers/hub | jq -r '.entities[0].properties.id')
-
-# read current state
-curl -s http://127.0.0.1:1337/servers/hub/devices/$DEV | jq '.properties.state'
-# "off"
-
-# transition it
-curl -s -d 'action=turn-on' http://127.0.0.1:1337/servers/hub/devices/$DEV \
-  | jq '.properties.state'
-# "on"
+```sh
+GET  /resources
+GET  /resources/{id}
+POST /resources/{id}/transitions/{transition}
 ```
 
-Transition payloads are form-urlencoded. The required field is `action`;
-anything else becomes the transition's input.
+Clients should enter through the Siren representation and follow link
+relations and action metadata instead of treating these paths as the
+protocol boundary. `GET /resources?ql=<caql>` filters the collection
+with CaQL. Transition requests use JSON input, and transition events
+include `causationId` from the transition command plus `correlationId`
+when the request carried `x-request-id`.
 
-## Subscribe to events
-
-The server exposes a multiplexed WebSocket endpoint at `/events`. Any
-device property declared via `.monitor(...)` is published when it
-changes. With a CLI like `wscat`:
-
-```
-wscat -c ws://127.0.0.1:1337/events
-> {"type":"subscribe","topic":"hub/led/<device-id>/state"}
-< {"type":"subscribe-ack", ...}
-< {"type":"event","topic":"hub/led/<device-id>/state","data":"on", ...}
-```
-
-Topic patterns support wildcards and regex — see [Devices](devices.md).
+The reusable Boardwalk HTTP router is still being moved onto the actor
+runtime. The `examples/job-runner` package owns an example-local HTTP
+adapter today so the resource route flow can be exercised end to end.
 
 ## Where next
 
-- [Devices](devices.md) — full `Device` trait reference, properties,
-  streams, scouts, apps.
+- [Resources and actors](resources.md) — `Resource`, `Actor`, `Node`,
+  snapshots, transitions, streams, and the job-runner example.
+- [Events](events.md) — event envelopes, slow-consumer policies, and
+  the WebSocket / NDJSON wire protocols.
+- [CaQL](caql.md) — query DSL for filtering and projecting resources.
 - [Peers](peers.md) — hub-to-cloud reverse-tunnel federation.
-- [CaQL](caql.md) — query DSL for filtering and projecting devices.
