@@ -129,8 +129,12 @@ impl Node {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let ctx = ResourceCtx::new_test();
-            if let Ok(snap) = entry.snapshot(ctx, &self.id).await {
-                out.push(snap);
+            match entry.snapshot(ctx, &self.id).await {
+                Ok(snap) => out.push(snap),
+                Err(ResourceError::Unavailable(_)) => {
+                    out.push(entry.unavailable_snapshot(&self.id))
+                }
+                Err(_) => {}
             }
         }
         out

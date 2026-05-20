@@ -309,6 +309,76 @@ async fn actor_runtime_resource_unavailable_maps_to_503() {
 }
 
 #[tokio::test]
+async fn unavailable_actor_remains_visible_in_list_query_and_meta() {
+    let node = Arc::new(NodeBuilder::new("hub").build());
+    node.register_with_id("offline".into(), UnavailableResource)
+        .await
+        .expect("actor registers");
+    let app = router(Core::from_node(node));
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/resources")
+                .body(Body::empty())
+                .expect("resources request builds"),
+        )
+        .await
+        .expect("resources request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["entities"][0]["properties"]["id"], "offline");
+    assert_eq!(body["entities"][0]["properties"]["kind"], "unavailable");
+    assert!(body["entities"][0]["properties"]["state"].is_null());
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/resources?ql=where%20kind%20%3D%20%22unavailable%22")
+                .body(Body::empty())
+                .expect("query request builds"),
+        )
+        .await
+        .expect("query request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["entities"][0]["properties"]["id"], "offline");
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/meta")
+                .body(Body::empty())
+                .expect("metadata request builds"),
+        )
+        .await
+        .expect("metadata request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["entities"][0]["properties"]["kind"], "unavailable");
+    assert_eq!(
+        body["entities"][0]["properties"]["transitions"],
+        serde_json::json!([])
+    );
+
+    let response = app
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/meta/unavailable")
+                .body(Body::empty())
+                .expect("metadata type request builds"),
+        )
+        .await
+        .expect("metadata type request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["properties"]["kind"], "unavailable");
+}
+
+#[tokio::test]
 async fn actor_runtime_transition_snapshot_unavailable_maps_to_503() {
     let node = Arc::new(NodeBuilder::new("hub").build());
     node.register_with_id("flaky-led".into(), RefreshUnavailableLed::default())

@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::executor::{ActorHandle, ActorSlot};
-use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot, TransitionAffordance};
-use super::transition::{ActorSpec, ResourceSpec};
+use super::resource::{
+    ResourceCtx, ResourceError, ResourceSnapshot, SnapshotStreamSpec, TransitionAffordance,
+};
+use super::transition::{ActorSpec, ResourceSpec, StreamKind};
 
 /// One registered entry in the directory. Holds the live actor task
 /// handle so the node can shut it down deterministically.
@@ -101,7 +103,11 @@ impl Entry {
         ctx: ResourceCtx,
         node: &str,
     ) -> Result<ActorSpec, ResourceError> {
-        let transitions: Vec<TransitionAffordance> = self.snapshot(ctx, node).await?.transitions;
+        let transitions: Vec<TransitionAffordance> = match self.snapshot(ctx, node).await {
+            Ok(snapshot) => snapshot.transitions,
+            Err(ResourceError::Unavailable(_)) => Vec::new(),
+            Err(err) => return Err(err),
+        };
         Ok(ActorSpec {
             resource: self.resource_spec.clone(),
             transitions: transitions
@@ -109,5 +115,32 @@ impl Entry {
                 .map(|affordance| affordance.spec)
                 .collect(),
         })
+    }
+
+    pub(crate) fn unavailable_snapshot(&self, node: &str) -> ResourceSnapshot {
+        ResourceSnapshot {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            name: self.resource_spec.name.clone(),
+            state: None,
+            node: node.to_string(),
+            properties: serde_json::Map::new(),
+            labels: self.resource_spec.labels.clone(),
+            transitions: Vec::new(),
+            streams: self
+                .resource_spec
+                .streams
+                .iter()
+                .map(|stream| SnapshotStreamSpec {
+                    name: stream.name.clone(),
+                    kind: match stream.kind {
+                        StreamKind::Object => "object".into(),
+                        StreamKind::Binary => "binary".into(),
+                    },
+                })
+                .collect(),
+            revision: None,
+            metadata: serde_json::Map::new(),
+        }
     }
 }
