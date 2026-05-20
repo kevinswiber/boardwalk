@@ -84,9 +84,10 @@ with CaQL. Transition requests use JSON input, and transition events
 include `causationId` from the transition command plus `correlationId`
 when the request carried `x-request-id`.
 
-The reusable Boardwalk HTTP router is still being moved onto the actor
-runtime. The `examples/job-runner` package owns an example-local HTTP
-adapter today so the resource route flow can be exercised end to end.
+The reusable Boardwalk HTTP router serves actors registered through the
+`Boardwalk` builder. The `examples/job-runner` package uses that path to
+exercise resource routes, JSON transitions, typed job handles, and
+progress/log/lifecycle event streams end to end.
 
 ## Where next
 

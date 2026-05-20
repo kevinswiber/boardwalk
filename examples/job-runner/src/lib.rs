@@ -1,35 +1,23 @@
 //! Runnable job-runner example built on Boardwalk's resource and actor runtime.
 //!
-//! The example owns a tiny HTTP adapter so the flow can be exercised end to end.
+//! The example serves through Boardwalk's reusable HTTP runtime.
 //! Jobs are advanced by a spawned task and short `tokio::time::sleep` intervals;
 //! production schedulers should use an explicit queue, tick, and shutdown boundary.
 
 use std::collections::BTreeMap;
-use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use boardwalk::events::{
-    EventEnvelope, NodeId, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern,
-};
-use boardwalk::query::FieldPath;
 use boardwalk::runtime::{
-    Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, NodeHandle, Resource, ResourceCtx,
-    ResourceError, ResourceProxy, TransitionCtx, TransitionError,
+    Actor, ActorCtx, ActorError, DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx,
+    TransitionError,
 };
 use boardwalk::{
-    Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSnapshot, ResourceSpec,
+    Boardwalk, Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSnapshot, ResourceSpec,
     SnapshotStreamSpec, StreamKind, StreamSpec, TransitionAffordance, TransitionInput,
     TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
@@ -44,20 +32,15 @@ const FIXED_FINISHED_AT: &str = "2026-01-01T00:00:02Z";
 const STREAM_OUTBOUND_CAPACITY: usize = 16;
 
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
-    let node = build_node().await?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(node)).await?;
-    Ok(())
+    boardwalk().listen(addr).await
 }
 
 #[doc(hidden)]
 pub async fn spawn_test_server() -> anyhow::Result<RunningExample> {
-    let node = build_node().await?;
-    let app = router(node.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = boardwalk().listen_on(listener).await;
     });
 
     Ok(RunningExample { addr, server })
@@ -91,231 +74,10 @@ impl Drop for RunningExample {
     }
 }
 
-async fn build_node() -> anyhow::Result<Arc<Node>> {
-    let node = Arc::new(NodeBuilder::new(NODE_NAME).build());
-    node.register_with_id(QUEUE_ID.into(), JobQueue::new(QUEUE_NAME))
-        .await
-        .map_err(|err| anyhow::anyhow!("{err:?}"))?;
-    Ok(node)
-}
-
-fn router(node: Arc<Node>) -> Router {
-    Router::new()
-        .route("/resources", get(resources_get))
-        .route("/resources/{id}", get(resource_get))
-        .route(
-            "/resources/{id}/transitions/{transition}",
-            post(resource_transition_post),
-        )
-        .route("/resources/{id}/streams/{stream}", get(resource_stream_get))
-        .with_state(AppState { node })
-}
-
-#[derive(Clone)]
-struct AppState {
-    node: Arc<Node>,
-}
-
-async fn resources_get(State(state): State<AppState>) -> Response {
-    Json(
-        state
-            .node
-            .resources()
-            .await
-            .into_iter()
-            .map(|snapshot| snapshot.to_query_value())
-            .collect::<Vec<_>>(),
-    )
-    .into_response()
-}
-
-async fn resource_get(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    match snapshot(&state.node, &id).await {
-        Ok(snapshot) => Json(snapshot.to_query_value()).into_response(),
-        Err(status) => status.into_response(),
-    }
-}
-
-async fn resource_transition_post(
-    State(state): State<AppState>,
-    Path((id, transition)): Path<(String, String)>,
-    Json(body): Json<Value>,
-) -> Response {
-    let fields = match body {
-        Value::Object(fields) => fields.into_iter().collect(),
-        Value::Null => BTreeMap::new(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "transition input must be a JSON object",
-            )
-                .into_response();
-        }
-    };
-
-    let proxy = match proxy(&state.node, &id).await {
-        Ok(proxy) => proxy,
-        Err(status) => return status.into_response(),
-    };
-    match proxy
-        .transition(&transition, TransitionInput { fields })
-        .await
-    {
-        Ok(outcome) => transition_response(outcome),
-        Err(TransitionError::InvalidInput(message)) => {
-            (StatusCode::BAD_REQUEST, message).into_response()
-        }
-        Err(TransitionError::NotAllowed(message) | TransitionError::Conflict(message)) => {
-            (StatusCode::CONFLICT, message).into_response()
-        }
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:?}")).into_response(),
-    }
-}
-
-async fn resource_stream_get(
-    State(state): State<AppState>,
-    Path((id, stream)): Path<(String, String)>,
-) -> Response {
-    let Some(kind) = resource_kind(&state.node, &id).await else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if !["lifecycle", "logs", "progress"].contains(&stream.as_str()) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    let stream_id = StreamId::for_resource(&NodeId::new(state.node.id()), &id, &stream);
-    let replay = state
-        .node
-        .events()
-        .replay_cache()
-        .events_after(&stream_id, 0);
-    let topic = format!("{}/{}/{}/{}", state.node.id(), kind, id, stream);
-    let sub = match TopicPattern::parse(&topic) {
-        Ok(topic) => state
-            .node
-            .events()
-            .subscribe(topic, stream_subscribe_opts(&stream)),
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    };
-
-    let lines = futures::stream::unfold((replay.into_iter(), sub), |(mut replay, mut sub)| async {
-        let event = match replay.next() {
-            Some(event) => event,
-            None => sub.rx.recv().await?,
-        };
-        let line = event_line(&event);
-        Some((Ok::<Bytes, Infallible>(Bytes::from(line)), (replay, sub)))
-    });
-
-    let mut response = Response::new(Body::from_stream(lines));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/x-ndjson"),
-    );
-    response
-}
-
-fn stream_subscribe_opts(stream: &str) -> SubscribeOpts {
-    let slow_consumer_policy = match stream {
-        "progress" => SlowConsumerPolicy::Coalesce {
-            key_path: FieldPath::parse("data.coalesceKey"),
-        },
-        "logs" | "lifecycle" => SlowConsumerPolicy::Backpressure,
-        _ => SlowConsumerPolicy::Disconnect,
-    };
-    SubscribeOpts {
-        limit: None,
-        outbound_capacity: Some(STREAM_OUTBOUND_CAPACITY),
-        slow_consumer_policy,
-    }
-}
-
-async fn snapshot(node: &Arc<Node>, id: &str) -> Result<ResourceSnapshot, StatusCode> {
-    let proxy = proxy(node, id).await?;
-    proxy
-        .snapshot()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-async fn proxy(node: &Arc<Node>, id: &str) -> Result<ResourceProxy, StatusCode> {
-    let handle = NodeHandle::new(node.clone());
-    for query in ["where kind = \"job.queue\"", "where kind = \"job\""] {
-        let resources = handle
-            .query(query)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if let Some(resource) = resources.into_iter().find(|resource| resource.id() == id) {
-            return Ok(resource);
-        }
-    }
-    Err(StatusCode::NOT_FOUND)
-}
-
-async fn resource_kind(node: &Arc<Node>, id: &str) -> Option<String> {
-    node.resources()
-        .await
-        .into_iter()
-        .find(|snapshot| snapshot.id == id)
-        .map(|snapshot| snapshot.kind)
-}
-
-fn transition_response(outcome: TransitionOutcome) -> Response {
-    match outcome {
-        TransitionOutcome::Completed { output, snapshot } => Json(json!({
-            "output": output,
-            "snapshot": snapshot.to_query_value(),
-        }))
-        .into_response(),
-        TransitionOutcome::Accepted { job, output } => {
-            let status = if job.created {
-                StatusCode::CREATED
-            } else {
-                StatusCode::ACCEPTED
-            };
-            let location = job.location.clone();
-            let mut response = (
-                status,
-                Json(json!({
-                    "output": output,
-                    "job": {
-                        "id": job.id,
-                        "kind": job.kind,
-                        "location": location,
-                    },
-                })),
-            )
-                .into_response();
-            if status == StatusCode::CREATED {
-                response.headers_mut().insert(
-                    header::LOCATION,
-                    HeaderValue::from_str(&job.location)
-                        .unwrap_or_else(|_| HeaderValue::from_static("/resources")),
-                );
-            }
-            response
-        }
-    }
-}
-
-fn event_line(event: &EventEnvelope) -> String {
-    serde_json::to_string(&json!({
-        "topic": event.topic(),
-        "timestamp": event.timestamp_ms(),
-        "data": event.data,
-        "eventId": event.event_id.as_str(),
-        "streamId": event.stream_id.as_str(),
-        "sequence": event.sequence,
-        "nodeId": event.node_id.as_str(),
-        "resourceId": event.resource_id,
-        "resourceKind": event.resource_kind,
-        "payloadKind": event.payload_kind,
-        "payloadVersion": event.payload_version,
-        "envelopeVersion": event.envelope_version,
-        "stream": event.stream,
-    }))
-    .unwrap_or_default()
-        + "\n"
+fn boardwalk() -> Boardwalk {
+    Boardwalk::new()
+        .name(NODE_NAME)
+        .use_actor_with_id(QUEUE_ID, JobQueue::new(QUEUE_NAME))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,13 +178,18 @@ struct JobStreams {
 
 impl JobStreams {
     fn for_job(job_id: &str) -> Self {
-        let base = format!("/resources/{job_id}/streams");
         Self {
-            lifecycle: format!("{base}/lifecycle"),
-            progress: format!("{base}/progress"),
-            logs: format!("{base}/logs"),
+            lifecycle: stream_href(job_id, "lifecycle"),
+            progress: stream_href(job_id, "progress"),
+            logs: stream_href(job_id, "logs"),
         }
     }
+}
+
+fn stream_href(job_id: &str, stream: &str) -> String {
+    format!(
+        "/servers/{NODE_NAME}/events?topic={NODE_NAME}/job/{job_id}/{stream}&outboundCapacity={STREAM_OUTBOUND_CAPACITY}&replay=true"
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1026,31 +793,5 @@ mod tests {
             .expect("test server should bind and build node");
         assert_eq!(runner.queue_id(), QUEUE_ID);
         assert!(runner.url("/resources").starts_with("http://127.0.0.1:"));
-    }
-
-    #[test]
-    fn stream_subscribe_opts_pin_slow_consumer_policy() {
-        let progress = stream_subscribe_opts("progress");
-        assert_eq!(progress.limit, None);
-        assert_eq!(progress.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
-        assert!(matches!(
-            progress.slow_consumer_policy,
-            SlowConsumerPolicy::Coalesce { ref key_path }
-                if key_path == &FieldPath::parse("data.coalesceKey")
-        ));
-
-        let logs = stream_subscribe_opts("logs");
-        assert_eq!(logs.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
-        assert!(matches!(
-            logs.slow_consumer_policy,
-            SlowConsumerPolicy::Backpressure
-        ));
-
-        let lifecycle = stream_subscribe_opts("lifecycle");
-        assert_eq!(lifecycle.outbound_capacity, Some(STREAM_OUTBOUND_CAPACITY));
-        assert!(matches!(
-            lifecycle.slow_consumer_policy,
-            SlowConsumerPolicy::Backpressure
-        ));
     }
 }

@@ -5,6 +5,29 @@ use futures::StreamExt;
 use reqwest::StatusCode;
 use serde_json::{Value as Json, json};
 
+#[test]
+fn job_runner_example_uses_reusable_boardwalk_runtime() {
+    let example_source = include_str!("../src/lib.rs");
+
+    assert!(
+        example_source.contains("Boardwalk::new()"),
+        "job-runner should construct HTTP through the reusable Boardwalk runtime"
+    );
+    for forbidden in [
+        "Router::new",
+        ".route(\"/resources\"",
+        "resource_transition_post",
+        "resource_stream_get",
+        "transition_response",
+        "event_line",
+    ] {
+        assert!(
+            !example_source.contains(forbidden),
+            "job-runner should not keep example-local HTTP adapter code: `{forbidden}`"
+        );
+    }
+}
+
 #[tokio::test]
 async fn job_runner_example_submits_and_streams_success_without_shelling_out() {
     let runner = job_runner_example::spawn_test_server()
@@ -63,7 +86,7 @@ async fn job_runner_example_submits_and_streams_success_without_shelling_out() {
     assert_eq!(log_event["data"]["line"], "job started");
 
     let job = wait_for_state(&client, &runner, href, "succeeded").await;
-    assert_eq!(job["state"], "succeeded");
+    assert_eq!(job["properties"]["state"], "succeeded");
     assert_eq!(job["properties"]["progress"], 100);
     assert_eq!(job["properties"]["result"], json!({ "status": "ok" }));
 
@@ -115,7 +138,7 @@ async fn job_runner_example_handles_failure_cancel_retry_and_bad_input() {
     assert_eq!(retried["output"]["jobId"], job_id_from_href(failed_href));
     assert_eq!(retried["job"]["location"], failed_href);
     let retried_job = fetch_resource(&client, &runner, failed_href).await;
-    assert_eq!(retried_job["state"], "queued");
+    assert_eq!(retried_job["properties"]["state"], "queued");
     assert_eq!(retried_job["properties"]["attempt"], 2);
 
     let cancellable = submit_job(
@@ -270,7 +293,7 @@ async fn wait_for_state(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let job = fetch_resource(client, runner, href).await;
-        if job["state"] == state {
+        if job["properties"]["state"] == state {
             return job;
         }
         assert!(

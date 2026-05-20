@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
+use crate::events::{NodeId, SlowConsumerPolicy, StreamId, SubscribeOpts};
+use crate::query::FieldPath;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
@@ -802,6 +804,60 @@ struct EventsQuery {
     topic: Option<String>,
     #[serde(rename = "outboundCapacity")]
     outbound_capacity: Option<usize>,
+    #[serde(default)]
+    replay: bool,
+}
+
+fn stream_id_from_topic(topic: &str) -> Option<StreamId> {
+    let mut parts = topic.split('/');
+    let node = parts.next()?;
+    let _kind = parts.next()?;
+    let resource = parts.next()?;
+    let stream = parts.next()?;
+    if parts.next().is_some() || node.is_empty() || resource.is_empty() || stream.is_empty() {
+        return None;
+    }
+    Some(StreamId::for_resource(&NodeId::new(node), resource, stream))
+}
+
+fn subscribe_opts_for_topic(topic: &str, outbound_capacity: Option<usize>) -> SubscribeOpts {
+    let stream = topic.rsplit('/').next().unwrap_or_default();
+    let slow_consumer_policy = match stream {
+        "progress" => SlowConsumerPolicy::Coalesce {
+            key_path: FieldPath::parse("data.coalesceKey"),
+        },
+        "logs" | "lifecycle" => SlowConsumerPolicy::Backpressure,
+        _ => SlowConsumerPolicy::Disconnect,
+    };
+    SubscribeOpts {
+        outbound_capacity,
+        slow_consumer_policy,
+        ..Default::default()
+    }
+}
+
+fn ndjson_event_line(ev: &crate::events::EventEnvelope) -> Option<String> {
+    let iso = ev
+        .timestamp
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok();
+    serde_json::to_string(&serde_json::json!({
+        "topic": ev.topic(),
+        "timestamp": ev.timestamp_ms(),
+        "data": ev.data,
+        "eventId": ev.event_id.as_str(),
+        "streamId": ev.stream_id.as_str(),
+        "sequence": ev.sequence,
+        "nodeId": ev.node_id.as_str(),
+        "resourceId": ev.resource_id,
+        "resourceKind": ev.resource_kind,
+        "payloadKind": ev.payload_kind,
+        "payloadVersion": ev.payload_version,
+        "envelopeVersion": ev.envelope_version,
+        "isoTimestamp": iso,
+        "stream": ev.stream,
+    }))
+    .ok()
 }
 
 /// `POST /servers/{name}/events/unsubscribe` — protocol-parity route.
@@ -847,12 +903,16 @@ async fn server_events_stream(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("topic: {e}")).into_response(),
     };
+    let replay = if q.replay {
+        stream_id_from_topic(&topic)
+            .map(|stream_id| state.core.bus.replay_cache().events_after(&stream_id, 0))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let sub = state.core.subscribe_events(
         pattern,
-        crate::events::SubscribeOpts {
-            outbound_capacity: q.outbound_capacity,
-            ..Default::default()
-        },
+        subscribe_opts_for_topic(&topic, q.outbound_capacity),
     );
     let core_for_guard = state.core.clone();
     let sub_id = sub.id;
@@ -874,6 +934,11 @@ async fn server_events_stream(
     }
     let stream = async_stream::stream! {
         let _guard = UnsubOnDrop { core: core_for_guard, id: sub_id };
+        for ev in replay {
+            if let Some(line) = ndjson_event_line(&ev) {
+                yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
+            }
+        }
         loop {
             tokio::select! {
                 biased;
@@ -900,28 +965,7 @@ async fn server_events_stream(
                 }
                 env = rx.recv() => {
                     let Some(ev) = env else { break };
-                    let iso = ev
-                        .timestamp
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .ok();
-                    let line = match serde_json::to_string(&serde_json::json!({
-                        "topic": ev.topic(),
-                        "timestamp": ev.timestamp_ms(),
-                        "data": ev.data,
-                        "eventId": ev.event_id.as_str(),
-                        "streamId": ev.stream_id.as_str(),
-                        "sequence": ev.sequence,
-                        "nodeId": ev.node_id.as_str(),
-                        "resourceId": ev.resource_id,
-                        "resourceKind": ev.resource_kind,
-                        "payloadKind": ev.payload_kind,
-                        "payloadVersion": ev.payload_version,
-                        "envelopeVersion": ev.envelope_version,
-                        "isoTimestamp": iso,
-                    })) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
+                    let Some(line) = ndjson_event_line(&ev) else { continue };
                     yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
                 }
             }

@@ -45,9 +45,9 @@ cargo run -p hello-led
   with `*` / `**` / regex patterns, optional `?ql=<caql>` filters,
   explicit actor publishes, and bounded slow-consumer policies.
 - **CaQL** — small query DSL for selecting and projecting resources.
-- **Job-runner example** — runnable example-local HTTP adapter showing
+- **Job-runner example** — runnable `Boardwalk` HTTP server showing
   `JobQueue` / `Job` resources, async transition acceptance, explicit
-  progress/log/lifecycle streams, and `SlowConsumerPolicy::Coalesce`.
+  progress/log/lifecycle streams, replay, and `SlowConsumerPolicy::Coalesce`.
 - **Peer tunnel** — hub dials cloud via an outbound WebSocket; both
   sides upgrade to HTTP/2 with reversed roles. The cloud then proxies
   HTTP and forwards event subscriptions back through the same socket.

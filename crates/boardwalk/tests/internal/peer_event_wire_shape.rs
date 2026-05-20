@@ -128,6 +128,7 @@ async fn peer_ndjson_line_keys_include_legacy_and_envelope_fields() {
         "payloadVersion",
         "envelopeVersion",
         "isoTimestamp",
+        "stream",
     ]
     .into_iter()
     .collect();

@@ -20,8 +20,8 @@ The reusable Boardwalk router serves those routes from a `Node` runtime.
 Actors registered with `Boardwalk::new().use_actor(...)` are exposed
 through the local resource routes. Code that builds a `Node` directly
 with `NodeBuilder` keeps owning that node and can wrap it with custom
-HTTP when needed; the `examples/job-runner` package still owns an
-example-local adapter until it moves onto the reusable builder.
+HTTP when needed; the `examples/job-runner` package uses the reusable
+builder so the example exercises the same route stack.
 
 Peer-forwarded routes mirror the same vocabulary under a server name:
 
@@ -160,6 +160,6 @@ example. It models a `JobQueue` actor and `Job` resources, returns
 progress/log/lifecycle streams explicitly, and uses
 `SlowConsumerPolicy::Coalesce` for progress updates.
 
-That package owns a small HTTP adapter so the example can be exercised
-end to end. It is example-local until the example moves onto the
-reusable Boardwalk builder.
+That package serves through `Boardwalk::new().use_actor_with_id(...)`.
+Its typed job handles point at the reusable NDJSON event route with
+replay enabled so late subscribers can catch up on progress events.

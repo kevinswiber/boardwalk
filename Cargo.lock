@@ -234,7 +234,6 @@ name = "boardwalk-job-runner-example"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "axum",
  "boardwalk",
  "bytes",
  "futures",

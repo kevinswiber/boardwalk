@@ -132,15 +132,15 @@ fn crate_docs_show_resource_actor_imports() {
 }
 
 #[test]
-fn docs_disclose_current_actor_http_adapter_boundaries() {
+fn docs_describe_reusable_actor_http_runtime() {
     let resources = read("docs/resources.md");
     assert!(
         resources.contains("Boardwalk::new().use_actor"),
         "resources.md should say Boardwalk actor registration is exposed through reusable HTTP"
     );
     assert!(
-        resources.contains("example-local adapter"),
-        "resources.md should keep the job-runner adapter boundary explicit"
+        resources.contains("use_actor_with_id"),
+        "resources.md should mention stable actor ids for the job-runner queue"
     );
 
     let getting_started = read("docs/getting-started.md");
@@ -151,6 +151,10 @@ fn docs_disclose_current_actor_http_adapter_boundaries() {
     assert!(
         getting_started.contains("not published"),
         "getting-started.md should not imply boardwalk_mock_led is an external dependency"
+    );
+    assert!(
+        getting_started.contains("reusable Boardwalk HTTP router"),
+        "getting-started.md should name the reusable actor HTTP path"
     );
 
     let peers = read("docs/peers.md");

@@ -87,6 +87,7 @@ type RegisterPendingActor =
 
 struct PendingActor {
     spec: ResourceSpec,
+    id: Option<String>,
     register: RegisterPendingActor,
 }
 
@@ -95,7 +96,22 @@ impl PendingActor {
         let spec = actor.spec();
         let register =
             Box::new(move |builder: NodeBuilder, id: String| builder.register_with_id(id, actor));
-        Self { spec, register }
+        Self {
+            spec,
+            id: None,
+            register,
+        }
+    }
+
+    fn with_id<A: Actor>(id: impl Into<String>, actor: A) -> Self {
+        let spec = actor.spec();
+        let register =
+            Box::new(move |builder: NodeBuilder, id: String| builder.register_with_id(id, actor));
+        Self {
+            spec,
+            id: Some(id.into()),
+            register,
+        }
     }
 }
 
@@ -126,6 +142,12 @@ impl Boardwalk {
     /// Register an actor with this Boardwalk instance.
     pub fn use_actor<A: Actor>(mut self, actor: A) -> Self {
         self.actors.push(PendingActor::new(actor));
+        self
+    }
+
+    /// Register an actor with a caller-supplied resource id.
+    pub fn use_actor_with_id<A: Actor>(mut self, id: impl Into<String>, actor: A) -> Self {
+        self.actors.push(PendingActor::with_id(id, actor));
         self
     }
 
@@ -176,9 +198,14 @@ impl Boardwalk {
 
     /// Bind and serve. Blocks until the listener stops.
     pub async fn listen(self, addr: SocketAddr) -> anyhow::Result<()> {
-        let built = self.build()?;
         tracing::info!(%addr, "boardwalk-rs listening");
         let listener = tokio::net::TcpListener::bind(addr).await.context("bind")?;
+        self.listen_on(listener).await
+    }
+
+    /// Serve on an already-bound listener.
+    pub async fn listen_on(self, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+        let built = self.build()?;
         axum::serve(listener, built.router).await.context("serve")
     }
 
@@ -226,8 +253,12 @@ impl Boardwalk {
 
         let mut node_builder = NodeBuilder::new(self.name.clone());
         for actor in self.actors {
-            let id = resolve_resource_id(&registry, &actor.spec)?;
-            node_builder = (actor.register)(node_builder, id)
+            let PendingActor { spec, id, register } = actor;
+            let id = match id {
+                Some(id) => id,
+                None => resolve_resource_id(&registry, &spec)?,
+            };
+            node_builder = register(node_builder, id)
                 .map_err(|err| anyhow::anyhow!("register actor: {err:?}"))?;
         }
         let node = Arc::new(
