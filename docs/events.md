@@ -41,6 +41,7 @@ Optional fields:
 
   "eventId": "bw://hub/resources/<id>/streams/state-1",
   "streamId": "bw://hub/resources/<id>/streams/state",
+  "stream": "state",
   "sequence": 1,
   "nodeId": "hub",
   "resourceId": "<id>",
@@ -133,8 +134,25 @@ line shape mirrors the WS `event` payload but without the
 `type`/`subscriptionId` fields:
 
 ```
-{"topic":"...","timestamp":...,"data":...,"eventId":"...","streamId":"...","sequence":1,"nodeId":"...","resourceId":"...","resourceKind":"...","payloadKind":"...","payloadVersion":1,"envelopeVersion":1,"isoTimestamp":"...","correlationId":"req-123","causationId":"..."}
+{"topic":"...","timestamp":...,"data":...,"eventId":"...","streamId":"...","stream":"state","sequence":1,"nodeId":"...","resourceId":"...","resourceKind":"...","payloadKind":"...","payloadVersion":1,"envelopeVersion":1,"isoTimestamp":"..."}
 ```
+
+Query parameters:
+
+- `topic` (required) — topic to subscribe to.
+- `outboundCapacity` (integer) — per-subscriber bounded queue size on
+  the bus; default 64.
+- `replay=true` — subscribe first, then emit cached events for the
+  concrete stream before live events. Replay requires a concrete
+  resource-stream topic shaped `node/kind/resource/stream`; wildcard or
+  shorter topics are rejected because they do not identify one replay
+  stream.
+- `slowConsumerPolicy` — optional overflow policy for this HTTP
+  subscription. Accepted values are `disconnect`, `backpressure`,
+  `drop-newest`, and `coalesce`. The default is `disconnect`.
+- `coalesceKey` — required when `slowConsumerPolicy=coalesce`; this is
+  the field path used to replace queued envelopes with the same key,
+  for example `coalesceKey=data.coalesceKey`.
 
 The response body's lifetime is tied to the underlying subscription:
 when the client disconnects, the runtime calls

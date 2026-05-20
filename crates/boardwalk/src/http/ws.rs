@@ -416,6 +416,7 @@ fn render_event_for_ws(app_id: u64, env: &EventEnvelope) -> OutboundMessage {
         data: env.data.clone(),
         event_id: Some(env.event_id.clone()),
         stream_id: Some(env.stream_id.clone()),
+        stream: Some(env.stream.clone()),
         sequence: Some(env.sequence),
         node_id: Some(env.node_id.clone()),
         resource_id: Some(env.resource_id.clone()),
@@ -549,6 +550,7 @@ fn render_peer_event(app_id: u64, fallback_topic: &str, v: &Arc<Json>) -> Outbou
             .get("streamId")
             .and_then(|x| x.as_str())
             .map(StreamId::from_raw),
+        stream: v.get("stream").and_then(|x| x.as_str()).map(str::to_string),
         sequence: v.get("sequence").and_then(|x| x.as_u64()),
         node_id: v.get("nodeId").and_then(|x| x.as_str()).map(NodeId::new),
         resource_id: v

@@ -204,7 +204,7 @@ fn public_docs_have_no_private_planning_terms() {
     let s = public_docs(PUBLIC_DOCS);
     let private_terms = [
         format!("{}bo", "Gum"),
-        format!(".{}", "gumbo"),
+        format!(".{}{}", "gum", "bo"),
         format!("Plan {}", "0003"),
         format!("Task {}", "7.4"),
         format!("{}/", "findings"),
@@ -264,11 +264,33 @@ fn docs_event_envelope_documents_envelope_version_and_policies() {
 }
 
 #[test]
+fn docs_events_document_ndjson_replay_and_policy_query() {
+    let s = read("docs/events.md");
+    for required in [
+        "\"stream\"",
+        "replay=true",
+        "outboundCapacity",
+        "slowConsumerPolicy",
+        "coalesceKey",
+        "node/kind/resource/stream",
+    ] {
+        assert!(
+            s.contains(required),
+            "events.md should document NDJSON `{required}`"
+        );
+    }
+}
+
+#[test]
 fn docs_events_documents_envelope_fields_and_stream_gap() {
     let s = read("docs/events.md");
     assert!(s.contains("eventId"));
     assert!(s.contains("streamId"));
+    assert!(s.contains("\"stream\":\"state\""));
     assert!(s.contains("sequence"));
     assert!(s.contains("stream-gap"));
     assert!(s.contains("slow_consumer"));
+    assert!(s.contains("replay=true"));
+    assert!(s.contains("slowConsumerPolicy"));
+    assert!(s.contains("coalesceKey"));
 }

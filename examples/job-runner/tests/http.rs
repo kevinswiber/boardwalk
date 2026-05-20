@@ -49,6 +49,10 @@ async fn job_runner_example_submits_and_streams_success_without_shelling_out() {
     )
     .await;
     let output = &submitted["output"];
+    assert!(
+        output.get("state").is_none(),
+        "JobHandle should not duplicate state; resource snapshots expose state under properties"
+    );
     let href = output["href"].as_str().expect("JobHandle.href");
     let progress_href = output["streams"]["progress"]
         .as_str()
@@ -58,6 +62,9 @@ async fn job_runner_example_submits_and_streams_success_without_shelling_out() {
         .as_str()
         .expect("logs stream href")
         .to_owned();
+    assert!(progress_href.contains("slowConsumerPolicy=coalesce"));
+    assert!(progress_href.contains("coalesceKey=data.coalesceKey"));
+    assert!(logs_href.contains("slowConsumerPolicy=backpressure"));
 
     let progress = client
         .get(runner.url(&progress_href))

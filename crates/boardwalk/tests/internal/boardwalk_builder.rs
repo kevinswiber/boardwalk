@@ -97,7 +97,7 @@ impl Actor for BuilderLed {
 async fn boardwalk_build_serves_registered_actor_resources_and_transitions() {
     let built = Boardwalk::new()
         .name("hub")
-        .use_actor(BuilderLed::named("Builder LED"))
+        .use_actor_with_id("front-panel", BuilderLed::named("Builder LED"))
         .use_actor(BuilderLed::named("Aux LED"))
         .build()
         .expect("boardwalk builds from actor");
@@ -126,7 +126,7 @@ async fn boardwalk_build_serves_registered_actor_resources_and_transitions() {
         .as_str()
         .expect("resource id")
         .to_string();
-    assert_ne!(id, "ignored");
+    assert_eq!(id, "front-panel");
     assert_eq!(builder["properties"]["kind"], "led");
     assert_eq!(builder["properties"]["node"], "hub");
 
@@ -165,6 +165,46 @@ async fn boardwalk_build_serves_registered_actor_resources_and_transitions() {
     assert_eq!(json["snapshot"]["state"], "on");
 
     built.node.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn boardwalk_listen_on_serves_supplied_listener() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener binds");
+    let addr = listener.local_addr().expect("listener has local addr");
+    let server = tokio::spawn(async move {
+        Boardwalk::new()
+            .name("hub")
+            .use_actor_with_id("front-panel", BuilderLed::named("Builder LED"))
+            .listen_on(listener)
+            .await
+    });
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/resources/front-panel");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut last_error = None;
+    let response = loop {
+        match client.get(&url).send().await {
+            Ok(response) => break response,
+            Err(err) => {
+                last_error = Some(err);
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "listen_on did not accept requests on supplied listener: {last_error:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    };
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "listen_on should serve the supplied listener; last connect error: {last_error:?}"
+    );
+    server.abort();
 }
 
 async fn response_json(response: Response) -> serde_json::Value {

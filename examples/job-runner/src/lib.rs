@@ -144,17 +144,15 @@ struct SubmitJob {
 struct JobHandle {
     job_id: String,
     href: String,
-    state: String,
     streams: JobStreams,
 }
 
 impl JobHandle {
-    fn for_job(job_id: String, state: &str) -> Self {
+    fn for_job(job_id: String) -> Self {
         Self {
             href: format!("/resources/{job_id}"),
             streams: JobStreams::for_job(&job_id),
             job_id,
-            state: state.into(),
         }
     }
 
@@ -187,9 +185,25 @@ impl JobStreams {
 }
 
 fn stream_href(job_id: &str, stream: &str) -> String {
-    format!(
-        "/servers/{NODE_NAME}/events?topic={NODE_NAME}/job/{job_id}/{stream}&outboundCapacity={STREAM_OUTBOUND_CAPACITY}&replay=true"
-    )
+    let topic = format!("{NODE_NAME}/job/{job_id}/{stream}");
+    let capacity = STREAM_OUTBOUND_CAPACITY.to_string();
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("topic", &topic)
+        .append_pair("outboundCapacity", &capacity)
+        .append_pair("replay", "true");
+    match stream {
+        "progress" => {
+            query
+                .append_pair("slowConsumerPolicy", "coalesce")
+                .append_pair("coalesceKey", "data.coalesceKey");
+        }
+        "logs" | "lifecycle" => {
+            query.append_pair("slowConsumerPolicy", "backpressure");
+        }
+        _ => {}
+    }
+    format!("/servers/{NODE_NAME}/events?{}", query.finish())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,7 +312,7 @@ impl Actor for JobQueue {
                 .register_actor(Job::from_submit(self.name.clone(), input))
                 .await?;
             self.submitted += 1;
-            let handle = JobHandle::for_job(id, "queued");
+            let handle = JobHandle::for_job(id);
             let output = serde_json::to_value(&handle)
                 .map_err(|err| TransitionError::Internal(err.to_string()))?;
             Ok(TransitionOutcome::Accepted {
@@ -416,7 +430,7 @@ impl Actor for Job {
                     data.error = None;
                     publish_lifecycle(&ctx, &data, Some("retried")).await?;
                     let id = resource_id(&ctx)?;
-                    let handle = JobHandle::for_job(id, data.state.as_str());
+                    let handle = JobHandle::for_job(id);
                     let output = serde_json::to_value(&handle)
                         .map_err(|err| TransitionError::Internal(err.to_string()))?;
                     Ok(TransitionOutcome::Accepted {
@@ -793,5 +807,21 @@ mod tests {
             .expect("test server should bind and build node");
         assert_eq!(runner.queue_id(), QUEUE_ID);
         assert!(runner.url("/resources").starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn stream_href_url_encodes_topic_and_policy_query() {
+        let href = stream_href("id&weird", "progress");
+
+        assert!(href.starts_with("/servers/runner/events?"));
+        assert!(href.contains("topic=runner%2Fjob%2Fid%26weird%2Fprogress"));
+        assert!(href.contains("outboundCapacity=16"));
+        assert!(href.contains("replay=true"));
+        assert!(href.contains("slowConsumerPolicy=coalesce"));
+        assert!(href.contains("coalesceKey=data.coalesceKey"));
+        assert!(
+            !href.contains("id&weird"),
+            "topic query value should be URL-encoded: {href}"
+        );
     }
 }

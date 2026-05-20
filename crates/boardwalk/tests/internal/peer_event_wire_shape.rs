@@ -172,3 +172,65 @@ async fn peer_ndjson_topic_matches_subscribed_topic() {
         "ndjson `topic` must equal the subscribed topic"
     );
 }
+
+#[tokio::test]
+async fn peer_ndjson_replay_query_returns_cached_resource_stream_event() {
+    let (addr, _core, _h) = boot_hub().await;
+    let id = device_id(addr).await;
+    let topic = format!("hub/led/{id}/state");
+
+    assert_eq!(post_action(addr, &id, "turn-on").await, 200);
+
+    let url = format!("http://{addr}/servers/hub/events?topic={topic}&replay=true");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET succeeds");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let read_one_line = async {
+        loop {
+            let chunk: Bytes = match stream.next().await {
+                Some(Ok(b)) => b,
+                Some(Err(e)) => panic!("ndjson stream error: {e}"),
+                None => panic!("ndjson stream ended before replay line"),
+            };
+            buf.extend_from_slice(&chunk);
+            if let Some(idx) = buf.iter().position(|b| *b == b'\n') {
+                let line = std::str::from_utf8(&buf[..idx])
+                    .expect("ndjson line is utf8")
+                    .to_string();
+                return line;
+            }
+        }
+    };
+    let line = tokio::time::timeout(Duration::from_secs(2), read_one_line)
+        .await
+        .expect("expected replayed ndjson line within 2s");
+    let line: Json = serde_json::from_str(&line).expect("ndjson line is valid JSON");
+
+    assert_eq!(line["topic"], json!(topic));
+    assert_eq!(line["stream"], json!("state"));
+    assert_eq!(line["data"], json!("on"));
+    assert_eq!(line["sequence"], json!(1));
+}
+
+#[tokio::test]
+async fn peer_ndjson_replay_requires_resource_stream_topic() {
+    let (addr, _core, _h) = boot_hub().await;
+    let id = device_id(addr).await;
+    let topic = format!("hub/led/{id}");
+
+    let url = format!("http://{addr}/servers/hub/events?topic={topic}&replay=true");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET succeeds");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Json = resp.json().await.expect("problem response is JSON");
+    assert_eq!(body["error"], json!("invalid_replay_topic"));
+    assert_eq!(body["field"], json!("topic"));
+}

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
-use crate::events::{NodeId, SlowConsumerPolicy, StreamId, SubscribeOpts};
+use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
 use crate::query::FieldPath;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
@@ -806,33 +806,205 @@ struct EventsQuery {
     outbound_capacity: Option<usize>,
     #[serde(default)]
     replay: bool,
+    #[serde(rename = "slowConsumerPolicy")]
+    slow_consumer_policy: Option<String>,
+    #[serde(rename = "coalesceKey")]
+    coalesce_key: Option<String>,
 }
 
-fn stream_id_from_topic(topic: &str) -> Option<StreamId> {
-    let mut parts = topic.split('/');
-    let node = parts.next()?;
-    let _kind = parts.next()?;
-    let resource = parts.next()?;
-    let stream = parts.next()?;
-    if parts.next().is_some() || node.is_empty() || resource.is_empty() || stream.is_empty() {
+fn stream_id_from_concrete_pattern(pattern: &TopicPattern) -> Option<StreamId> {
+    let [node, _kind, resource, stream] = pattern.segments.as_slice() else {
+        return None;
+    };
+    let (
+        Segment::Literal(node),
+        Segment::Literal(_kind),
+        Segment::Literal(resource),
+        Segment::Literal(stream),
+    ) = (node, _kind, resource, stream)
+    else {
+        return None;
+    };
+    if node.is_empty() || _kind.is_empty() || resource.is_empty() || stream.is_empty() {
         return None;
     }
     Some(StreamId::for_resource(&NodeId::new(node), resource, stream))
 }
 
-fn subscribe_opts_for_topic(topic: &str, outbound_capacity: Option<usize>) -> SubscribeOpts {
-    let stream = topic.rsplit('/').next().unwrap_or_default();
-    let slow_consumer_policy = match stream {
-        "progress" => SlowConsumerPolicy::Coalesce {
-            key_path: FieldPath::parse("data.coalesceKey"),
-        },
-        "logs" | "lifecycle" => SlowConsumerPolicy::Backpressure,
-        _ => SlowConsumerPolicy::Disconnect,
+fn subscribe_opts_from_query(query: &EventsQuery) -> Result<SubscribeOpts, String> {
+    let policy_name = query
+        .slow_consumer_policy
+        .as_deref()
+        .unwrap_or("disconnect")
+        .replace('_', "-")
+        .to_ascii_lowercase();
+    let slow_consumer_policy = match policy_name.as_str() {
+        "disconnect" => {
+            if query.coalesce_key.is_some() {
+                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
+            }
+            SlowConsumerPolicy::Disconnect
+        }
+        "backpressure" => {
+            if query.coalesce_key.is_some() {
+                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
+            }
+            SlowConsumerPolicy::Backpressure
+        }
+        "drop-newest" | "dropnewest" => {
+            if query.coalesce_key.is_some() {
+                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
+            }
+            SlowConsumerPolicy::DropNewest
+        }
+        "coalesce" => {
+            let key = query
+                .coalesce_key
+                .as_deref()
+                .ok_or_else(|| "slowConsumerPolicy=coalesce requires coalesceKey".to_string())?;
+            let key_path = FieldPath::try_parse(key)
+                .map_err(|err| format!("invalid coalesceKey `{key}`: {err}"))?;
+            SlowConsumerPolicy::Coalesce { key_path }
+        }
+        _ => {
+            return Err(format!(
+                "unknown slowConsumerPolicy `{}`; expected disconnect, backpressure, drop-newest, or coalesce",
+                query.slow_consumer_policy.as_deref().unwrap_or_default()
+            ));
+        }
     };
-    SubscribeOpts {
-        outbound_capacity,
+    Ok(SubscribeOpts {
+        outbound_capacity: query.outbound_capacity,
         slow_consumer_policy,
         ..Default::default()
+    })
+}
+
+#[cfg(test)]
+mod event_route_query_tests {
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::http::core::CoreBuilder;
+
+    fn events_query(topic: &str) -> EventsQuery {
+        EventsQuery {
+            topic: Some(topic.to_string()),
+            outbound_capacity: None,
+            replay: false,
+            slow_consumer_policy: None,
+            coalesce_key: None,
+        }
+    }
+
+    #[test]
+    fn replay_stream_id_requires_exact_concrete_resource_stream_topic() {
+        let pattern = TopicPattern::parse("hub/job/job-1/progress").expect("concrete topic parses");
+        let stream_id = stream_id_from_concrete_pattern(&pattern)
+            .expect("four-segment resource stream topic resolves");
+        assert_eq!(
+            stream_id.as_str(),
+            "bw://hub/resources/job-1/streams/progress"
+        );
+
+        for topic in [
+            "hub/job/job-1/progress/extra",
+            "hub/job/job-1",
+            "hub/job//progress",
+            "hub/job/*/progress",
+            "hub/**/progress",
+        ] {
+            let pattern = TopicPattern::parse(topic).expect("topic parses");
+            assert!(
+                stream_id_from_concrete_pattern(&pattern).is_none(),
+                "`{topic}` should not resolve as a replayable concrete topic"
+            );
+        }
+    }
+
+    #[test]
+    fn ndjson_subscribe_policy_defaults_to_disconnect() {
+        let query = events_query("hub/job/job-1/progress");
+        let opts = subscribe_opts_from_query(&query).expect("default opts");
+
+        assert!(matches!(
+            opts.slow_consumer_policy,
+            SlowConsumerPolicy::Disconnect
+        ));
+    }
+
+    #[test]
+    fn ndjson_subscribe_policy_is_explicit_not_topic_derived() {
+        let mut progress = events_query("hub/job/job-1/progress");
+        progress.outbound_capacity = Some(4);
+        let opts = subscribe_opts_from_query(&progress).expect("default progress opts");
+        assert_eq!(opts.outbound_capacity, Some(4));
+        assert!(matches!(
+            opts.slow_consumer_policy,
+            SlowConsumerPolicy::Disconnect
+        ));
+
+        let mut logs = events_query("hub/job/job-1/logs");
+        logs.slow_consumer_policy = Some("backpressure".to_string());
+        let opts = subscribe_opts_from_query(&logs).expect("backpressure opts");
+        assert!(matches!(
+            opts.slow_consumer_policy,
+            SlowConsumerPolicy::Backpressure
+        ));
+
+        let mut stray_key = events_query("hub/job/job-1/logs");
+        stray_key.coalesce_key = Some("data.jobId".to_string());
+        assert!(
+            subscribe_opts_from_query(&stray_key)
+                .unwrap_err()
+                .contains("requires slowConsumerPolicy=coalesce")
+        );
+    }
+
+    #[test]
+    fn ndjson_coalesce_policy_requires_explicit_key_path() {
+        let mut missing_key = events_query("hub/job/job-1/progress");
+        missing_key.slow_consumer_policy = Some("coalesce".to_string());
+        assert!(
+            subscribe_opts_from_query(&missing_key)
+                .unwrap_err()
+                .contains("requires coalesceKey")
+        );
+
+        let mut coalesce = events_query("hub/job/job-1/progress");
+        coalesce.slow_consumer_policy = Some("coalesce".to_string());
+        coalesce.coalesce_key = Some("data.jobId".to_string());
+        let opts = subscribe_opts_from_query(&coalesce).expect("coalesce opts");
+        assert!(matches!(
+            opts.slow_consumer_policy,
+            SlowConsumerPolicy::Coalesce { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn ndjson_replay_rejects_non_concrete_topics() {
+        let core = CoreBuilder::new("hub").build();
+        let app = router(core);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/servers/hub/events?topic=hub/job/*/progress&replay=true")
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("request completes");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+        assert_eq!(body["error"], "invalid_replay_topic");
+        assert_eq!(body["field"], "topic");
     }
 }
 
@@ -895,25 +1067,42 @@ async fn server_events_stream(
     if let Some(r) = maybe_forward_get_or_404(&state, &name, &uri, &headers).await {
         return r;
     }
-    let topic = match q.topic {
+    let topic = match q.topic.as_deref() {
         Some(t) => t,
         None => return (StatusCode::BAD_REQUEST, "missing ?topic=").into_response(),
     };
-    let pattern = match crate::events::TopicPattern::parse(&topic) {
+    let pattern = match TopicPattern::parse(topic) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("topic: {e}")).into_response(),
     };
-    let replay = if q.replay {
-        stream_id_from_topic(&topic)
-            .map(|stream_id| state.core.bus.replay_cache().events_after(&stream_id, 0))
-            .unwrap_or_default()
+    let replay_stream_id = if q.replay {
+        let Some(stream_id) = stream_id_from_concrete_pattern(&pattern) else {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_replay_topic",
+                "replay=true requires a concrete topic=node/kind/resource/stream",
+                Some("topic"),
+            );
+        };
+        Some(stream_id)
     } else {
-        Vec::new()
+        None
     };
-    let sub = state.core.subscribe_events(
-        pattern,
-        subscribe_opts_for_topic(&topic, q.outbound_capacity),
-    );
+    let opts = match subscribe_opts_from_query(&q) {
+        Ok(opts) => opts,
+        Err(message) => {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_slow_consumer_policy",
+                &message,
+                Some("slowConsumerPolicy"),
+            );
+        }
+    };
+    let sub = state.core.subscribe_events(pattern, opts);
+    let replay = replay_stream_id
+        .map(|stream_id| state.core.bus.replay_cache().events_after(&stream_id, 0))
+        .unwrap_or_default();
     let core_for_guard = state.core.clone();
     let sub_id = sub.id;
     let mut rx = sub.rx;
@@ -934,7 +1123,9 @@ async fn server_events_stream(
     }
     let stream = async_stream::stream! {
         let _guard = UnsubOnDrop { core: core_for_guard, id: sub_id };
+        let mut replayed_event_ids = HashSet::new();
         for ev in replay {
+            replayed_event_ids.insert(ev.event_id.clone());
             if let Some(line) = ndjson_event_line(&ev) {
                 yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
             }
@@ -965,6 +1156,9 @@ async fn server_events_stream(
                 }
                 env = rx.recv() => {
                     let Some(ev) = env else { break };
+                    if replayed_event_ids.remove(&ev.event_id) {
+                        continue;
+                    }
                     let Some(line) = ndjson_event_line(&ev) else { continue };
                     yield Ok::<_, std::convert::Infallible>(format!("{line}\n"));
                 }

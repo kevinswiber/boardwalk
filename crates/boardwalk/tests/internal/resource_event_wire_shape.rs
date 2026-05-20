@@ -127,6 +127,7 @@ async fn event_wire_keys_include_legacy_and_envelope_fields() {
         "data",
         "eventId",
         "streamId",
+        "stream",
         "sequence",
         "nodeId",
         "resourceId",

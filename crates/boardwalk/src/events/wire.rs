@@ -54,6 +54,8 @@ pub enum OutboundMessage {
         #[serde(rename = "streamId", skip_serializing_if = "Option::is_none")]
         stream_id: Option<StreamId>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        stream: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         sequence: Option<u64>,
         #[serde(rename = "nodeId", skip_serializing_if = "Option::is_none")]
         node_id: Option<NodeId>,

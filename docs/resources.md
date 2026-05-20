@@ -158,7 +158,7 @@ The `examples/job-runner` package is the current async-transition
 example. It models a `JobQueue` actor and `Job` resources, returns
 `TransitionOutcome::Accepted` from submit-style transitions, publishes
 progress/log/lifecycle streams explicitly, and uses
-`SlowConsumerPolicy::Coalesce` for progress updates.
+`slowConsumerPolicy=coalesce` on progress stream URLs.
 
 That package serves through `Boardwalk::new().use_actor_with_id(...)`.
 Its typed job handles point at the reusable NDJSON event route with
