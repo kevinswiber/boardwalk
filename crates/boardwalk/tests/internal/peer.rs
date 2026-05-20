@@ -75,6 +75,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
         .to_string();
     assert_eq!(entities[0]["properties"]["kind"], "led");
     assert_eq!(entities[0]["properties"]["state"], "off");
+    assert_eq!(entities[0]["properties"]["fixture"], "actor-led");
 
     // Forward a transition POST through the cloud gateway.
     let client = reqwest::Client::new();
@@ -144,6 +145,7 @@ async fn cloud_dedups_peer_subscriptions() {
         .json()
         .await
         .unwrap();
+    assert_eq!(server["entities"][0]["properties"]["fixture"], "actor-led");
     let dev_id = server["entities"][0]["properties"]["id"]
         .as_str()
         .unwrap()

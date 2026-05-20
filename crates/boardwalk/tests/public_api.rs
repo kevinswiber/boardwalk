@@ -52,6 +52,36 @@ fn contains_ident(source: &str, ident: &str) -> bool {
         .any(|token| token == ident)
 }
 
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn contains_call(source: &str, ident: &str) -> bool {
+    source.match_indices(ident).any(|(start, _)| {
+        let end = start + ident.len();
+        let bytes = source.as_bytes();
+        let has_ident_before = start > 0 && is_ident_byte(bytes[start - 1]);
+        let has_ident_after = bytes.get(end).is_some_and(|byte| is_ident_byte(*byte));
+        if has_ident_before || has_ident_after {
+            return false;
+        }
+
+        bytes[end..]
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(b'(')
+    })
+}
+
+fn contains_arc_core_type(source: &str) -> bool {
+    source
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>()
+        .contains("Arc<Core>")
+}
+
 fn collect_files(root: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(root).unwrap_or_else(|e| panic!("could not read {root:?}: {e}"))
     {
@@ -311,10 +341,16 @@ fn peer_and_stream_routes_do_not_carry_parallel_private_runtime_handles() {
                 "{name} must not route peers or streams through legacy `{ident}` lookups"
             );
         }
+        for call in ["list_devices", "get_device", "run_transition"] {
+            assert!(
+                !contains_call(source, call),
+                "{name} must not route peers or streams through legacy `{call}(...)` lookups"
+            );
+        }
     }
 
     assert!(
-        !peer.contains("Arc<Core>"),
+        !contains_arc_core_type(&peer),
         "PeerClient must use the router's AppState instead of carrying a parallel Core handle"
     );
 }

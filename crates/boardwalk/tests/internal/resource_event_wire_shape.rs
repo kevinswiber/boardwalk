@@ -46,10 +46,9 @@ async fn device_id(addr: SocketAddr) -> String {
         .json()
         .await
         .unwrap();
-    server["entities"][0]["properties"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let resource = &server["entities"][0];
+    assert_eq!(resource["properties"]["fixture"], "actor-led");
+    resource["properties"]["id"].as_str().unwrap().to_string()
 }
 
 async fn open_ws(addr: SocketAddr) -> Ws {
