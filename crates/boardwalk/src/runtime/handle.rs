@@ -28,6 +28,14 @@ impl NodeHandle {
         &self.node
     }
 
+    pub(crate) async fn resource(&self, id: &str) -> Option<ResourceProxy> {
+        let entry = {
+            let dir = self.node.directory_read().await;
+            dir.get_by_id(id)
+        }?;
+        Some(ResourceProxy::new(entry, self.node.clone()))
+    }
+
     /// Parse a CaQL string and return one `ResourceProxy` per
     /// matching resource. Invalid CaQL surfaces as `Err`.
     pub async fn query(&self, ql: &str) -> Result<Vec<ResourceProxy>, NodeHandleError> {
@@ -50,10 +58,7 @@ impl NodeHandle {
             };
             let v = snap.to_query_value();
             if query_eval::matches(&parsed, &v).unwrap_or(false) {
-                matches.push(ResourceProxy {
-                    entry: entry.clone(),
-                    node: self.node.clone(),
-                });
+                matches.push(ResourceProxy::new(entry.clone(), self.node.clone()));
             }
         }
         Ok(matches)
@@ -79,6 +84,10 @@ pub struct ResourceProxy {
 }
 
 impl ResourceProxy {
+    pub(crate) fn new(entry: Arc<Entry>, node: Arc<Node>) -> Self {
+        Self { entry, node }
+    }
+
     pub fn id(&self) -> &str {
         &self.entry.id
     }

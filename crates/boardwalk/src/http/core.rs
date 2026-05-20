@@ -10,8 +10,9 @@ use crate::events::{
     ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry, TraceContext,
 };
 use crate::runtime::{
-    ActorSpec, CommandId, EmissionContext, EnvelopePlan, RequestCtx, ResourceSnapshot,
-    ResourceSpec, SnapshotStreamSpec, StreamKind, TransitionAffordance, TransitionInput,
+    ActorSpec, CommandId, EmissionContext, EnvelopePlan, Node, NodeHandle, RequestCtx,
+    ResourceError, ResourceSnapshot, ResourceSpec, SnapshotStreamSpec, StreamKind,
+    TransitionAffordance, TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
     publish_envelope, sanitize_properties,
 };
 
@@ -27,6 +28,7 @@ pub struct Core {
     /// different map than minting populated.
     pub stream_registry: StreamRegistry,
     devices: RwLock<Vec<DeviceHandle>>,
+    actor_node: Option<Arc<Node>>,
     /// Fires once per `register_device`. Subscribers see one tick per
     /// new adapter resource. Used by `ServerHandle::observe`.
     pub(crate) device_changes: tokio::sync::broadcast::Sender<()>,
@@ -45,6 +47,28 @@ impl DeviceHandle {
     pub fn type_(&self) -> &str {
         self.config.type_.as_deref().unwrap_or("unknown")
     }
+}
+
+#[derive(Debug)]
+pub(crate) enum ResourceReadError {
+    InvalidId,
+    NotFound,
+    Unavailable(String),
+    Internal(String),
+}
+
+#[derive(Debug)]
+pub(crate) enum ResourceTransitionError {
+    InvalidId,
+    NotFound,
+    InvalidInput(String),
+    NotAllowed(String),
+    Conflict(String),
+    Busy,
+    BackpressureRequired,
+    Timeout,
+    Unavailable(String),
+    Internal(String),
 }
 
 /// Builder used by `boardwalk-server`. Adapter resources are held
@@ -130,6 +154,7 @@ impl CoreBuilder {
             bus,
             stream_registry,
             devices: RwLock::new(handles),
+            actor_node: None,
             device_changes,
         })
     }
@@ -178,6 +203,19 @@ impl StreamSink for BusSink {
 }
 
 impl Core {
+    #[allow(dead_code)]
+    pub fn from_node(node: Arc<Node>) -> Arc<Self> {
+        let (device_changes, _) = tokio::sync::broadcast::channel(64);
+        Arc::new(Self {
+            name: node.id().to_string(),
+            bus: node.events().clone(),
+            stream_registry: node.stream_registry().clone(),
+            devices: RwLock::new(Vec::new()),
+            actor_node: Some(node),
+            device_changes,
+        })
+    }
+
     /// Register a device at runtime (not via the static builder).
     /// Used by `POST /resources` factories and by scouts.
     pub async fn register_device(
@@ -208,6 +246,107 @@ impl Core {
         });
         drop(guard);
         let _ = self.device_changes.send(());
+    }
+
+    pub async fn list_resources(&self) -> Vec<ResourceSnapshot> {
+        if let Some(node) = &self.actor_node {
+            return node.resources().await;
+        }
+        self.list_devices()
+            .await
+            .iter()
+            .map(|device| device.to_resource_snapshot(&self.name))
+            .collect()
+    }
+
+    pub async fn query_resources(
+        &self,
+        ql: &str,
+    ) -> Result<Vec<ResourceSnapshot>, crate::query::QueryError> {
+        let query = crate::caql::parse(ql)?;
+        let mut matches = Vec::new();
+        for snapshot in self.list_resources().await {
+            if crate::query::matches(&query, &snapshot.to_query_value())? {
+                matches.push(snapshot);
+            }
+        }
+        Ok(matches)
+    }
+
+    pub async fn get_resource(
+        &self,
+        id: &str,
+    ) -> Result<Option<ResourceSnapshot>, ResourceReadError> {
+        if let Some(node) = &self.actor_node {
+            let handle = NodeHandle::new(node.clone());
+            let Some(proxy) = handle.resource(id).await else {
+                return Ok(None);
+            };
+            return proxy
+                .snapshot()
+                .await
+                .map(Some)
+                .map_err(resource_read_error);
+        }
+
+        let id = uuid::Uuid::parse_str(id).map_err(|_| ResourceReadError::InvalidId)?;
+        Ok(self
+            .get_device(&id)
+            .await
+            .map(|device| device.to_resource_snapshot(&self.name)))
+    }
+
+    pub async fn actor_specs(&self) -> Vec<ActorSpec> {
+        if let Some(node) = &self.actor_node {
+            return node.actor_specs().await;
+        }
+        self.list_devices()
+            .await
+            .iter()
+            .map(DeviceSnapshot::to_actor_spec)
+            .collect()
+    }
+
+    pub async fn run_resource_transition(
+        &self,
+        id: &str,
+        name: &str,
+        input: TransitionInput,
+        request: RequestCtx,
+    ) -> Result<TransitionOutcome, ResourceTransitionError> {
+        if let Some(node) = &self.actor_node {
+            let handle = NodeHandle::new(node.clone());
+            let Some(proxy) = handle.resource(id).await else {
+                return Err(ResourceTransitionError::NotFound);
+            };
+            let ctx = TransitionCtx::with_node(request, node.clone());
+            let outcome = proxy
+                .transition_with_ctx(ctx, name, input)
+                .await
+                .map_err(resource_transition_error)?;
+            return match outcome {
+                TransitionOutcome::Completed { output, .. } => {
+                    let snapshot = proxy
+                        .snapshot()
+                        .await
+                        .map_err(resource_error_to_transition)?;
+                    Ok(TransitionOutcome::Completed { output, snapshot })
+                }
+                TransitionOutcome::Accepted { .. } => Ok(outcome),
+            };
+        }
+
+        let id = uuid::Uuid::parse_str(id).map_err(|_| ResourceTransitionError::InvalidId)?;
+        if self.get_device(&id).await.is_none() {
+            return Err(ResourceTransitionError::NotFound);
+        }
+        self.run_transition(&id, name, input, request)
+            .await
+            .map(|snapshot| TransitionOutcome::Completed {
+                output: None,
+                snapshot: snapshot.to_resource_snapshot(&self.name),
+            })
+            .map_err(device_transition_error)
     }
 
     pub async fn list_devices(&self) -> Vec<DeviceSnapshot> {
@@ -343,6 +482,44 @@ impl Core {
         }
 
         Ok(snapshot)
+    }
+}
+
+fn resource_read_error(err: ResourceError) -> ResourceReadError {
+    match err {
+        ResourceError::NotFound(_) => ResourceReadError::NotFound,
+        ResourceError::Unavailable(msg) => ResourceReadError::Unavailable(msg),
+        ResourceError::Internal(msg) => ResourceReadError::Internal(msg),
+    }
+}
+
+fn resource_error_to_transition(err: ResourceError) -> ResourceTransitionError {
+    match err {
+        ResourceError::NotFound(_) => ResourceTransitionError::NotFound,
+        ResourceError::Unavailable(msg) => ResourceTransitionError::Unavailable(msg),
+        ResourceError::Internal(msg) => ResourceTransitionError::Internal(msg),
+    }
+}
+
+fn resource_transition_error(err: TransitionError) -> ResourceTransitionError {
+    match err {
+        TransitionError::InvalidInput(msg) => ResourceTransitionError::InvalidInput(msg),
+        TransitionError::NotAllowed(msg) => ResourceTransitionError::NotAllowed(msg),
+        TransitionError::Conflict(msg) => ResourceTransitionError::Conflict(msg),
+        TransitionError::Busy => ResourceTransitionError::Busy,
+        TransitionError::BackpressureRequired => ResourceTransitionError::BackpressureRequired,
+        TransitionError::Timeout => ResourceTransitionError::Timeout,
+        TransitionError::ResourceNotFound(_) => ResourceTransitionError::NotFound,
+        TransitionError::Internal(msg) => ResourceTransitionError::Internal(msg),
+    }
+}
+
+fn device_transition_error(err: DeviceError) -> ResourceTransitionError {
+    match err {
+        DeviceError::Invalid(msg) => ResourceTransitionError::InvalidInput(msg),
+        DeviceError::NotAllowed(msg) => ResourceTransitionError::NotAllowed(msg),
+        DeviceError::Conflict(msg) => ResourceTransitionError::Conflict(msg),
+        DeviceError::Internal(msg) => ResourceTransitionError::Internal(msg),
     }
 }
 

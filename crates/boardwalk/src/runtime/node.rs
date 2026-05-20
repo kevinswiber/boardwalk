@@ -11,6 +11,7 @@ use super::context::Publisher;
 use super::directory::ResourceDirectory;
 use super::executor::ActorHandle;
 use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
+use super::transition::ActorSpec;
 use crate::events::{EventBus, StreamRegistry};
 
 /// Builder for a node runtime. Constructs the event bus, the shared
@@ -114,7 +115,7 @@ impl Node {
         let (handle, task) =
             ActorHandle::spawn_with_task(actor, self.actor_queue_capacity, actor_ctx);
         let slot = super::executor::ActorSlot { handle, task };
-        dir.insert(id, kind, slot)
+        dir.insert(id, kind, slot, spec)
     }
 
     /// Returns the current set of resource snapshots in registration
@@ -130,6 +131,21 @@ impl Node {
             let ctx = ResourceCtx::new_test();
             if let Ok(snap) = entry.snapshot(ctx, &self.id).await {
                 out.push(snap);
+            }
+        }
+        out
+    }
+
+    pub(crate) async fn actor_specs(&self) -> Vec<ActorSpec> {
+        let entries = {
+            let dir = self.directory.read().await;
+            dir.entries().to_vec()
+        };
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let ctx = ResourceCtx::new_test();
+            if let Ok(spec) = entry.actor_spec(ctx, &self.id).await {
+                out.push(spec);
             }
         }
         out

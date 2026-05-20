@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
-use super::core::{Core, now_ms};
+use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
@@ -333,15 +333,8 @@ async fn root(
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
     if let Some(ql) = params.ql {
-        let devices = core.list_devices().await;
-        return match filter_by_ql(&devices, &ql, &core.name) {
-            Ok(filtered) => {
-                let snaps: Vec<_> = filtered
-                    .iter()
-                    .map(|d| d.to_resource_snapshot(&core.name))
-                    .collect();
-                siren_response(render::render_search_results(&h, &ql, &snaps))
-            }
+        return match core.query_resources(&ql).await {
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
@@ -365,23 +358,13 @@ async fn server_get(
     }
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
-    let devices = core.list_devices().await;
     if let Some(ql) = params.ql {
-        return match filter_by_ql(&devices, &ql, &core.name) {
-            Ok(filtered) => {
-                let snaps: Vec<_> = filtered
-                    .iter()
-                    .map(|d| d.to_resource_snapshot(&core.name))
-                    .collect();
-                siren_response(render::render_search_results(&h, &ql, &snaps))
-            }
+        return match core.query_resources(&ql).await {
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
-    let snaps: Vec<_> = devices
-        .iter()
-        .map(|d| d.to_resource_snapshot(&core.name))
-        .collect();
+    let snaps = core.list_resources().await;
     siren_response(render::render_server(&h, &snaps))
 }
 
@@ -461,23 +444,13 @@ async fn resources_response(
     params: QueryParams,
 ) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
-    let devices = core.list_devices().await;
     if let Some(ql) = params.ql {
-        return match filter_by_ql(&devices, &ql, &core.name) {
-            Ok(filtered) => {
-                let snaps: Vec<_> = filtered
-                    .iter()
-                    .map(|d| d.to_resource_snapshot(&core.name))
-                    .collect();
-                siren_response(render::render_search_results(&h, &ql, &snaps))
-            }
+        return match core.query_resources(&ql).await {
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
-    let snaps: Vec<_> = devices
-        .iter()
-        .map(|d| d.to_resource_snapshot(&core.name))
-        .collect();
+    let snaps = core.list_resources().await;
     siren_response(render::render_resources(&h, &snaps))
 }
 
@@ -531,19 +504,47 @@ async fn resources_post(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     };
     let h = build_hrefs(&headers, &uri, &state.core.name);
-    let Some(snap) = state.core.get_device(&new_id).await else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "resource missing after register",
-        )
-            .into_response();
+    let snap = match state.core.get_resource(&new_id.to_string()).await {
+        Ok(Some(snap)) => snap,
+        Ok(None) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "resource missing after register",
+            )
+                .into_response();
+        }
+        Err(ResourceReadError::InvalidId) => {
+            return problem_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-resource-id",
+                "resource id must be a UUID",
+                Some("id"),
+            );
+        }
+        Err(ResourceReadError::NotFound) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "resource missing after register",
+            )
+                .into_response();
+        }
+        Err(ResourceReadError::Unavailable(msg)) => {
+            return problem_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "resource-unavailable",
+                &msg,
+                Some("id"),
+            );
+        }
+        Err(ResourceReadError::Internal(msg)) => {
+            return problem_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &msg, None);
+        }
     };
-    let rsnap = snap.to_resource_snapshot(&state.core.name);
-    let mut resp = siren_response(render::render_resource(&h, &rsnap));
+    let mut resp = siren_response(render::render_resource(&h, &snap));
     *resp.status_mut() = StatusCode::CREATED;
     resp.headers_mut().insert(
         http::header::LOCATION,
-        HeaderValue::from_str(h.resource_url(&rsnap.id).as_str()).unwrap(),
+        HeaderValue::from_str(h.resource_url(&snap.id).as_str()).unwrap(),
     );
     resp
 }
@@ -559,16 +560,24 @@ async fn resource_get(
 
 async fn resource_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri, id: &str) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
-    let id = match uuid::Uuid::parse_str(id) {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid resource id").into_response(),
-    };
-    match core.get_device(&id).await {
-        Some(d) => {
-            let rsnap = d.to_resource_snapshot(&core.name);
-            siren_response(render::render_resource(&h, &rsnap))
+    match core.get_resource(id).await {
+        Ok(Some(snapshot)) => siren_response(render::render_resource(&h, &snapshot)),
+        Ok(None) => (StatusCode::NOT_FOUND, "unknown resource").into_response(),
+        Err(ResourceReadError::NotFound) => {
+            (StatusCode::NOT_FOUND, "unknown resource").into_response()
         }
-        None => (StatusCode::NOT_FOUND, "unknown resource").into_response(),
+        Err(ResourceReadError::Unavailable(msg)) => problem_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "resource-unavailable",
+            &msg,
+            None,
+        ),
+        Err(ResourceReadError::InvalidId) => {
+            (StatusCode::BAD_REQUEST, "invalid resource id").into_response()
+        }
+        Err(ResourceReadError::Internal(msg)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+        }
     }
 }
 
@@ -620,51 +629,61 @@ async fn transition_response(
         }
     };
 
-    let id = match uuid::Uuid::parse_str(id) {
-        Ok(id) => id,
-        Err(_) => {
-            return problem_response(
-                StatusCode::BAD_REQUEST,
-                "invalid-resource-id",
-                "resource id must be a UUID",
-                Some("id"),
-            );
-        }
-    };
-    if core.get_device(&id).await.is_none() {
-        return problem_response(
+    let request_ctx = RequestCtx::from_headers(headers);
+    match core
+        .run_resource_transition(id, transition, TransitionInput { fields }, request_ctx)
+        .await
+    {
+        Ok(outcome) => transition_outcome_response(outcome),
+        Err(ResourceTransitionError::InvalidId) => problem_response(
+            StatusCode::BAD_REQUEST,
+            "invalid-resource-id",
+            "resource id must be a UUID",
+            Some("id"),
+        ),
+        Err(ResourceTransitionError::NotFound) => problem_response(
             StatusCode::NOT_FOUND,
             "resource-not-found",
             "unknown resource",
             Some("id"),
-        );
-    }
-
-    let request_ctx = RequestCtx::from_headers(headers);
-    match core
-        .run_transition(&id, transition, TransitionInput { fields }, request_ctx)
-        .await
-    {
-        Ok(snap) => {
-            let rsnap = snap.to_resource_snapshot(&core.name);
-            transition_outcome_response(TransitionOutcome::Completed {
-                output: None,
-                snapshot: rsnap,
-            })
-        }
-        Err(crate::core::DeviceError::NotAllowed(msg)) => problem_response(
+        ),
+        Err(ResourceTransitionError::NotAllowed(msg)) => problem_response(
             StatusCode::CONFLICT,
             "transition-not-allowed",
             &msg,
             Some("transition"),
         ),
-        Err(crate::core::DeviceError::Invalid(msg)) => {
+        Err(ResourceTransitionError::InvalidInput(msg)) => {
             problem_response(StatusCode::BAD_REQUEST, "invalid-input", &msg, None)
         }
-        Err(crate::core::DeviceError::Conflict(msg)) => {
+        Err(ResourceTransitionError::Conflict(msg)) => {
             problem_response(StatusCode::CONFLICT, "conflict", &msg, None)
         }
-        Err(crate::core::DeviceError::Internal(msg)) => {
+        Err(ResourceTransitionError::Busy) => problem_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "busy",
+            "resource actor is busy",
+            Some("transition"),
+        ),
+        Err(ResourceTransitionError::BackpressureRequired) => problem_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "backpressure-required",
+            "resource actor requires caller backpressure",
+            Some("transition"),
+        ),
+        Err(ResourceTransitionError::Timeout) => problem_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "timeout",
+            "resource actor transition timed out",
+            Some("transition"),
+        ),
+        Err(ResourceTransitionError::Unavailable(msg)) => problem_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "resource-unavailable",
+            &msg,
+            Some("id"),
+        ),
+        Err(ResourceTransitionError::Internal(msg)) => {
             problem_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &msg, None)
         }
     }
@@ -933,12 +952,10 @@ async fn meta_type_get(
 
 async fn meta_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
-    let devices = core.list_devices().await;
-    let types: Vec<render::KindMeta> = devices
+    let specs = core.actor_specs().await;
+    let types: Vec<render::KindMeta> = specs
         .iter()
-        .map(|device| render::KindMeta {
-            spec: device.to_actor_spec(),
-        })
+        .map(|spec| render::KindMeta { spec: spec.clone() })
         .collect();
     siren_response(render::render_meta(&h, &types))
 }
@@ -950,13 +967,11 @@ async fn meta_type_response(
     ty: &str,
 ) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
-    let devices = core.list_devices().await;
-    let Some(spec) = devices
+    let specs = core.actor_specs().await;
+    let Some(spec) = specs
         .iter()
-        .find(|device| device.type_ == ty)
-        .map(|device| render::KindMeta {
-            spec: device.to_actor_spec(),
-        })
+        .find(|spec| spec.resource.kind == ty)
+        .map(|spec| render::KindMeta { spec: spec.clone() })
     else {
         return (StatusCode::NOT_FOUND, "unknown type").into_response();
     };
@@ -1060,22 +1075,6 @@ async fn initiate_peer(State(state): State<AppState>, Path(id): Path<String>) ->
     }
 }
 
-fn filter_by_ql(
-    devices: &[super::core::DeviceSnapshot],
-    ql: &str,
-    node_name: &str,
-) -> Result<Vec<super::core::DeviceSnapshot>, crate::query::QueryError> {
-    let q = crate::caql::parse(ql)?;
-    let mut out = Vec::with_capacity(devices.len());
-    for d in devices {
-        let snap = d.to_resource_snapshot(node_name);
-        if crate::query::matches(&q, &snap.to_query_value())? {
-            out.push(d.clone());
-        }
-    }
-    Ok(out)
-}
-
 fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
     let body = serde_json::json!({
         "error": "query-parse-error",
@@ -1094,6 +1093,7 @@ fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
 mod tests {
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+    use serde_json::Value as JsonValue;
     use tower::ServiceExt;
 
     use super::*;

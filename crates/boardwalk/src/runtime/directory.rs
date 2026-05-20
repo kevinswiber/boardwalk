@@ -4,13 +4,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::executor::{ActorHandle, ActorSlot};
-use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
+use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot, TransitionAffordance};
+use super::transition::{ActorSpec, ResourceSpec};
 
 /// One registered entry in the directory. Holds the live actor task
 /// handle so the node can shut it down deterministically.
 pub(crate) struct Entry {
     pub id: String,
     pub kind: String,
+    pub resource_spec: ResourceSpec,
     pub handle: ActorHandle,
     pub task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -57,6 +59,7 @@ impl ResourceDirectory {
         id: String,
         kind: String,
         slot: ActorSlot,
+        resource_spec: ResourceSpec,
     ) -> Result<(), ResourceError> {
         if self.by_id.contains_key(&id) {
             return Err(ResourceError::Internal(format!(
@@ -66,6 +69,7 @@ impl ResourceDirectory {
         let entry = Arc::new(Entry {
             id: id.clone(),
             kind,
+            resource_spec,
             handle: slot.handle,
             task: tokio::sync::Mutex::new(Some(slot.task)),
         });
@@ -90,5 +94,20 @@ impl Entry {
         snap.kind = self.kind.clone();
         snap.node = node.to_string();
         Ok(snap)
+    }
+
+    pub(crate) async fn actor_spec(
+        &self,
+        ctx: ResourceCtx,
+        node: &str,
+    ) -> Result<ActorSpec, ResourceError> {
+        let transitions: Vec<TransitionAffordance> = self.snapshot(ctx, node).await?.transitions;
+        Ok(ActorSpec {
+            resource: self.resource_spec.clone(),
+            transitions: transitions
+                .into_iter()
+                .map(|affordance| affordance.spec)
+                .collect(),
+        })
     }
 }

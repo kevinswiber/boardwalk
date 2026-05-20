@@ -32,6 +32,8 @@ mod peer_resources;
 mod persist;
 #[path = "../tests/internal/replay_records_on_publish.rs"]
 mod replay_records_on_publish;
+#[path = "../tests/internal/resource_actor_http_core.rs"]
+mod resource_actor_http_core;
 #[path = "../tests/internal/resource_event_wire_shape.rs"]
 mod resource_event_wire_shape;
 #[path = "../tests/internal/resource_hypermedia.rs"]
