@@ -1,54 +1,65 @@
 #!/usr/bin/env bash
 #
-# Smoke test: HTTP NDJSON event stream carries envelope fields.
+# Smoke test: job-runner HTTP NDJSON event stream carries envelope fields.
 #
 # Usage:
-#   1. In one terminal, start the demo hub:
-#        cargo run --bin hello-led
+#   1. In one terminal, start the long-running job-runner example:
+#        cargo run -p boardwalk-job-runner-example
 #   2. In another terminal, run this script:
 #        bash scripts/smoke-ndjson.sh
 #
 # What it does:
-#   - Looks up the LED's device id at /servers/hub
-#   - Opens a streaming GET against /servers/hub/events?topic=hub/led/<id>/state
-#   - In the background, POSTs `turn-on` so an envelope flows
+#   - Confirms the job-runner node is reachable at /servers/runner
+#   - POSTs `submit` to the queue actor through /resources
+#   - Opens the returned progress NDJSON stream for that job
 #   - Prints the first NDJSON line and the envelope fields it carries
 
 set -euo pipefail
 
-HOST=${HOST:-http://localhost:1337}
+HOST=${HOST:-http://localhost:4000}
+QUEUE_ID=${QUEUE_ID:-queue-default}
+SERVER=${SERVER:-runner}
 
-if ! curl -sf -o /dev/null "$HOST/servers/hub"; then
-    echo "error: $HOST/servers/hub did not respond" >&2
-    echo "       run 'cargo run --bin hello-led' first" >&2
+if ! curl -sf -o /dev/null "$HOST/servers/$SERVER"; then
+    echo "error: $HOST/servers/$SERVER did not respond" >&2
+    echo "       run 'cargo run -p boardwalk-job-runner-example' first" >&2
     exit 1
 fi
 
-ID=$(curl -sf "$HOST/servers/hub" | jq -r '.entities[0].properties.id')
-TOPIC="hub/led/${ID}/state"
-URL="$HOST/servers/hub/events?topic=$TOPIC"
+SUBMIT_URL="$HOST/resources/$QUEUE_ID/transitions/submit"
+SUBMITTED=$(
+    curl -sf -X POST "$SUBMIT_URL" \
+        -H "content-type: application/json" \
+        -d '{"command":{"type":"success-after-ticks","ticks":4},"owner":"smoke","priority":1}'
+)
 
-echo "device id: $ID"
-echo "topic:     $TOPIC"
-echo "url:       $URL"
+JOB_ID=$(jq -r '.output.jobId // empty' <<<"$SUBMITTED")
+JOB_HREF=$(jq -r '.output.href // empty' <<<"$SUBMITTED")
+PROGRESS_HREF=$(jq -r '.output.streams.progress // empty' <<<"$SUBMITTED")
+
+if [[ -z "$JOB_ID" || -z "$PROGRESS_HREF" ]]; then
+    echo "error: submit response did not include jobId and progress stream href" >&2
+    echo "$SUBMITTED" | jq . >&2
+    exit 1
+fi
+
+case "$PROGRESS_HREF" in
+    http://*|https://*) URL="$PROGRESS_HREF" ;;
+    /*) URL="$HOST$PROGRESS_HREF" ;;
+    *) URL="$HOST/$PROGRESS_HREF" ;;
+esac
+
+echo "queue:    $QUEUE_ID"
+echo "job id:   $JOB_ID"
+echo "job href: $JOB_HREF"
+echo "url:      $URL"
 echo
-echo "opening NDJSON stream + triggering one transition..."
+echo "opening NDJSON stream for the submitted job..."
 
-# Open the NDJSON stream and capture the first line. Body is unbuffered
-# so the line shows up the instant the server flushes it.
-(
-    sleep 0.15
-    curl -sf -X POST "$HOST/servers/hub/devices/$ID" \
-         -H "content-type: application/x-www-form-urlencoded" \
-         -d "action=turn-on" >/dev/null
-) &
-TRIGGER_PID=$!
-
-LINE=$(curl -Nsf --max-time 3 "$URL" | head -1 || true)
-wait "$TRIGGER_PID" 2>/dev/null || true
+LINE=$(curl -Nsf --max-time 5 "$URL" | head -1 || true)
 
 if [[ -z "$LINE" ]]; then
-    echo "error: no NDJSON line received within 3s" >&2
+    echo "error: no NDJSON line received within 5s" >&2
     exit 1
 fi
 
@@ -72,7 +83,7 @@ jq -r '"  payloadVersion: " + ((.payloadVersion // "(missing)") | tostring)' <<<
 jq -r '"  envelopeVersion:" + ((.envelopeVersion// "(missing)") | tostring)' <<<"$LINE"
 jq -r '"  isoTimestamp:   " + (.isoTimestamp   // "(missing)")' <<<"$LINE"
 echo
-echo "legacy fields (byte-identical to pre-envelope wire):"
+echo "stream payload fields:"
 jq -r '"  topic:          " + (.topic          // "(missing)")' <<<"$LINE"
 jq -r '"  timestamp:      " + ((.timestamp     // "(missing)") | tostring)' <<<"$LINE"
 jq -r '"  data:           " + ((.data          // "(missing)") | tostring)' <<<"$LINE"

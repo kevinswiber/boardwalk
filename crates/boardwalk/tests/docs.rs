@@ -34,6 +34,8 @@ const PUBLIC_MARKDOWN_DOCS: &[&str] = &[
     "examples/job-runner/README.md",
 ];
 
+const PUBLIC_SMOKE_SCRIPTS: &[&str] = &["scripts/smoke-ndjson.sh", "scripts/smoke-ws.sh"];
+
 fn public_docs(paths: &[&str]) -> String {
     paths
         .iter()
@@ -187,6 +189,10 @@ fn docs_describe_reusable_actor_http_runtime() {
 
     let job_runner = read("examples/job-runner/README.md");
     assert!(
+        job_runner.contains("cargo run -p boardwalk-job-runner-example"),
+        "job-runner README should use the real workspace package name"
+    );
+    assert!(
         job_runner.contains("Boardwalk::new()"),
         "job-runner README should show the reusable Boardwalk builder"
     );
@@ -208,6 +214,40 @@ fn docs_describe_reusable_actor_http_runtime() {
         !crate_docs.contains("older server-adapter exports"),
         "crate rustdoc should not describe transitional root exports"
     );
+}
+
+#[test]
+fn smoke_scripts_target_long_running_job_runner_example() {
+    let s = public_docs(PUBLIC_SMOKE_SCRIPTS);
+
+    assert!(
+        s.contains("cargo run -p boardwalk-job-runner-example"),
+        "smoke scripts should tell users to run the long-running job-runner example"
+    );
+    assert!(
+        s.contains("/servers/runner"),
+        "smoke scripts should probe the job-runner server"
+    );
+    assert!(
+        s.contains("QUEUE_ID=${QUEUE_ID:-queue-default}") && s.contains("/transitions/submit"),
+        "smoke scripts should trigger the job queue actor through the resource transition route"
+    );
+    assert!(
+        s.contains("runner/job/*/progress"),
+        "WS smoke should subscribe to job-runner progress events"
+    );
+
+    for stale in [
+        "hello-led",
+        "/servers/hub/devices",
+        "hub/led",
+        "action=turn-on",
+    ] {
+        assert!(
+            !s.contains(stale),
+            "smoke scripts should not depend on stale hello-led runtime detail `{stale}`"
+        );
+    }
 }
 
 #[test]

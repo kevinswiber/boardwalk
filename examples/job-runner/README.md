@@ -4,7 +4,7 @@ Runnable Boardwalk HTTP server built on the reusable Resource/Actor
 runtime.
 
 ```sh
-cargo run -p job-runner
+cargo run -p boardwalk-job-runner-example
 ```
 
 By default the server listens on `127.0.0.1:4000`. Override that with

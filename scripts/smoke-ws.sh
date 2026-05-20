@@ -1,54 +1,57 @@
 #!/usr/bin/env bash
 #
-# Smoke test: WS slow-consumer disconnect protocol.
+# Smoke test: job-runner WS slow-consumer disconnect protocol.
 #
 # Usage:
-#   1. In one terminal, start the demo hub:
-#        cargo run --bin hello-led
+#   1. In one terminal, start the long-running job-runner example:
+#        cargo run -p boardwalk-job-runner-example
 #   2. In another terminal, run this script:
 #        bash scripts/smoke-ws.sh
 #
 # What it does:
-#   - Looks up the LED's device id at /servers/hub
-#   - Opens a WS to /events and subscribes with outboundCapacity=1
+#   - Confirms the job-runner node is reachable at /servers/runner
+#   - Opens a WS to /events and subscribes to runner/job/*/progress
+#     with outboundCapacity=1
 #   - Reads the subscribe-ack, then *stops reading* for several seconds
-#   - Bursts background transitions so the bus's bounded subscription
+#   - Bursts background job submissions so the bus's bounded subscription
 #     overflows under the Disconnect slow-consumer policy
 #   - Resumes reading and prints the stream-gap that the WS forwarder
 #     emits over its out-of-band terminal channel
 #
-# Requires: bash, curl, jq, python3 (stdlib only — no extra deps).
+# Requires: bash, curl, python3 (stdlib only, no extra deps).
 
 set -euo pipefail
 
-HOST=${HOST:-http://localhost:1337}
-WS_HOST=${WS_HOST:-localhost:1337}
+HOST=${HOST:-http://localhost:4000}
+WS_HOST=${WS_HOST:-localhost:4000}
+QUEUE_ID=${QUEUE_ID:-queue-default}
+SERVER=${SERVER:-runner}
+TOPIC=${TOPIC:-runner/job/*/progress}
 
-if ! curl -sf -o /dev/null "$HOST/servers/hub"; then
-    echo "error: $HOST/servers/hub did not respond" >&2
-    echo "       run 'cargo run --bin hello-led' first" >&2
+if ! curl -sf -o /dev/null "$HOST/servers/$SERVER"; then
+    echo "error: $HOST/servers/$SERVER did not respond" >&2
+    echo "       run 'cargo run -p boardwalk-job-runner-example' first" >&2
     exit 1
 fi
 
-ID=$(curl -sf "$HOST/servers/hub" | jq -r '.entities[0].properties.id')
-TOPIC="hub/led/${ID}/state"
+SUBMIT_URL="$HOST/resources/$QUEUE_ID/transitions/submit"
 
-echo "device id: $ID"
-echo "topic:     $TOPIC"
-echo "ws host:   $WS_HOST"
+echo "queue:    $QUEUE_ID"
+echo "topic:    $TOPIC"
+echo "ws host:  $WS_HOST"
 echo
 
-# Burst-fire background transitions so the bus subscription (cap 1)
+# Burst-fire background submissions so the bus subscription (cap 1)
 # fills while the WS reader is paused inside Python. Parallel POSTs
 # saturate localhost TCP buffers faster than a serial loop.
 N_BURST=${N_BURST:-400}
 (
     sleep 1.0
     for i in $(seq 1 "$N_BURST"); do
-        if [[ $((i % 2)) -eq 0 ]]; then a=turn-off; else a=turn-on; fi
-        curl -sf -X POST "$HOST/servers/hub/devices/$ID" \
-             -H "content-type: application/x-www-form-urlencoded" \
-             -d "action=$a" >/dev/null &
+        curl -sf -X POST "$SUBMIT_URL" \
+             -H "content-type: application/json" \
+             -d '{"command":{"type":"success-after-ticks","ticks":6},"owner":"smoke","priority":1}' \
+             >/dev/null &
     done
     wait
 ) &
