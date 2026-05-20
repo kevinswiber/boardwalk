@@ -23,14 +23,17 @@ gets forwarded over the tunnel.
 ## Setting up a link
 
 Federation today is configured through the `Boardwalk::new()` server adapter.
-Actors built with `NodeBuilder` need an HTTP adapter, such as the job-runner
-example's local router, before they are reachable over peer-forwarded requests.
+Actors registered with `Boardwalk::new().use_actor(...)` are served by the
+same local resource routes that peer-forwarded requests target. Actors built
+separately with `NodeBuilder` need to be registered through Boardwalk or wrapped
+with custom HTTP before they are reachable over peer-forwarded requests.
 
 **Hub side:**
 
 ```rust,ignore
 Boardwalk::new()
     .name("hub")
+    .use_actor(Led::default())
     .link("wss://cloud.example.com")
     .listen("127.0.0.1:1338".parse()?)
     .await?

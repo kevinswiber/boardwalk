@@ -9,9 +9,9 @@ use uuid::Uuid;
 use super::actor::{Actor, ActorCtx};
 use super::context::Publisher;
 use super::directory::ResourceDirectory;
-use super::executor::ActorHandle;
+use super::executor::{ActorHandle, ActorSlot};
 use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
-use super::transition::ActorSpec;
+use super::transition::{ActorSpec, ResourceSpec};
 use crate::events::{EventBus, StreamRegistry};
 
 /// Builder for a node runtime. Constructs the event bus, the shared
@@ -20,6 +20,7 @@ use crate::events::{EventBus, StreamRegistry};
 pub struct NodeBuilder {
     id: String,
     actor_queue_capacity: usize,
+    pending_actors: Vec<PendingActor>,
 }
 
 impl NodeBuilder {
@@ -27,6 +28,7 @@ impl NodeBuilder {
         Self {
             id: id.into(),
             actor_queue_capacity: 32,
+            pending_actors: Vec::new(),
         }
     }
 
@@ -35,16 +37,102 @@ impl NodeBuilder {
         self
     }
 
+    pub fn register_actor<A: Actor>(self, actor: A) -> Self {
+        let id = Uuid::new_v4().to_string();
+        self.register_with_id(id, actor)
+            .unwrap_or_else(|err| panic!("generated actor id must be unique: {err:?}"))
+    }
+
+    pub fn register_with_id<A: Actor>(
+        mut self,
+        id: impl Into<String>,
+        actor: A,
+    ) -> Result<Self, ResourceError> {
+        let id = id.into();
+        if self.pending_actors.iter().any(|pending| pending.id == id) {
+            return Err(ResourceError::Internal(format!(
+                "duplicate resource id: {id}"
+            )));
+        }
+        self.pending_actors.push(PendingActor::new(id, actor));
+        Ok(self)
+    }
+
+    /// Build the node, panicking if pending actor registration fails.
+    ///
+    /// Use [`NodeBuilder::try_build`] when the caller needs to handle
+    /// registration failures explicitly.
     pub fn build(self) -> Node {
+        self.try_build()
+            .unwrap_or_else(|err| panic!("NodeBuilder::build failed: {err:?}"))
+    }
+
+    /// Build the node and return any pending actor registration error.
+    pub fn try_build(self) -> Result<Node, ResourceError> {
         let stream_registry = StreamRegistry::new();
         let bus = EventBus::with_registry(stream_registry.clone());
-        Node {
+        let mut directory = ResourceDirectory::new();
+        for pending in self.pending_actors {
+            (pending.register)(
+                &mut directory,
+                &self.id,
+                &bus,
+                &stream_registry,
+                self.actor_queue_capacity,
+            )?;
+        }
+        Ok(Node {
             id: self.id,
             bus,
             stream_registry,
-            directory: Arc::new(RwLock::new(ResourceDirectory::new())),
+            directory: Arc::new(RwLock::new(directory)),
             actor_queue_capacity: self.actor_queue_capacity,
-        }
+        })
+    }
+}
+
+type RegisterPendingActor = Box<
+    dyn FnOnce(
+            &mut ResourceDirectory,
+            &str,
+            &EventBus,
+            &StreamRegistry,
+            usize,
+        ) -> Result<(), ResourceError>
+        + Send,
+>;
+
+struct PendingActor {
+    id: String,
+    register: RegisterPendingActor,
+}
+
+impl PendingActor {
+    fn new<A: Actor>(id: String, actor: A) -> Self {
+        let register_id = id.clone();
+        let register = Box::new(
+            move |directory: &mut ResourceDirectory,
+                  node_id: &str,
+                  bus: &EventBus,
+                  stream_registry: &StreamRegistry,
+                  actor_queue_capacity: usize| {
+                if directory.contains_id(&register_id) {
+                    return Err(ResourceError::Internal(format!(
+                        "duplicate resource id: {register_id}"
+                    )));
+                }
+                let (kind, slot, spec) = spawn_actor_entry(
+                    actor,
+                    node_id,
+                    register_id.clone(),
+                    bus,
+                    stream_registry,
+                    actor_queue_capacity,
+                );
+                directory.insert(register_id, kind, slot, spec)
+            },
+        );
+        Self { id, register }
     }
 }
 
@@ -95,13 +183,6 @@ impl Node {
         id: String,
         actor: A,
     ) -> Result<(), ResourceError> {
-        let spec = actor.spec();
-        let kind = spec.kind.clone();
-        let labels = spec.labels.clone();
-        let publisher = Publisher::new(self.bus.clone(), self.stream_registry.clone());
-        let actor_ctx = ActorCtx::new(self.id.clone(), id.clone(), kind.clone(), labels)
-            .with_publisher(publisher);
-
         // Hold the write lock across spawn so the uniqueness check and
         // the entry insertion are atomic. Spawning is cheap (channel +
         // task creation) so this doesn't block other registrations
@@ -112,9 +193,14 @@ impl Node {
                 "duplicate resource id: {id}"
             )));
         }
-        let (handle, task) =
-            ActorHandle::spawn_with_task(actor, self.actor_queue_capacity, actor_ctx);
-        let slot = super::executor::ActorSlot { handle, task };
+        let (kind, slot, spec) = spawn_actor_entry(
+            actor,
+            &self.id,
+            id.clone(),
+            &self.bus,
+            &self.stream_registry,
+            self.actor_queue_capacity,
+        );
         dir.insert(id, kind, slot, spec)
     }
 
@@ -179,4 +265,23 @@ impl Node {
             }
         }
     }
+}
+
+fn spawn_actor_entry<A: Actor>(
+    actor: A,
+    node_id: &str,
+    id: String,
+    bus: &EventBus,
+    stream_registry: &StreamRegistry,
+    actor_queue_capacity: usize,
+) -> (String, ActorSlot, ResourceSpec) {
+    let spec = actor.spec();
+    let kind = spec.kind.clone();
+    let labels = spec.labels.clone();
+    let publisher = Publisher::new(bus.clone(), stream_registry.clone());
+    let actor_ctx =
+        ActorCtx::new(node_id.to_string(), id, kind.clone(), labels).with_publisher(publisher);
+    let (handle, task) = ActorHandle::spawn_with_task(actor, actor_queue_capacity, actor_ctx);
+    let slot = ActorSlot { handle, task };
+    (kind, slot, spec)
 }

@@ -16,11 +16,12 @@ GET  /resources/{id}
 POST /resources/{id}/transitions/{transition}
 ```
 
-The reusable Boardwalk router serves those routes from the existing
-server adapter today. Actors registered directly with `NodeBuilder` are
-not automatically exposed through that router; the `examples/job-runner`
-package owns an example-local actor-backed adapter that demonstrates the
-end-to-end flow.
+The reusable Boardwalk router serves those routes from a `Node` runtime.
+Actors registered with `Boardwalk::new().use_actor(...)` are exposed
+through the local resource routes. Code that builds a `Node` directly
+with `NodeBuilder` keeps owning that node and can wrap it with custom
+HTTP when needed; the `examples/job-runner` package still owns an
+example-local adapter until it moves onto the reusable builder.
 
 Peer-forwarded routes mirror the same vocabulary under a server name:
 
@@ -160,5 +161,5 @@ progress/log/lifecycle streams explicitly, and uses
 `SlowConsumerPolicy::Coalesce` for progress updates.
 
 That package owns a small HTTP adapter so the example can be exercised
-end to end. It is example-local; Boardwalk does not yet expose a
-reusable actor-backed HTTP facade as a general library contract.
+end to end. It is example-local until the example moves onto the
+reusable Boardwalk builder.

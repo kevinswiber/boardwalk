@@ -73,17 +73,20 @@ pub(crate) enum ResourceTransitionError {
 
 /// Builder used by `boardwalk-server`. Adapter resources are held
 /// un-Mutex'd until `build()` so `on_start` can be called with `&self`.
+#[allow(dead_code)]
 pub struct CoreBuilder {
     name: String,
     pending: Vec<PendingDevice>,
 }
 
+#[allow(dead_code)]
 struct PendingDevice {
     id: DeviceId,
     config: DeviceConfig,
     device: Box<dyn Device>,
 }
 
+#[allow(dead_code)]
 impl CoreBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -248,15 +251,22 @@ impl Core {
         let _ = self.device_changes.send(());
     }
 
+    pub(crate) fn notify_resource_registered(&self) {
+        let _ = self.device_changes.send(());
+    }
+
     pub async fn list_resources(&self) -> Vec<ResourceSnapshot> {
+        let mut out = Vec::new();
         if let Some(node) = &self.actor_node {
-            return node.resources().await;
+            out.extend(node.resources().await);
         }
-        self.list_devices()
-            .await
-            .iter()
-            .map(|device| device.to_resource_snapshot(&self.name))
-            .collect()
+        out.extend(
+            self.list_devices()
+                .await
+                .iter()
+                .map(|device| device.to_resource_snapshot(&self.name)),
+        );
+        out
     }
 
     pub async fn query_resources(
@@ -279,17 +289,20 @@ impl Core {
     ) -> Result<Option<ResourceSnapshot>, ResourceReadError> {
         if let Some(node) = &self.actor_node {
             let handle = NodeHandle::new(node.clone());
-            let Some(proxy) = handle.resource(id).await else {
-                return Ok(None);
-            };
-            return proxy
-                .snapshot()
-                .await
-                .map(Some)
-                .map_err(resource_read_error);
+            if let Some(proxy) = handle.resource(id).await {
+                return proxy
+                    .snapshot()
+                    .await
+                    .map(Some)
+                    .map_err(resource_read_error);
+            }
         }
 
-        let id = uuid::Uuid::parse_str(id).map_err(|_| ResourceReadError::InvalidId)?;
+        let id = match uuid::Uuid::parse_str(id) {
+            Ok(id) => id,
+            Err(_) if self.actor_node.is_some() => return Ok(None),
+            Err(_) => return Err(ResourceReadError::InvalidId),
+        };
         Ok(self
             .get_device(&id)
             .await
@@ -297,14 +310,17 @@ impl Core {
     }
 
     pub async fn actor_specs(&self) -> Vec<ActorSpec> {
+        let mut out = Vec::new();
         if let Some(node) = &self.actor_node {
-            return node.actor_specs().await;
+            out.extend(node.actor_specs().await);
         }
-        self.list_devices()
-            .await
-            .iter()
-            .map(DeviceSnapshot::to_actor_spec)
-            .collect()
+        out.extend(
+            self.list_devices()
+                .await
+                .iter()
+                .map(DeviceSnapshot::to_actor_spec),
+        );
+        out
     }
 
     pub async fn run_resource_transition(
@@ -316,27 +332,30 @@ impl Core {
     ) -> Result<TransitionOutcome, ResourceTransitionError> {
         if let Some(node) = &self.actor_node {
             let handle = NodeHandle::new(node.clone());
-            let Some(proxy) = handle.resource(id).await else {
-                return Err(ResourceTransitionError::NotFound);
-            };
-            let ctx = TransitionCtx::with_node(request, node.clone());
-            let outcome = proxy
-                .transition_with_ctx(ctx, name, input)
-                .await
-                .map_err(resource_transition_error)?;
-            return match outcome {
-                TransitionOutcome::Completed { output, .. } => {
-                    let snapshot = proxy
-                        .snapshot()
-                        .await
-                        .map_err(resource_error_to_transition)?;
-                    Ok(TransitionOutcome::Completed { output, snapshot })
-                }
-                TransitionOutcome::Accepted { .. } => Ok(outcome),
-            };
+            if let Some(proxy) = handle.resource(id).await {
+                let ctx = TransitionCtx::with_node(request.clone(), node.clone());
+                let outcome = proxy
+                    .transition_with_ctx(ctx, name, input.clone())
+                    .await
+                    .map_err(resource_transition_error)?;
+                return match outcome {
+                    TransitionOutcome::Completed { output, .. } => {
+                        let snapshot = proxy
+                            .snapshot()
+                            .await
+                            .map_err(resource_error_to_transition)?;
+                        Ok(TransitionOutcome::Completed { output, snapshot })
+                    }
+                    TransitionOutcome::Accepted { .. } => Ok(outcome),
+                };
+            }
         }
 
-        let id = uuid::Uuid::parse_str(id).map_err(|_| ResourceTransitionError::InvalidId)?;
+        let id = match uuid::Uuid::parse_str(id) {
+            Ok(id) => id,
+            Err(_) if self.actor_node.is_some() => return Err(ResourceTransitionError::NotFound),
+            Err(_) => return Err(ResourceTransitionError::InvalidId),
+        };
         if self.get_device(&id).await.is_none() {
             return Err(ResourceTransitionError::NotFound);
         }

@@ -145,6 +145,12 @@ async fn app_runs_and_transitions_device() {
     assert!(fired.load(Ordering::SeqCst), "app should have run");
 
     // The LED should now be in the `on` state.
-    let snap = built.core.list_devices().await.into_iter().next().unwrap();
-    assert_eq!(snap.state, "on");
+    let snap = built
+        .core
+        .list_resources()
+        .await
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(snap.state.as_deref(), Some("on"));
 }

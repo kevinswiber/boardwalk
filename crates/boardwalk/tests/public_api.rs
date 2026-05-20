@@ -2,6 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use boardwalk::runtime::{DynFuture, ResourceCtx, ResourceError, TransitionCtx, TransitionError};
+use boardwalk::{
+    Actor, Boardwalk, Resource, ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome,
+};
+
 fn read(rel: &str) -> String {
     // Tests run from the crate directory.
     let path = format!("../../{rel}");
@@ -64,6 +69,56 @@ fn collect_files(root: &Path, out: &mut Vec<PathBuf>) {
 }
 
 const PERMITTED_LEGACY_PUBLIC_REFERENCES: &[&str] = &[];
+
+#[derive(Default)]
+struct FacadeLed;
+
+impl Resource for FacadeLed {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some("Facade LED".into()),
+            ..Default::default()
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async {
+            Ok(ResourceSnapshot {
+                id: "ignored".into(),
+                kind: "led".into(),
+                name: Some("Facade LED".into()),
+                state: Some("off".into()),
+                node: "ignored".into(),
+                properties: serde_json::Map::new(),
+                labels: Default::default(),
+                transitions: Vec::new(),
+                streams: Vec::new(),
+                revision: None,
+                metadata: serde_json::Map::new(),
+            })
+        })
+    }
+}
+
+impl Actor for FacadeLed {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("no transitions".into())) })
+    }
+}
+
+#[test]
+fn boardwalk_builder_accepts_resource_actor_without_private_adapter_traits() {
+    let _server = Boardwalk::new().name("hub").use_actor(FacadeLed);
+}
 
 #[test]
 fn public_api_no_longer_exports_device_names() {
@@ -210,11 +265,12 @@ fn runtime_owns_final_resource_and_transition_contracts() {
 #[test]
 fn boardwalk_builder_does_not_expose_private_adapter_surface() {
     let server = read("crates/boardwalk/src/server.rs");
+    let routes = read("crates/boardwalk/src/http/routes.rs");
     for snippet in [
-        "pub fn use_actor",
         "pub fn use_app",
         "pub fn use_scout",
         "pub fn register_factory",
+        "pub fn register_actor_factory",
         "pub fn build(self) -> anyhow::Result<Built>",
         "pub struct Built",
         "pub use crate::peer::PeerAcceptors",
@@ -224,6 +280,18 @@ fn boardwalk_builder_does_not_expose_private_adapter_surface() {
             "Boardwalk public facade must not expose private adapter surface `{snippet}`"
         );
     }
+    assert!(
+        !routes.contains("Boardwalk::register_factory"),
+        "resource routes must not point users at removed builder APIs"
+    );
+    assert!(
+        server.contains("pub fn use_actor<A: Actor>"),
+        "Boardwalk should expose actor-native registration"
+    );
+    assert!(
+        !server.contains("Vec<Box<dyn Device>>"),
+        "Boardwalk must not collect boxed private adapter resources"
+    );
 }
 
 #[test]

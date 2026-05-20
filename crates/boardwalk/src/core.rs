@@ -16,7 +16,10 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::runtime::{
-    FieldSpec, StateName, StreamKind, StreamSpec, TransitionInput, TransitionName, TransitionSpec,
+    Actor, ActorCtx, FieldSpec, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
+    ResourceSpec, SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance,
+    TransitionCtx, TransitionError, TransitionInput, TransitionName, TransitionOutcome,
+    TransitionSpec, sanitize_properties,
 };
 
 /// Identifier assigned by the private server adapter to each resource.
@@ -177,6 +180,155 @@ impl DeviceConfig {
     }
 }
 
+impl<T: Device> Resource for T {
+    fn spec(&self) -> ResourceSpec {
+        let cfg = device_config(self);
+        ResourceSpec {
+            kind: cfg.type_.unwrap_or_else(|| "unknown".into()),
+            name: cfg.name,
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: cfg.streams,
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move { Ok(device_resource_snapshot(self, "ignored", "ignored")) })
+    }
+}
+
+impl<T: Device> Actor for T {
+    fn transition<'a>(
+        &'a mut self,
+        ctx: TransitionCtx,
+        name: &'a str,
+        input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async move {
+            let cfg = device_config(self);
+            let prior_state = self.state().to_string();
+            if !cfg.allowed_in(&prior_state).iter().any(|t| t == name) {
+                return Err(TransitionError::NotAllowed(format!(
+                    "transition `{name}` not allowed in state `{prior_state}`"
+                )));
+            }
+
+            <T as Device>::transition(self, name, input)
+                .await
+                .map_err(device_transition_error)?;
+
+            let new_state = self.state().to_string();
+            if prior_state != new_state && cfg.monitored.iter().any(|stream| stream == "state") {
+                let _ = ctx
+                    .publish(
+                        "state",
+                        "resource.state.changed",
+                        1,
+                        Value::String(new_state),
+                    )
+                    .await;
+            }
+
+            let id = ctx.resource_id().unwrap_or("ignored");
+            Ok(TransitionOutcome::Completed {
+                output: None,
+                snapshot: device_resource_snapshot(self, id, ctx.node()),
+            })
+        })
+    }
+
+    fn on_start<'a>(
+        &'a mut self,
+        ctx: ActorCtx,
+    ) -> DynFuture<'a, Result<(), crate::runtime::ActorError>> {
+        Box::pin(async move {
+            let id =
+                uuid::Uuid::parse_str(ctx.resource_id()).unwrap_or_else(|_| uuid::Uuid::new_v4());
+            let device_ctx = DeviceCtx {
+                id,
+                type_: ctx.resource_kind().to_string(),
+                publish: Arc::new(ActorStreamSink { ctx }),
+            };
+            <T as Device>::on_start(self, device_ctx);
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ActorStreamSink {
+    ctx: ActorCtx,
+}
+
+impl StreamSink for ActorStreamSink {
+    fn publish(&self, stream: &str, data: Value) {
+        let ctx = self.ctx.clone();
+        let stream = stream.to_string();
+        tokio::spawn(async move {
+            let _ = ctx.publish(&stream, "resource.stream.data", 1, data).await;
+        });
+    }
+}
+
+fn device_config(device: &impl Device) -> DeviceConfig {
+    let mut cfg = DeviceConfig::default();
+    device.config(&mut cfg);
+    cfg
+}
+
+fn device_resource_snapshot(device: &impl Device, id: &str, node: &str) -> ResourceSnapshot {
+    let cfg = device_config(device);
+    let kind = cfg.type_.clone().unwrap_or_else(|| "unknown".into());
+    let state = device.state().to_string();
+    let allowed: std::collections::BTreeSet<&str> =
+        cfg.allowed_in(&state).iter().map(String::as_str).collect();
+    let transitions = cfg
+        .transitions
+        .values()
+        .map(|spec| TransitionAffordance {
+            spec: spec.clone(),
+            available: allowed.contains(spec.name.as_str()),
+            unavailable_reason: None,
+        })
+        .collect();
+    let streams = cfg
+        .streams
+        .iter()
+        .map(|stream| SnapshotStreamSpec {
+            name: stream.name.clone(),
+            kind: match stream.kind {
+                StreamKind::Object => "object".into(),
+                StreamKind::Binary => "binary".into(),
+            },
+        })
+        .collect();
+    ResourceSnapshot {
+        id: id.to_string(),
+        kind,
+        name: cfg.name,
+        state: Some(state),
+        node: node.to_string(),
+        properties: sanitize_properties(device.properties()),
+        labels: BTreeMap::new(),
+        transitions,
+        streams,
+        revision: None,
+        metadata: Map::new(),
+    }
+}
+
+fn device_transition_error(err: DeviceError) -> TransitionError {
+    match err {
+        DeviceError::Invalid(msg) => TransitionError::InvalidInput(msg),
+        DeviceError::Conflict(msg) => TransitionError::Conflict(msg),
+        DeviceError::NotAllowed(msg) => TransitionError::NotAllowed(msg),
+        DeviceError::Internal(msg) => TransitionError::Internal(msg),
+    }
+}
+
 /// Context handed to an adapter resource's startup hook. Lets it publish
 /// to declared streams.
 #[allow(dead_code)]
@@ -253,16 +405,36 @@ mod tests {
         assert!(cfg.streams.iter().any(|s| s.name == "state"));
         assert!(cfg.monitored.contains(&"state".to_string()));
 
-        led.transition("turn-on", TransitionInput::default())
+        Device::transition(&mut led, "turn-on", TransitionInput::default())
             .await
             .unwrap();
         assert_eq!(led.state(), "on");
 
-        let err = led
-            .transition("nope", TransitionInput::default())
+        let err = Device::transition(&mut led, "nope", TransitionInput::default())
             .await
             .unwrap_err();
         assert!(matches!(err, DeviceError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn blanket_device_actor_transition_keeps_state_publish_best_effort() {
+        let mut led = Led { on: false };
+        let outcome = Actor::transition(
+            &mut led,
+            TransitionCtx::new_test(),
+            "turn-on",
+            TransitionInput::default(),
+        )
+        .await
+        .expect("state publish failure should not fail transition");
+
+        assert_eq!(led.state(), "on");
+        match outcome {
+            TransitionOutcome::Completed { snapshot, .. } => {
+                assert_eq!(snapshot.state.as_deref(), Some("on"));
+            }
+            TransitionOutcome::Accepted { .. } => panic!("device transition should complete"),
+        }
     }
 
     #[test]

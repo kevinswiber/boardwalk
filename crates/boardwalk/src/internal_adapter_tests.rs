@@ -1,13 +1,13 @@
 #[path = "../tests/internal/apps.rs"]
 mod apps;
+#[path = "../tests/internal/boardwalk_builder.rs"]
+mod boardwalk_builder;
 #[path = "../tests/internal/event_envelope_minting.rs"]
 mod event_envelope_minting;
 #[path = "../tests/internal/event_envelope_state_change.rs"]
 mod event_envelope_state_change;
 #[path = "../tests/internal/event_id_to_stream_replay.rs"]
 mod event_id_to_stream_replay;
-#[path = "../tests/internal/factory.rs"]
-mod factory;
 #[path = "../tests/internal/http.rs"]
 mod http;
 #[path = "../tests/internal/http_stream_eager_unsub.rs"]
@@ -40,6 +40,8 @@ mod resource_event_wire_shape;
 mod resource_hypermedia;
 #[path = "../tests/internal/resource_query.rs"]
 mod resource_query;
+#[path = "../tests/internal/resource_registration.rs"]
+mod resource_registration;
 #[path = "../tests/internal/resource_snapshot_shape.rs"]
 mod resource_snapshot_shape;
 #[path = "../tests/internal/resource_transitions.rs"]

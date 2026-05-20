@@ -302,7 +302,7 @@ async fn server_renders_resource_actions_and_resource_entities() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert!(action_names.contains(&"query-resources"));
-    assert!(action_names.contains(&"register-resource"));
+    assert!(!action_names.contains(&"register-resource"));
     assert!(
         find_link_with_rels(&body, &["monitor"]).is_none(),
         "server view should not advertise an unfiltered monitor link"
@@ -495,17 +495,6 @@ async fn current_resource_siren_crawl_is_byte_stable() {
                 "href": "http://127.0.0.1:PORT/resources",
                 "type": "application/x-www-form-urlencoded",
                 "fields": [{"name": "ql", "type": "text"}]
-            },
-            {
-                "name": "register-resource",
-                "method": "POST",
-                "href": "http://127.0.0.1:PORT/resources",
-                "type": "application/x-www-form-urlencoded",
-                "fields": [
-                    {"name": "kind", "type": "text"},
-                    {"name": "id", "type": "text"},
-                    {"name": "name", "type": "text"}
-                ]
             }
         ]
     });

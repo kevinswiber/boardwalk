@@ -19,7 +19,8 @@ pub(crate) use peer_streams::PeerStreamHub;
 // Internal-only assembly types; surfaced to sibling modules
 // (`crate::server`, `crate::peer`) but not re-exported.
 pub(crate) use routes::{
-    AppState, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration, router_with,
+    AppState, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
+    ResourceRegistrationError, router_with,
 };
 #[allow(unused_imports)]
 pub(crate) use routes::{PeerSenders, router};

@@ -6,32 +6,98 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use url::Url;
 use uuid::Uuid;
 
-use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{
-    App, AppState, Core, CoreBuilder, PeerHandler, PeerInitState, ResourceRegistrar,
-    ResourceRegistration, Scout, ScoutCtx, ServerHandle, router_with,
+    App, AppState, Core, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
+    ResourceRegistrationError, Scout, ScoutCtx, ServerHandle, router_with,
 };
 use crate::peer::{PeerAcceptors, PeerClient};
 use crate::registry::{DeviceRecord, Registry};
+use crate::runtime::{
+    Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, Resource, ResourceCtx,
+    ResourceError, ResourceSnapshot, ResourceSpec, TransitionCtx, TransitionError, TransitionInput,
+    TransitionOutcome,
+};
 
 pub struct Boardwalk {
     name: String,
     peers: Vec<Url>,
-    devices: Vec<Box<dyn Device>>,
+    actors: Vec<PendingActor>,
+    actor_factories: HashMap<String, ActorFactory>,
     apps: Vec<Arc<dyn App>>,
     scouts: Vec<Arc<dyn Scout>>,
-    factories: HashMap<String, DeviceFactory>,
     persist_path: Option<PathBuf>,
 }
 
-/// Type-erased device factory used by `register_factory`.
-type DeviceFactory =
-    Arc<dyn Fn(HashMap<String, String>) -> Result<Box<dyn Device>, DeviceError> + Send + Sync>;
+type ActorFactory = Arc<
+    dyn Fn(ResourceRegistration) -> Result<FactoryActor, ResourceRegistrationError> + Send + Sync,
+>;
+
+struct FactoryActor {
+    inner: Box<dyn Actor>,
+}
+
+impl FactoryActor {
+    fn new<A: Actor>(actor: A) -> Self {
+        Self {
+            inner: Box::new(actor),
+        }
+    }
+}
+
+impl Resource for FactoryActor {
+    fn spec(&self) -> ResourceSpec {
+        self.inner.spec()
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        self.inner.snapshot(ctx)
+    }
+}
+
+impl Actor for FactoryActor {
+    fn transition<'a>(
+        &'a mut self,
+        ctx: TransitionCtx,
+        name: &'a str,
+        input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        self.inner.transition(ctx, name, input)
+    }
+
+    fn on_start<'a>(&'a mut self, ctx: ActorCtx) -> DynFuture<'a, Result<(), ActorError>> {
+        self.inner.on_start(ctx)
+    }
+
+    fn on_stop<'a>(&'a mut self, ctx: ActorCtx) -> DynFuture<'a, Result<(), ActorError>> {
+        self.inner.on_stop(ctx)
+    }
+}
+
+type RegisterPendingActor =
+    Box<dyn FnOnce(NodeBuilder, String) -> Result<NodeBuilder, ResourceError> + Send>;
+
+struct PendingActor {
+    spec: ResourceSpec,
+    register: RegisterPendingActor,
+}
+
+impl PendingActor {
+    fn new<A: Actor>(actor: A) -> Self {
+        let spec = actor.spec();
+        let register =
+            Box::new(move |builder: NodeBuilder, id: String| builder.register_with_id(id, actor));
+        Self { spec, register }
+    }
+}
 
 impl Default for Boardwalk {
     fn default() -> Self {
@@ -44,10 +110,10 @@ impl Boardwalk {
         Self {
             name: "boardwalk".to_string(),
             peers: Vec::new(),
-            devices: Vec::new(),
+            actors: Vec::new(),
+            actor_factories: HashMap::new(),
             apps: Vec::new(),
             scouts: Vec::new(),
-            factories: HashMap::new(),
             persist_path: None,
         }
     }
@@ -58,12 +124,25 @@ impl Boardwalk {
     }
 
     /// Register an actor with this Boardwalk instance.
-    ///
-    /// The HTTP server adapter still stores actors through the private
-    /// core [`Device`] compatibility trait.
+    pub fn use_actor<A: Actor>(mut self, actor: A) -> Self {
+        self.actors.push(PendingActor::new(actor));
+        self
+    }
+
     #[allow(dead_code)]
-    pub(crate) fn use_actor<D: Device>(mut self, d: D) -> Self {
-        self.devices.push(Box::new(d));
+    pub(crate) fn register_actor_factory<A, F>(
+        mut self,
+        kind: impl Into<String>,
+        factory: F,
+    ) -> Self
+    where
+        A: Actor,
+        F: Fn(ResourceRegistration) -> Result<A, ResourceRegistrationError> + Send + Sync + 'static,
+    {
+        self.actor_factories.insert(
+            kind.into(),
+            Arc::new(move |registration| Ok(FactoryActor::new(factory(registration)?))),
+        );
         self
     }
 
@@ -79,22 +158,6 @@ impl Boardwalk {
         self
     }
 
-    /// Register a factory for hubless resource registration. The factory
-    /// receives the form fields from `POST /resources` (minus the
-    /// standard `kind`/`id`/`name` fields, which are extracted
-    /// separately) and returns a freshly-built private adapter resource.
-    #[allow(dead_code)]
-    pub(crate) fn register_factory<F>(mut self, type_name: impl Into<String>, factory: F) -> Self
-    where
-        F: Fn(HashMap<String, String>) -> Result<Box<dyn Device>, DeviceError>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.factories.insert(type_name.into(), Arc::new(factory));
-        self
-    }
-
     pub fn link(mut self, url: impl AsRef<str>) -> Self {
         match Url::parse(url.as_ref()) {
             Ok(u) => self.peers.push(u),
@@ -103,7 +166,7 @@ impl Boardwalk {
         self
     }
 
-    /// Enable on-disk persistence of device + peer registries at the
+    /// Enable on-disk persistence of resource + peer registries at the
     /// supplied path (single redb file). Without this call, the runtime
     /// is purely in-memory.
     pub fn persist(mut self, path: impl Into<PathBuf>) -> Self {
@@ -145,14 +208,15 @@ impl Boardwalk {
         for t in built.scout_tasks {
             t.abort();
         }
+        built.node.shutdown(Duration::from_secs(1)).await;
         res
     }
 
     /// Build the runtime + router + spawn peer clients without binding.
     /// Useful for crate-local integration tests.
     pub(crate) fn build(self) -> anyhow::Result<Built> {
-        // Open the registry if persistence was requested. Device IDs
-        // are then stable across restarts (keyed by type + name).
+        // Open the registry if persistence was requested. Resource
+        // IDs are then stable across restarts (keyed by kind + name).
         let registry = self
             .persist_path
             .as_ref()
@@ -160,14 +224,18 @@ impl Boardwalk {
             .transpose()?
             .map(Arc::new);
 
-        let mut builder = CoreBuilder::new(self.name.clone());
-        for device in self.devices {
-            let mut cfg = DeviceConfig::default();
-            device.config(&mut cfg);
-            let id = resolve_device_id(&registry, &cfg)?;
-            builder.add_device_full(id, cfg, device);
+        let mut node_builder = NodeBuilder::new(self.name.clone());
+        for actor in self.actors {
+            let id = resolve_resource_id(&registry, &actor.spec)?;
+            node_builder = (actor.register)(node_builder, id)
+                .map_err(|err| anyhow::anyhow!("register actor: {err:?}"))?;
         }
-        let core: Arc<Core> = builder.build();
+        let node = Arc::new(
+            node_builder
+                .try_build()
+                .map_err(|err| anyhow::anyhow!("build node: {err:?}"))?,
+        );
+        let core: Arc<Core> = Core::from_node(node.clone());
 
         let peer_init = PeerInitState::default();
         let acceptors = PeerAcceptors::new();
@@ -190,40 +258,12 @@ impl Boardwalk {
         let peer_senders: Arc<dyn crate::http::PeerSenders> = Arc::new(acceptors.clone());
         let peer_streams = crate::http::PeerStreamHub::new();
 
-        // Hubless registration: build a registrar closure if any
-        // factories are registered.
-        let resource_registrar: Option<ResourceRegistrar> =
-            if self.factories.is_empty() {
-                None
-            } else {
-                let factories = Arc::new(self.factories);
-                let core_for = core.clone();
-                let registry_for = registry.clone();
-                Some(Arc::new(
-                    move |reg: ResourceRegistration| -> futures::future::BoxFuture<
-                        'static,
-                        Result<uuid::Uuid, DeviceError>,
-                    > {
-                        let factories = factories.clone();
-                        let core = core_for.clone();
-                        let registry = registry_for.clone();
-                        Box::pin(async move {
-                            let factory = factories.get(&reg.type_).ok_or_else(|| {
-                                DeviceError::Invalid(format!("unknown device type `{}`", reg.type_))
-                            })?;
-                            let device = factory(reg.fields)?;
-                            let mut cfg = DeviceConfig::default();
-                            device.config(&mut cfg);
-                            if let Some(n) = reg.name.clone() {
-                                cfg.name = Some(n);
-                            }
-                            let id = resolve_runtime_id(&registry, &reg.type_, &cfg, reg.id)?;
-                            core.register_device(id, cfg, device).await;
-                            Ok(id)
-                        })
-                    },
-                ))
-            };
+        let resource_registrar = build_resource_registrar(
+            self.actor_factories,
+            node.clone(),
+            core.clone(),
+            registry.clone(),
+        );
 
         let state = AppState {
             core: core.clone(),
@@ -275,6 +315,7 @@ impl Boardwalk {
 
         Ok(Built {
             core,
+            node,
             peer_tasks,
             app_tasks,
             scout_tasks,
@@ -286,19 +327,66 @@ impl Boardwalk {
     }
 }
 
-/// Look up a stable device ID by (type, name) identity, or mint a new
+fn build_resource_registrar(
+    factories: HashMap<String, ActorFactory>,
+    node: Arc<Node>,
+    core: Arc<Core>,
+    registry: Option<Arc<Registry>>,
+) -> Option<ResourceRegistrar> {
+    if factories.is_empty() {
+        return None;
+    }
+
+    let factories = Arc::new(factories);
+    Some(
+        Arc::new(
+            move |registration: ResourceRegistration| -> futures::future::BoxFuture<
+                'static,
+                Result<String, ResourceRegistrationError>,
+            > {
+                let factories = factories.clone();
+                let node = node.clone();
+                let core = core.clone();
+                let registry = registry.clone();
+                Box::pin(async move {
+                    let kind = registration.kind.clone();
+                    let explicit_id = registration.id;
+                    let factory = factories.get(&kind).ok_or_else(|| {
+                        ResourceRegistrationError::Invalid(format!(
+                            "unknown resource kind `{kind}`"
+                        ))
+                    })?;
+                    let actor = factory(registration)?;
+                    let spec = actor.spec();
+                    let id = resolve_registration_id(&registry, &spec, explicit_id)?;
+                    node.register_with_id(id.to_string(), actor)
+                        .await
+                        .map_err(registration_resource_error)?;
+                    persist_registered_resource(&registry, &spec, id)?;
+                    core.notify_resource_registered();
+                    Ok(id.to_string())
+                })
+            },
+        ),
+    )
+}
+
+/// Look up a stable resource ID by (kind, name) identity, or mint a new
 /// one and persist the record.
-fn resolve_device_id(registry: &Option<Arc<Registry>>, cfg: &DeviceConfig) -> anyhow::Result<Uuid> {
+fn resolve_resource_id(
+    registry: &Option<Arc<Registry>>,
+    spec: &ResourceSpec,
+) -> anyhow::Result<String> {
     let Some(reg) = registry.as_ref() else {
-        return Ok(Uuid::new_v4());
+        return Ok(Uuid::new_v4().to_string());
     };
-    let type_ = cfg.type_.as_deref().unwrap_or("unknown").to_string();
-    let name = cfg.name.clone();
+    let type_ = spec.kind.clone();
+    let name = spec.name.clone();
     if let Some(existing) = reg
         .find_device_by_identity(&type_, name.as_deref())
         .context("registry find")?
     {
-        return Ok(existing.id);
+        return Ok(existing.id.to_string());
     }
     let id = Uuid::new_v4();
     reg.put_device(&DeviceRecord {
@@ -308,52 +396,68 @@ fn resolve_device_id(registry: &Option<Arc<Registry>>, cfg: &DeviceConfig) -> an
         properties: serde_json::Map::new(),
     })
     .context("registry put")?;
-    Ok(id)
+    Ok(id.to_string())
 }
 
-/// Runtime variant for hubless registration. Honors a caller-supplied
-/// id; otherwise consults the registry for (type, name) identity.
-fn resolve_runtime_id(
+fn resolve_registration_id(
     registry: &Option<Arc<Registry>>,
-    type_: &str,
-    cfg: &DeviceConfig,
+    spec: &ResourceSpec,
     explicit: Option<Uuid>,
-) -> Result<Uuid, DeviceError> {
+) -> Result<Uuid, ResourceRegistrationError> {
     if let Some(id) = explicit {
-        if let Some(reg) = registry.as_ref() {
-            let _ = reg.put_device(&DeviceRecord {
-                id,
-                type_: type_.to_string(),
-                name: cfg.name.clone(),
-                properties: serde_json::Map::new(),
-            });
-        }
         return Ok(id);
     }
     let Some(reg) = registry.as_ref() else {
         return Ok(Uuid::new_v4());
     };
-    let found = reg
-        .find_device_by_identity(type_, cfg.name.as_deref())
-        .map_err(|e| DeviceError::Internal(format!("registry: {e}")))?;
-    if let Some(rec) = found {
-        return Ok(rec.id);
+    if let Some(existing) = reg
+        .find_device_by_identity(&spec.kind, spec.name.as_deref())
+        .map_err(registration_registry_error)?
+    {
+        return Ok(existing.id);
     }
-    let id = Uuid::new_v4();
+    Ok(Uuid::new_v4())
+}
+
+fn persist_registered_resource(
+    registry: &Option<Arc<Registry>>,
+    spec: &ResourceSpec,
+    id: Uuid,
+) -> Result<(), ResourceRegistrationError> {
+    let Some(reg) = registry.as_ref() else {
+        return Ok(());
+    };
     reg.put_device(&DeviceRecord {
         id,
-        type_: type_.to_string(),
-        name: cfg.name.clone(),
+        type_: spec.kind.clone(),
+        name: spec.name.clone(),
         properties: serde_json::Map::new(),
     })
-    .map_err(|e| DeviceError::Internal(format!("registry: {e}")))?;
-    Ok(id)
+    .map_err(registration_registry_error)
+}
+
+fn registration_registry_error(err: crate::registry::RegistryError) -> ResourceRegistrationError {
+    ResourceRegistrationError::Internal(format!("registry: {err}"))
+}
+
+fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {
+    match err {
+        ResourceError::NotFound(id) => {
+            ResourceRegistrationError::Invalid(format!("unknown resource `{id}`"))
+        }
+        ResourceError::Unavailable(msg) => ResourceRegistrationError::Internal(msg),
+        ResourceError::Internal(msg) if msg.starts_with("duplicate resource id: ") => {
+            ResourceRegistrationError::Conflict(msg)
+        }
+        ResourceError::Internal(msg) => ResourceRegistrationError::Internal(msg),
+    }
 }
 
 /// Materialized server pieces, returned by `Boardwalk::build()`.
 #[allow(dead_code)]
 pub(crate) struct Built {
     pub(crate) core: Arc<Core>,
+    pub(crate) node: Arc<Node>,
     pub(crate) peer_tasks: Vec<tokio::task::JoinHandle<()>>,
     pub(crate) app_tasks: Vec<tokio::task::JoinHandle<()>>,
     pub(crate) scout_tasks: Vec<tokio::task::JoinHandle<()>>,

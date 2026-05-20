@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -41,20 +41,28 @@ pub trait PeerSenders: Send + Sync + 'static {
     }
 }
 
-/// Inputs to the hubless resource registration flow (`POST /resources`).
+/// Parsed inputs to runtime resource registration (`POST /resources`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ResourceRegistration {
-    pub type_: String,
+    pub kind: String,
     pub name: Option<String>,
     pub id: Option<Uuid>,
-    pub fields: std::collections::HashMap<String, String>,
+    pub fields: HashMap<String, String>,
 }
 
-/// Callback supplied by `boardwalk-server` that consumes a registration,
-/// runs the appropriate private adapter factory, registers it with the Core
-/// (and the persistent registry), and returns its resource ID.
+/// Failure modes for actor-native runtime resource registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResourceRegistrationError {
+    Invalid(String),
+    Conflict(String),
+    Internal(String),
+}
+
+/// Callback supplied by the server builder that turns a registration
+/// request into a live resource actor and returns its assigned
+/// resource id.
 pub(crate) type ResourceRegistrar = Arc<
-    dyn Fn(ResourceRegistration) -> BoxFuture<'static, Result<Uuid, crate::core::DeviceError>>
+    dyn Fn(ResourceRegistration) -> BoxFuture<'static, Result<String, ResourceRegistrationError>>
         + Send
         + Sync,
 >;
@@ -463,7 +471,7 @@ async fn resources_post(
     let Some(registrar) = state.resource_registrar.clone() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "no factories registered; call Boardwalk::register_factory(...)",
+            "runtime resource registration is not enabled",
         )
             .into_response();
     };
@@ -482,7 +490,7 @@ async fn resources_post(
     let mut reg = ResourceRegistration::default();
     for (k, v) in pairs {
         match k.as_str() {
-            "kind" => reg.type_ = v,
+            "kind" => reg.kind = v,
             "name" => reg.name = Some(v),
             "id" => reg.id = Uuid::parse_str(&v).ok(),
             _ => {
@@ -490,21 +498,23 @@ async fn resources_post(
             }
         }
     }
-    if reg.type_.is_empty() {
+    if reg.kind.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing `kind` field").into_response();
     }
     let new_id = match registrar(reg).await {
         Ok(id) => id,
-        Err(crate::core::DeviceError::Invalid(msg)) => {
+        Err(ResourceRegistrationError::Invalid(msg)) => {
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
-        Err(crate::core::DeviceError::Conflict(msg)) => {
+        Err(ResourceRegistrationError::Conflict(msg)) => {
             return (StatusCode::CONFLICT, msg).into_response();
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        Err(ResourceRegistrationError::Internal(msg)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+        }
     };
     let h = build_hrefs(&headers, &uri, &state.core.name);
-    let snap = match state.core.get_resource(&new_id.to_string()).await {
+    let snap = match state.core.get_resource(&new_id).await {
         Ok(Some(snap)) => snap,
         Ok(None) => {
             return (

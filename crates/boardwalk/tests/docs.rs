@@ -135,12 +135,12 @@ fn crate_docs_show_resource_actor_imports() {
 fn docs_disclose_current_actor_http_adapter_boundaries() {
     let resources = read("docs/resources.md");
     assert!(
-        resources.contains("not automatically exposed"),
-        "resources.md should say NodeBuilder actors are not automatically exposed by the reusable HTTP router"
+        resources.contains("Boardwalk::new().use_actor"),
+        "resources.md should say Boardwalk actor registration is exposed through reusable HTTP"
     );
     assert!(
-        resources.contains("example-local actor-backed adapter"),
-        "resources.md should point to the job-runner adapter as example-local"
+        resources.contains("example-local adapter"),
+        "resources.md should keep the job-runner adapter boundary explicit"
     );
 
     let getting_started = read("docs/getting-started.md");
@@ -155,8 +155,8 @@ fn docs_disclose_current_actor_http_adapter_boundaries() {
 
     let peers = read("docs/peers.md");
     assert!(
-        peers.contains("`Boardwalk::new()` server adapter"),
-        "peers.md should name the current federation adapter"
+        peers.contains("Boardwalk::new().use_actor"),
+        "peers.md should show actor registration through the Boardwalk builder"
     );
     assert!(
         peers.contains("`NodeBuilder`"),

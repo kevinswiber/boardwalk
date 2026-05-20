@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
-use super::core::Core;
+use super::core::{Core, ResourceTransitionError};
 use crate::core::{Device, DeviceConfig, DeviceError, DeviceId};
 use crate::runtime::{RequestCtx, TransitionInput};
 
@@ -89,10 +89,9 @@ impl ServerHandle {
     pub async fn query(&self, ql: &str) -> Result<Vec<DeviceProxy>, AppError> {
         let q = crate::caql::parse(ql)
             .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
-        let devices = self.core.list_devices().await;
-        let mut out = Vec::with_capacity(devices.len());
-        for d in devices {
-            let snap = d.to_resource_snapshot(&self.core.name);
+        let resources = self.core.list_resources().await;
+        let mut out = Vec::with_capacity(resources.len());
+        for snap in resources {
             let matched =
                 crate::query::matches(&q, &snap.to_query_value()).map_err(|e| -> AppError {
                     Box::new(std::io::Error::other(format!("eval: {e}")))
@@ -100,7 +99,7 @@ impl ServerHandle {
             if matched {
                 out.push(DeviceProxy {
                     core: self.core.clone(),
-                    id: d.id,
+                    id: snap.id,
                 });
             }
         }
@@ -109,7 +108,9 @@ impl ServerHandle {
 
     /// Get a proxy by exact resource id, if known.
     pub async fn device(&self, id: DeviceId) -> Option<DeviceProxy> {
-        self.core.get_device(&id).await.map(|_| DeviceProxy {
+        let id = id.to_string();
+        self.core.get_resource(&id).await.ok().flatten()?;
+        Some(DeviceProxy {
             core: self.core.clone(),
             id,
         })
@@ -133,18 +134,18 @@ impl ServerHandle {
             .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
         let mut rx = self.core.device_changes.subscribe();
         loop {
-            let devices = self.core.list_devices().await;
+            let resources = self.core.list_resources().await;
             let mut proxies = Vec::with_capacity(parsed.len());
             let mut ok = true;
             for q in &parsed {
-                let m = devices.iter().find(|d| {
-                    let target = d.to_resource_snapshot(&self.core.name).to_query_value();
+                let m = resources.iter().find(|snap| {
+                    let target = snap.to_query_value();
                     crate::query::matches(q, &target).unwrap_or(false)
                 });
                 match m {
-                    Some(d) => proxies.push(DeviceProxy {
+                    Some(snap) => proxies.push(DeviceProxy {
                         core: self.core.clone(),
-                        id: d.id,
+                        id: snap.id.clone(),
                     }),
                     None => {
                         ok = false;
@@ -181,20 +182,20 @@ impl ServerHandle {
             .collect::<Result<_, _>>()
             .map_err(|e| -> AppError { Box::new(std::io::Error::other(format!("caql: {e}"))) })?;
         let mut rx = self.core.device_changes.subscribe();
-        let mut prev: Option<Vec<DeviceId>> = None;
+        let mut prev: Option<Vec<String>> = None;
         loop {
-            let devices = self.core.list_devices().await;
+            let resources = self.core.list_resources().await;
             let mut proxies = Vec::with_capacity(parsed.len());
             let mut ok = true;
             for q in &parsed {
-                let m = devices.iter().find(|d| {
-                    let target = d.to_resource_snapshot(&self.core.name).to_query_value();
+                let m = resources.iter().find(|snap| {
+                    let target = snap.to_query_value();
                     crate::query::matches(q, &target).unwrap_or(false)
                 });
                 match m {
-                    Some(d) => proxies.push(DeviceProxy {
+                    Some(snap) => proxies.push(DeviceProxy {
                         core: self.core.clone(),
-                        id: d.id,
+                        id: snap.id.clone(),
                     }),
                     None => {
                         ok = false;
@@ -203,7 +204,7 @@ impl ServerHandle {
                 }
             }
             if ok {
-                let ids: Vec<DeviceId> = proxies.iter().map(|p| p.id()).collect();
+                let ids: Vec<String> = proxies.iter().map(|p| p.id().to_string()).collect();
                 if prev.as_ref() != Some(&ids) {
                     callback(proxies).await?;
                     prev = Some(ids);
@@ -226,37 +227,42 @@ impl ServerHandle {
 #[derive(Clone)]
 pub struct DeviceProxy {
     core: Arc<Core>,
-    id: DeviceId,
+    id: String,
 }
 
 impl DeviceProxy {
-    pub fn id(&self) -> DeviceId {
-        self.id
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// Current state name. `None` if the device has been removed.
     pub async fn state(&self) -> Option<String> {
-        self.core.get_device(&self.id).await.map(|d| d.state)
+        self.core
+            .get_resource(&self.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|snap| snap.state)
     }
 
     /// Whether `transition` is currently allowed in the device's
     /// present state.
     pub async fn available(&self, transition: &str) -> bool {
-        let Some(snap) = self.core.get_device(&self.id).await else {
+        let Some(snap) = self.core.get_resource(&self.id).await.ok().flatten() else {
             return false;
         };
-        snap.config
-            .allowed_in(&snap.state)
+        snap.transitions
             .iter()
-            .any(|t| t == transition)
+            .any(|affordance| affordance.available && affordance.name() == transition)
     }
 
     /// Invoke a transition. Returns an error if the transition is not
     /// allowed in the current state.
     pub async fn call(&self, transition: &str, input: TransitionInput) -> Result<(), DeviceError> {
         self.core
-            .run_transition(&self.id, transition, input, RequestCtx::default())
+            .run_resource_transition(&self.id, transition, input, RequestCtx::default())
             .await
+            .map_err(device_error_from_transition)
             .map(|_| ())
     }
 
@@ -267,12 +273,36 @@ impl DeviceProxy {
 
     /// Read a property value (or `None` if not present).
     pub async fn property(&self, name: &str) -> Option<Json> {
-        let snap = self.core.get_device(&self.id).await?;
+        let snap = self.core.get_resource(&self.id).await.ok().flatten()?;
         snap.properties.get(name).cloned()
     }
 
     /// All properties as a JSON map.
     pub async fn properties(&self) -> Option<Map<String, Json>> {
-        Some(self.core.get_device(&self.id).await?.properties)
+        Some(
+            self.core
+                .get_resource(&self.id)
+                .await
+                .ok()
+                .flatten()?
+                .properties,
+        )
+    }
+}
+
+fn device_error_from_transition(err: ResourceTransitionError) -> DeviceError {
+    match err {
+        ResourceTransitionError::InvalidId => DeviceError::Invalid("invalid resource id".into()),
+        ResourceTransitionError::InvalidInput(msg) => DeviceError::Invalid(msg),
+        ResourceTransitionError::NotAllowed(msg) => DeviceError::NotAllowed(msg),
+        ResourceTransitionError::BackpressureRequired => {
+            DeviceError::NotAllowed("backpressure required".into())
+        }
+        ResourceTransitionError::Timeout => DeviceError::NotAllowed("transition timed out".into()),
+        ResourceTransitionError::Unavailable(msg) => DeviceError::NotAllowed(msg),
+        ResourceTransitionError::Conflict(msg) => DeviceError::Conflict(msg),
+        ResourceTransitionError::NotFound => DeviceError::Internal("resource not found".into()),
+        ResourceTransitionError::Busy => DeviceError::Internal("resource actor is busy".into()),
+        ResourceTransitionError::Internal(msg) => DeviceError::Internal(msg),
     }
 }

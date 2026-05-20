@@ -96,13 +96,6 @@ pub(crate) fn render_resources(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity 
             Action::new("query-resources", "GET", h.resources_url())
                 .form_urlencoded()
                 .with_field(Field::typed("ql", "text")),
-        )
-        .with_action(
-            Action::new("register-resource", "POST", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("kind", "text"))
-                .with_field(Field::typed("id", "text"))
-                .with_field(Field::typed("name", "text")),
         );
     for snap in snaps {
         e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
@@ -120,13 +113,6 @@ pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
             Action::new("query-resources", "GET", h.resources_url())
                 .form_urlencoded()
                 .with_field(Field::typed("ql", "text")),
-        )
-        .with_action(
-            Action::new("register-resource", "POST", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("kind", "text"))
-                .with_field(Field::typed("id", "text"))
-                .with_field(Field::typed("name", "text")),
         );
     for snap in snaps {
         e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
@@ -204,13 +190,6 @@ pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapsh
         .with_property("name", Value::String(h.server.clone()))
         .with_property("ql", Value::String(ql.to_string()))
         .with_link(Link::new(rels::SELF, self_url))
-        .with_action(
-            Action::new("register-resource", "POST", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("kind", "text"))
-                .with_field(Field::typed("id", "text"))
-                .with_field(Field::typed("name", "text")),
-        )
         .with_action(
             Action::new("query-resources", "GET", h.resources_url())
                 .form_urlencoded()

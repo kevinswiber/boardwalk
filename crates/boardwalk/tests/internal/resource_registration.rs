@@ -1,14 +1,17 @@
-//! Hubless resource registration via Boardwalk::register_factory.
+//! Runtime resource registration through actor factories.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
 use futures::future::BoxFuture;
 use serde_json::Value as Json;
 
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError};
-use crate::runtime::TransitionInput;
+use crate::runtime::{
+    Actor, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
+    TransitionAffordance, TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
+    TransitionSpec,
+};
 
 #[derive(Default)]
 struct Led {
@@ -16,35 +19,92 @@ struct Led {
     on: bool,
 }
 
-impl Device for Led {
-    fn config(&self, cfg: &mut DeviceConfig) {
-        cfg.type_("led")
-            .state(self.state())
-            .when("off", &["turn-on"])
-            .when("on", &["turn-off"]);
-        if let Some(n) = &self.name {
-            cfg.name(n.clone());
+impl Led {
+    fn new(name: Option<String>) -> Self {
+        Self { name, on: false }
+    }
+
+    fn snapshot(&self, id: &str, node: &str) -> ResourceSnapshot {
+        ResourceSnapshot {
+            id: id.into(),
+            kind: "led".into(),
+            name: self.name.clone(),
+            state: Some(if self.on { "on" } else { "off" }.into()),
+            node: node.into(),
+            properties: serde_json::Map::new(),
+            labels: BTreeMap::new(),
+            transitions: vec![
+                TransitionAffordance {
+                    spec: TransitionSpec {
+                        name: "turn-on".into(),
+                        allowed_states: vec!["off".into()],
+                        ..Default::default()
+                    },
+                    available: !self.on,
+                    unavailable_reason: None,
+                },
+                TransitionAffordance {
+                    spec: TransitionSpec {
+                        name: "turn-off".into(),
+                        allowed_states: vec!["on".into()],
+                        ..Default::default()
+                    },
+                    available: self.on,
+                    unavailable_reason: None,
+                },
+            ],
+            streams: Vec::new(),
+            revision: None,
+            metadata: serde_json::Map::new(),
         }
     }
-    fn state(&self) -> &str {
-        if self.on { "on" } else { "off" }
+}
+
+impl Resource for Led {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: self.name.clone(),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
     }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> BoxFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async { Ok(self.snapshot("ignored", "ignored")) })
+    }
+}
+
+impl Actor for Led {
     fn transition<'a>(
         &'a mut self,
+        ctx: TransitionCtx,
         name: &'a str,
         _input: TransitionInput,
-    ) -> BoxFuture<'a, Result<(), DeviceError>> {
+    ) -> BoxFuture<'a, Result<TransitionOutcome, TransitionError>> {
         Box::pin(async move {
             match name {
-                "turn-on" => {
+                "turn-on" if !self.on => {
                     self.on = true;
-                    Ok(())
+                    Ok(TransitionOutcome::Completed {
+                        output: None,
+                        snapshot: self.snapshot(ctx.resource_id().unwrap_or("ignored"), ctx.node()),
+                    })
                 }
-                "turn-off" => {
+                "turn-off" if self.on => {
                     self.on = false;
-                    Ok(())
+                    Ok(TransitionOutcome::Completed {
+                        output: None,
+                        snapshot: self.snapshot(ctx.resource_id().unwrap_or("ignored"), ctx.node()),
+                    })
                 }
-                _ => Err(DeviceError::Invalid("?".into())),
+                other => Err(TransitionError::NotAllowed(format!(
+                    "transition `{other}` not available"
+                ))),
             }
         })
     }
@@ -61,17 +121,12 @@ async fn serve(boardwalk: Boardwalk) -> SocketAddr {
 }
 
 #[tokio::test]
-async fn register_factory_creates_device_at_runtime() {
-    let boardwalk =
-        Boardwalk::new()
-            .name("hub")
-            .register_factory("led", |args: HashMap<String, String>| {
-                let _ = args;
-                Ok(Box::new(Led::default()) as Box<dyn Device>)
-            });
+async fn actor_factory_creates_resource_at_runtime() {
+    let boardwalk = Boardwalk::new()
+        .name("hub")
+        .register_actor_factory("led", |registration| Ok(Led::new(registration.name)));
     let addr = serve(boardwalk).await;
 
-    // Before any POST, no resources.
     let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
@@ -86,7 +141,6 @@ async fn register_factory_creates_device_at_runtime() {
             .unwrap_or(true)
     );
 
-    // POST a registration.
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{addr}/resources"))
@@ -97,11 +151,12 @@ async fn register_factory_creates_device_at_runtime() {
         .unwrap();
     assert_eq!(resp.status(), 201);
     let dev: Json = resp.json().await.unwrap();
+    let id = dev["properties"]["id"].as_str().unwrap().to_string();
     assert_eq!(dev["properties"]["kind"], "led");
     assert_eq!(dev["properties"]["name"], "KitchenLED");
+    assert_eq!(dev["properties"]["node"], "hub");
     assert_eq!(dev["properties"]["state"], "off");
 
-    // The resource now appears in the resource listing.
     let resources: Json = reqwest::get(format!("http://{addr}/resources"))
         .await
         .unwrap()
@@ -110,19 +165,31 @@ async fn register_factory_creates_device_at_runtime() {
         .unwrap();
     let entities = resources["entities"].as_array().unwrap();
     assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0]["properties"]["id"], id);
     assert_eq!(entities[0]["properties"]["name"], "KitchenLED");
+
+    let resp = client
+        .post(format!("http://{addr}/resources/{id}/transitions/turn-on"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Json = resp.json().await.unwrap();
+    assert_eq!(body["snapshot"]["id"], id);
+    assert_eq!(body["snapshot"]["node"], "hub");
+    assert_eq!(body["snapshot"]["state"], "on");
 }
 
-/// Pins the hubless registration form: `POST /resources` consumes the
+/// Pins the runtime registration form: `POST /resources` consumes the
 /// `kind`, `id`, and `name` form fields and returns 201 Created with a
 /// Siren resource.
 #[tokio::test]
-async fn factory_registration_posts_kind_id_name_to_resources_route() {
+async fn actor_factory_registration_posts_kind_id_name_to_resources_route() {
     let boardwalk = Boardwalk::new()
         .name("hub")
-        .register_factory("led", |_args: HashMap<String, String>| {
-            Ok(Box::new(Led::default()) as Box<dyn Device>)
-        });
+        .register_actor_factory("led", |registration| Ok(Led::new(registration.name)));
     let addr = serve(boardwalk).await;
 
     let supplied_id = uuid::Uuid::new_v4();
@@ -145,7 +212,7 @@ async fn factory_registration_posts_kind_id_name_to_resources_route() {
 async fn missing_kind_returns_400() {
     let boardwalk = Boardwalk::new()
         .name("hub")
-        .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
+        .register_actor_factory("led", |registration| Ok(Led::new(registration.name)));
     let addr = serve(boardwalk).await;
     let client = reqwest::Client::new();
     let resp = client
@@ -162,7 +229,7 @@ async fn missing_kind_returns_400() {
 async fn unknown_kind_returns_400() {
     let boardwalk = Boardwalk::new()
         .name("hub")
-        .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
+        .register_actor_factory("led", |registration| Ok(Led::new(registration.name)));
     let addr = serve(boardwalk).await;
     let client = reqwest::Client::new();
     let resp = client
@@ -179,7 +246,7 @@ async fn unknown_kind_returns_400() {
 async fn json_registration_returns_415() {
     let boardwalk = Boardwalk::new()
         .name("hub")
-        .register_factory("led", |_| Ok(Box::new(Led::default()) as Box<dyn Device>));
+        .register_actor_factory("led", |registration| Ok(Led::new(registration.name)));
     let addr = serve(boardwalk).await;
     let client = reqwest::Client::new();
     let resp = client
@@ -196,7 +263,7 @@ async fn json_registration_returns_415() {
 }
 
 #[tokio::test]
-async fn no_factories_returns_501() {
+async fn no_actor_factories_returns_501() {
     let addr = serve(Boardwalk::new().name("hub")).await;
     let client = reqwest::Client::new();
     let resp = client

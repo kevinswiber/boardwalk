@@ -1,0 +1,179 @@
+//! Boardwalk builder coverage for the actor-native reusable HTTP path.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Method, Request as HttpRequest, StatusCode, header};
+use axum::response::Response;
+use tower::ServiceExt;
+
+use crate::Boardwalk;
+use crate::runtime::{
+    Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
+    TransitionAffordance, TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
+    TransitionSpec,
+};
+
+struct BuilderLed {
+    name: &'static str,
+    on: bool,
+}
+
+impl BuilderLed {
+    fn named(name: &'static str) -> Self {
+        Self { name, on: false }
+    }
+
+    fn snapshot(&self, id: &str, node: &str) -> ResourceSnapshot {
+        ResourceSnapshot {
+            id: id.into(),
+            kind: "led".into(),
+            name: Some(self.name.into()),
+            state: Some(if self.on { "on" } else { "off" }.into()),
+            node: node.into(),
+            properties: serde_json::Map::new(),
+            labels: BTreeMap::new(),
+            transitions: vec![TransitionAffordance {
+                spec: TransitionSpec {
+                    name: "turn-on".into(),
+                    allowed_states: vec!["off".into()],
+                    ..Default::default()
+                },
+                available: !self.on,
+                unavailable_reason: None,
+            }],
+            streams: Vec::new(),
+            revision: None,
+            metadata: serde_json::Map::new(),
+        }
+    }
+}
+
+impl Resource for BuilderLed {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some(self.name.into()),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async { Ok(self.snapshot("ignored", "ignored")) })
+    }
+}
+
+impl Actor for BuilderLed {
+    fn transition<'a>(
+        &'a mut self,
+        ctx: TransitionCtx,
+        name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async move {
+            match name {
+                "turn-on" if !self.on => {
+                    self.on = true;
+                    Ok(TransitionOutcome::Completed {
+                        output: None,
+                        snapshot: self.snapshot(ctx.resource_id().unwrap_or("ignored"), ctx.node()),
+                    })
+                }
+                other => Err(TransitionError::NotAllowed(format!(
+                    "transition `{other}` not available"
+                ))),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn boardwalk_build_serves_registered_actor_resources_and_transitions() {
+    let built = Boardwalk::new()
+        .name("hub")
+        .use_actor(BuilderLed::named("Builder LED"))
+        .use_actor(BuilderLed::named("Aux LED"))
+        .build()
+        .expect("boardwalk builds from actor");
+    let app = built.router.clone();
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/resources")
+                .body(Body::empty())
+                .expect("resources request builds"),
+        )
+        .await
+        .expect("resources request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = response_json(response).await;
+    let entities = json["entities"].as_array().expect("resource entities");
+    assert_eq!(entities.len(), 2);
+    let builder = entities
+        .iter()
+        .find(|entity| entity["properties"]["name"] == "Builder LED")
+        .expect("builder led entity");
+    let id = builder["properties"]["id"]
+        .as_str()
+        .expect("resource id")
+        .to_string();
+    assert_ne!(id, "ignored");
+    assert_eq!(builder["properties"]["kind"], "led");
+    assert_eq!(builder["properties"]["node"], "hub");
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .uri(format!("/resources/{id}"))
+                .body(Body::empty())
+                .expect("resource request builds"),
+        )
+        .await
+        .expect("resource request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["properties"]["id"], id);
+    assert_eq!(json["properties"]["node"], "hub");
+    assert_eq!(json["properties"]["state"], "off");
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::POST)
+                .uri(format!("/resources/{id}/transitions/turn-on"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .expect("transition request builds"),
+        )
+        .await
+        .expect("transition request completes");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["snapshot"]["id"], id);
+    assert_eq!(json["snapshot"]["node"], "hub");
+    assert_eq!(json["snapshot"]["state"], "on");
+
+    built.node.shutdown(Duration::from_secs(1)).await;
+}
+
+async fn response_json(response: Response) -> serde_json::Value {
+    let bytes = response_bytes(response).await;
+    serde_json::from_slice(&bytes).expect("body is json")
+}
+
+async fn response_bytes(response: Response) -> bytes::Bytes {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads")
+}

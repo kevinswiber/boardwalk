@@ -1,4 +1,4 @@
-//! Verify that .persist(path) gives devices stable IDs across restarts.
+//! Verify that .persist(path) gives resources stable IDs across restarts.
 
 use futures::future::BoxFuture;
 
@@ -42,9 +42,9 @@ async fn device_id_is_stable_across_builds() {
         .use_actor(Led::default())
         .build()
         .unwrap();
-    let first_devices = first.core.list_devices().await;
-    assert_eq!(first_devices.len(), 1);
-    let first_id = first_devices[0].id;
+    let first_resources = first.core.list_resources().await;
+    assert_eq!(first_resources.len(), 1);
+    let first_id = first_resources[0].id.clone();
 
     // Drop everything, including the registry; the file persists.
     drop(first);
@@ -55,11 +55,11 @@ async fn device_id_is_stable_across_builds() {
         .use_actor(Led::default())
         .build()
         .unwrap();
-    let second_devices = second.core.list_devices().await;
-    assert_eq!(second_devices.len(), 1);
+    let second_resources = second.core.list_resources().await;
+    assert_eq!(second_resources.len(), 1);
     assert_eq!(
-        second_devices[0].id, first_id,
-        "device id must be stable across runs when persistence is on"
+        second_resources[0].id, first_id,
+        "resource id must be stable across runs when persistence is on"
     );
 }
 
@@ -83,11 +83,11 @@ impl Device for NamedLed {
     }
 }
 
-/// Pins today's persistent identity key: `(type, name)`. Two devices
+/// Pins today's persistent identity key: `(kind, name)`. Two resources
 /// of the same type but different names get two distinct stable ids,
 /// and each restart reuses the same id only for its matching name.
 /// A future repository expansion may change the key beyond
-/// `(type, name)`; this snapshot must update when that happens.
+/// `(kind, name)`; this snapshot must update when that happens.
 #[tokio::test]
 async fn current_registry_identity_is_type_and_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -100,23 +100,25 @@ async fn current_registry_identity_is_type_and_name() {
         .use_actor(NamedLed { name: "pantry" })
         .build()
         .unwrap();
-    let mut first_devices = first.core.list_devices().await;
-    first_devices.sort_by(|a, b| a.name.cmp(&b.name));
-    assert_eq!(first_devices.len(), 2);
+    let mut first_resources = first.core.list_resources().await;
+    first_resources.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(first_resources.len(), 2);
     assert_ne!(
-        first_devices[0].id, first_devices[1].id,
-        "two devices with different names must get distinct ids"
+        first_resources[0].id, first_resources[1].id,
+        "two resources with different names must get distinct ids"
     );
-    let kitchen_id = first_devices
+    let kitchen_id = first_resources
         .iter()
         .find(|d| d.name.as_deref() == Some("kitchen"))
         .unwrap()
-        .id;
-    let pantry_id = first_devices
+        .id
+        .clone();
+    let pantry_id = first_resources
         .iter()
         .find(|d| d.name.as_deref() == Some("pantry"))
         .unwrap()
-        .id;
+        .id
+        .clone();
     drop(first);
 
     // Restart with the same two (type, name) pairs — each must reuse
@@ -128,17 +130,19 @@ async fn current_registry_identity_is_type_and_name() {
         .use_actor(NamedLed { name: "pantry" })
         .build()
         .unwrap();
-    let second_devices = second.core.list_devices().await;
-    let kitchen_again = second_devices
+    let second_resources = second.core.list_resources().await;
+    let kitchen_again = second_resources
         .iter()
         .find(|d| d.name.as_deref() == Some("kitchen"))
         .unwrap()
-        .id;
-    let pantry_again = second_devices
+        .id
+        .clone();
+    let pantry_again = second_resources
         .iter()
         .find(|d| d.name.as_deref() == Some("pantry"))
         .unwrap()
-        .id;
+        .id
+        .clone();
     assert_eq!(kitchen_id, kitchen_again);
     assert_eq!(pantry_id, pantry_again);
 }
@@ -155,7 +159,7 @@ async fn device_id_random_without_persist() {
         .use_actor(Led::default())
         .build()
         .unwrap();
-    let a_id = a.core.list_devices().await[0].id;
-    let b_id = b.core.list_devices().await[0].id;
+    let a_id = a.core.list_resources().await[0].id.clone();
+    let b_id = b.core.list_resources().await[0].id.clone();
     assert_ne!(a_id, b_id, "without .persist(), IDs should differ");
 }
