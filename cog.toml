@@ -17,7 +17,7 @@ scopes = []
 pre_bump_hooks = [
     "just lint",
     "just test",
-    "cargo set-version {{version}}",
+    "cargo set-version --workspace {{version}}",
 ]
 post_bump_hooks = []
 
@@ -25,9 +25,13 @@ post_bump_hooks = []
 # Usage: cog bump --auto --hook-profile ci
 [bump_profiles.ci]
 pre_bump_hooks = [
-    "cargo set-version {{version}}",
+    "cargo set-version --workspace {{version}}",
 ]
-post_bump_hooks = []
+post_bump_hooks = [
+    "git push",
+    "git push origin v{{version}}",
+    "gh workflow run release.yml -f tag=v{{version}}",
+]
 
 [git_hooks.commit-msg]
 script = '''#!/bin/sh
