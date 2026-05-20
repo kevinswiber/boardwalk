@@ -12,9 +12,10 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::events::{ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId};
 use crate::http::{Core, CoreBuilder, router};
+use crate::runtime::TransitionInput;
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

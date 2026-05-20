@@ -3,8 +3,10 @@ use std::sync::Arc;
 use serde_json::Value;
 use url::Url;
 
-use super::core::{Core, ResourceSnapshot};
-use crate::core::{ActorSpec, Effect, Idempotency, StreamKind, TransitionResultKind};
+use super::core::Core;
+use crate::runtime::{
+    ActorSpec, Effect, Idempotency, ResourceSnapshot, StreamKind, TransitionResultKind,
+};
 use crate::siren::{Action, EmbeddedEntity, Entity, Field, Link, SubEntity, rels};
 
 /// Url root for absolute hrefs. Computed per-request from request scheme + host.
@@ -353,7 +355,7 @@ pub(crate) fn render_meta_type(h: &Hrefs, ty: &KindMeta) -> Entity {
     }
 }
 
-fn stream_spec_json(spec: &crate::core::StreamSpec) -> Value {
+fn stream_spec_json(spec: &crate::runtime::StreamSpec) -> Value {
     serde_json::json!({
         "name": spec.name,
         "kind": match spec.kind {
@@ -363,7 +365,7 @@ fn stream_spec_json(spec: &crate::core::StreamSpec) -> Value {
     })
 }
 
-fn transition_spec_json(spec: &crate::core::TransitionSpec) -> Value {
+fn transition_spec_json(spec: &crate::runtime::TransitionSpec) -> Value {
     let mut value = serde_json::json!({
         "name": spec.name,
         "allowedStates": spec.allowed_states,
@@ -403,7 +405,7 @@ mod tests {
     use serde_json::{Map, Value as Json};
 
     use super::*;
-    use crate::http::core::{StreamSpec, TransitionAffordance};
+    use crate::runtime::{SnapshotStreamSpec as StreamSpec, TransitionAffordance};
 
     fn hrefs() -> Hrefs {
         Hrefs {
@@ -424,7 +426,7 @@ mod tests {
             labels: BTreeMap::new(),
             transitions: vec![
                 TransitionAffordance {
-                    spec: crate::core::TransitionSpec {
+                    spec: crate::runtime::TransitionSpec {
                         name: "turn-on".into(),
                         ..Default::default()
                     },
@@ -432,7 +434,7 @@ mod tests {
                     unavailable_reason: None,
                 },
                 TransitionAffordance {
-                    spec: crate::core::TransitionSpec {
+                    spec: crate::runtime::TransitionSpec {
                         name: "turn-off".into(),
                         ..Default::default()
                     },
@@ -452,23 +454,23 @@ mod tests {
     fn led_kind_meta() -> KindMeta {
         KindMeta {
             spec: ActorSpec {
-                resource: crate::core::ResourceSpec {
+                resource: crate::runtime::ResourceSpec {
                     kind: "led".into(),
                     name: Some("LED".into()),
                     labels: BTreeMap::new(),
                     property_schema: None,
-                    streams: vec![crate::core::StreamSpec {
+                    streams: vec![crate::runtime::StreamSpec {
                         name: "state".into(),
                         kind: StreamKind::Object,
                     }],
                 },
                 transitions: vec![
-                    crate::core::TransitionSpec {
+                    crate::runtime::TransitionSpec {
                         name: "turn-on".into(),
                         allowed_states: vec!["off".into()],
                         ..Default::default()
                     },
-                    crate::core::TransitionSpec {
+                    crate::runtime::TransitionSpec {
                         name: "turn-off".into(),
                         allowed_states: vec!["on".into()],
                         ..Default::default()
@@ -568,7 +570,7 @@ mod tests {
         snap.transitions[0]
             .spec
             .fields
-            .push(crate::core::FieldSpec {
+            .push(crate::runtime::FieldSpec {
                 name: "brightness".into(),
                 type_: "number".into(),
                 title: Some("Brightness".into()),

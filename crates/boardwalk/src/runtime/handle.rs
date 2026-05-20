@@ -9,9 +9,8 @@ use super::actor::{TransitionCtx, TransitionError};
 use super::context::RequestCtx;
 use super::directory::Entry;
 use super::node::Node;
-use super::resource::{ResourceCtx, ResourceError};
-use crate::core::{TransitionInput, TransitionOutcome};
-use crate::http::ResourceSnapshot;
+use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
+use super::transition::{TransitionInput, TransitionOutcome};
 use crate::query::{self as query_eval};
 
 /// Cloneable handle into a node from app/scout code.

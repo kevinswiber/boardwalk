@@ -7,11 +7,10 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
-};
+use crate::core::{Device, DeviceConfig, DeviceCtx, DeviceError, StreamSink};
 use crate::events::{NodeId, StreamId, SubscribeOpts, TopicPattern};
 use crate::http::CoreBuilder;
+use crate::runtime::{StreamKind, TransitionInput};
 
 struct TestPublishOnStart {
     stream: String,

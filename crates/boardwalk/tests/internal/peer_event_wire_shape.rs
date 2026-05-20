@@ -12,8 +12,9 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{Value as Json, json};
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{Core, CoreBuilder, router};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

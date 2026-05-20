@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{Scout, ScoutCtx};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Sensor {

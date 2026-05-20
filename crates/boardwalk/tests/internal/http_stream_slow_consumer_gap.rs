@@ -12,9 +12,10 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::{Value as Json, json};
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::events::{ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId};
 use crate::http::{Core, CoreBuilder, router};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

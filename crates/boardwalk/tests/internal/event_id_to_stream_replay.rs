@@ -12,10 +12,10 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use uuid::Uuid;
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::events::{SubscribeOpts, TopicPattern};
 use crate::http::{Core, CoreBuilder};
-use crate::runtime::RequestCtx;
+use crate::runtime::{RequestCtx, TransitionInput};
 
 #[derive(Default)]
 struct Led {

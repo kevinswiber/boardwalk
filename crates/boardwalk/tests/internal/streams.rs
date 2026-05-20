@@ -15,15 +15,12 @@ use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::Boardwalk;
-use crate::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, ResourceSpec, StreamKind, StreamSpec,
-    TransitionInput, TransitionOutcome,
-};
+use crate::core::{Device, DeviceConfig, DeviceCtx, DeviceError};
 use crate::events::{SubscribeOpts, TopicPattern};
-use crate::http::ResourceSnapshot;
 use crate::runtime::{
-    Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
-    TransitionError,
+    Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError,
+    ResourceSnapshot, ResourceSpec, StreamKind, StreamSpec, TransitionCtx, TransitionError,
+    TransitionInput, TransitionOutcome,
 };
 
 #[derive(Default)]

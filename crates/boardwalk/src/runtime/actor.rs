@@ -8,7 +8,7 @@ use serde_json::Value as JsonValue;
 use super::context::{CommandId, EmissionContext, EnvelopePlan, Publisher, RequestCtx};
 use super::node::Node;
 use super::resource::{DynFuture, Resource, ResourceError};
-use crate::core::{TransitionInput, TransitionOutcome};
+use super::transition::{TransitionInput, TransitionOutcome};
 use crate::events::{NodeId, PublishError, TraceContext};
 
 /// Per-transition context. Mints a fresh `CommandId` on construction

@@ -12,8 +12,9 @@ use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::PeerStreamHub;
+use crate::runtime::TransitionInput;
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

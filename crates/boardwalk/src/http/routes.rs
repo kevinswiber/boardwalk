@@ -14,8 +14,7 @@ use uuid::Uuid;
 
 use super::core::{Core, now_ms};
 use super::render::{self, Hrefs};
-use crate::core::{TransitionInput, TransitionOutcome};
-use crate::runtime::RequestCtx;
+use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
@@ -1098,8 +1097,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::core::JobHandle;
     use crate::http::core::CoreBuilder;
+    use crate::runtime::JobHandle;
 
     #[tokio::test]
     async fn legacy_device_routes_return_404() {

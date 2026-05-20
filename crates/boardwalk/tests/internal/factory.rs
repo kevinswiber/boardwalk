@@ -7,7 +7,8 @@ use futures::future::BoxFuture;
 use serde_json::Value as Json;
 
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

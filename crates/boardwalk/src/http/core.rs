@@ -5,13 +5,15 @@ use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink, TransitionInput,
-};
+use crate::core::{Device, DeviceConfig, DeviceCtx, DeviceError, DeviceId, StreamSink};
 use crate::events::{
     ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, StreamId, StreamRegistry, TraceContext,
 };
-use crate::runtime::{CommandId, EmissionContext, EnvelopePlan, RequestCtx, publish_envelope};
+use crate::runtime::{
+    ActorSpec, CommandId, EmissionContext, EnvelopePlan, RequestCtx, ResourceSnapshot,
+    ResourceSpec, SnapshotStreamSpec, StreamKind, TransitionAffordance, TransitionInput,
+    publish_envelope, sanitize_properties,
+};
 
 /// Runtime owned by the HTTP layer (and reused by the peer tunnel
 /// handler). Holds private server-adapter resources and projects them
@@ -383,15 +385,15 @@ impl DeviceSnapshot {
                 }
             })
             .collect();
-        let streams: Vec<StreamSpec> = self
+        let streams: Vec<SnapshotStreamSpec> = self
             .config
             .streams
             .iter()
-            .map(|s| StreamSpec {
+            .map(|s| SnapshotStreamSpec {
                 name: s.name.clone(),
                 kind: match s.kind {
-                    crate::core::StreamKind::Object => "object".to_string(),
-                    crate::core::StreamKind::Binary => "binary".to_string(),
+                    StreamKind::Object => "object".to_string(),
+                    StreamKind::Binary => "binary".to_string(),
                 },
             })
             .collect();
@@ -410,9 +412,9 @@ impl DeviceSnapshot {
         }
     }
 
-    pub fn to_actor_spec(&self) -> crate::core::ActorSpec {
-        crate::core::ActorSpec {
-            resource: crate::core::ResourceSpec {
+    pub fn to_actor_spec(&self) -> ActorSpec {
+        ActorSpec {
+            resource: ResourceSpec {
                 kind: self.type_.clone(),
                 name: self.name.clone(),
                 labels: BTreeMap::new(),
@@ -422,243 +424,6 @@ impl DeviceSnapshot {
             transitions: self.config.transitions.values().cloned().collect(),
         }
     }
-}
-
-/// Canonical projection used by the renderer, query evaluator, and
-/// future event/schema layers. Fields are deliberately reserved at
-/// the top level: extra device-specific data lives under
-/// `properties` and never collides with these names.
-#[derive(Debug, Clone)]
-pub struct ResourceSnapshot {
-    pub id: String,
-    pub kind: String,
-    pub name: Option<String>,
-    pub state: Option<String>,
-    pub node: String,
-    pub properties: serde_json::Map<String, JsonValue>,
-    pub labels: BTreeMap<String, String>,
-    pub transitions: Vec<TransitionAffordance>,
-    pub streams: Vec<StreamSpec>,
-    pub revision: Option<String>,
-    pub metadata: serde_json::Map<String, JsonValue>,
-}
-
-/// One transition affordance on a resource. Carries the full
-/// declared `TransitionSpec` so metadata renderers can read schema,
-/// effect, idempotency, and required scopes directly from a snapshot.
-/// `available` reflects whether the transition can fire in the
-/// resource's current state; `unavailable_reason` carries an optional,
-/// human-readable hint when `available` is false.
-#[derive(Debug, Clone, Default)]
-pub struct TransitionAffordance {
-    pub spec: crate::core::TransitionSpec,
-    pub available: bool,
-    pub unavailable_reason: Option<String>,
-}
-
-impl TransitionAffordance {
-    /// Convenience accessor since the most common use site needs only
-    /// the name.
-    pub fn name(&self) -> &str {
-        &self.spec.name
-    }
-}
-
-/// One stream a resource publishes. `kind` is the wire kind hint
-/// (`"object"` or `"binary"`), serialized lowercase into the query
-/// value and metadata renders.
-#[derive(Debug, Clone, Default)]
-pub struct StreamSpec {
-    pub name: String,
-    pub kind: String,
-}
-
-/// Top-level field names that `ResourceSnapshot` owns directly.
-/// User-supplied properties carrying any of these names are stripped
-/// by `sanitize_properties` so that user data cannot shadow
-/// Boardwalk-owned fields.
-pub const RESERVED_FIELDS: &[&str] = &[
-    "id",
-    "kind",
-    "name",
-    "state",
-    "node",
-    "properties",
-    "labels",
-    "transitions",
-    "streams",
-    "revision",
-    "affordances",
-    "metadata",
-];
-
-/// Strips reserved top-level field names from a properties map. Adapters
-/// that build a `ResourceSnapshot` from device-supplied properties
-/// should call this before assigning.
-pub fn sanitize_properties(
-    mut props: serde_json::Map<String, JsonValue>,
-) -> serde_json::Map<String, JsonValue> {
-    let offenders: Vec<&str> = RESERVED_FIELDS
-        .iter()
-        .filter(|k| props.contains_key(**k))
-        .copied()
-        .collect();
-    if !offenders.is_empty() {
-        tracing::trace!(
-            ?offenders,
-            "reserved field collision in resource properties; stripped"
-        );
-        for k in &offenders {
-            props.remove(*k);
-        }
-    }
-    props
-}
-
-impl ResourceSnapshot {
-    /// Produces the JSON shape the query evaluator targets. `None`
-    /// fields serialize as `Null` so `Exists(path)` semantics remain
-    /// truthful (the key is always present).
-    pub fn to_query_value(&self) -> JsonValue {
-        use serde_json::Map;
-        let mut o = Map::new();
-        o.insert("id".into(), JsonValue::String(self.id.clone()));
-        o.insert("kind".into(), JsonValue::String(self.kind.clone()));
-        o.insert(
-            "name".into(),
-            self.name
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        );
-        o.insert(
-            "state".into(),
-            self.state
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        );
-        o.insert("node".into(), JsonValue::String(self.node.clone()));
-        o.insert(
-            "properties".into(),
-            JsonValue::Object(self.properties.clone()),
-        );
-        let labels_obj: Map<String, JsonValue> = self
-            .labels
-            .iter()
-            .map(|(k, v)| (k.clone(), JsonValue::String(v.clone())))
-            .collect();
-        o.insert("labels".into(), JsonValue::Object(labels_obj));
-        let transitions: Vec<JsonValue> = self
-            .transitions
-            .iter()
-            .map(transition_affordance_to_query_json)
-            .collect();
-        o.insert("transitions".into(), JsonValue::Array(transitions));
-        let streams: Vec<JsonValue> = self
-            .streams
-            .iter()
-            .map(|s| {
-                let mut m = Map::new();
-                m.insert("name".into(), JsonValue::String(s.name.clone()));
-                m.insert("kind".into(), JsonValue::String(s.kind.clone()));
-                JsonValue::Object(m)
-            })
-            .collect();
-        o.insert("streams".into(), JsonValue::Array(streams));
-        o.insert(
-            "revision".into(),
-            self.revision
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        );
-        o.insert("metadata".into(), JsonValue::Object(self.metadata.clone()));
-        JsonValue::Object(o)
-    }
-}
-
-/// Serialize a `TransitionAffordance` for the query projection. The
-/// shape inlines the `TransitionSpec` fields at the top level so
-/// existing CaQL paths like `transitions[*].name` keep resolving, and
-/// `available` / `unavailableReason` sit alongside them. Optional spec
-/// fields are emitted only when populated; `requiredScopes` and
-/// `allowedStates` are always arrays (possibly empty).
-fn transition_affordance_to_query_json(t: &TransitionAffordance) -> JsonValue {
-    use serde_json::Map;
-    let spec = &t.spec;
-    let mut m = Map::new();
-    m.insert("name".into(), JsonValue::String(spec.name.clone()));
-    if let Some(title) = &spec.title {
-        m.insert("title".into(), JsonValue::String(title.clone()));
-    }
-    m.insert(
-        "allowedStates".into(),
-        JsonValue::Array(
-            spec.allowed_states
-                .iter()
-                .cloned()
-                .map(JsonValue::String)
-                .collect(),
-        ),
-    );
-    if let Some(s) = &spec.input_schema {
-        m.insert("inputSchema".into(), s.clone());
-    }
-    if let Some(s) = &spec.output_schema {
-        m.insert("outputSchema".into(), s.clone());
-    }
-    m.insert(
-        "result".into(),
-        JsonValue::String(
-            match spec.result {
-                crate::core::TransitionResultKind::Sync => "sync",
-                crate::core::TransitionResultKind::AsyncJob => "async-job",
-            }
-            .into(),
-        ),
-    );
-    m.insert(
-        "idempotency".into(),
-        JsonValue::String(
-            match spec.idempotency {
-                crate::core::Idempotency::None => "none",
-                crate::core::Idempotency::Supported => "supported",
-                crate::core::Idempotency::Required => "required",
-            }
-            .into(),
-        ),
-    );
-    m.insert(
-        "effect".into(),
-        JsonValue::String(
-            match spec.effect {
-                crate::core::Effect::Safe => "safe",
-                crate::core::Effect::UnsafeIdempotent => "unsafe-idempotent",
-                crate::core::Effect::Unsafe => "unsafe",
-            }
-            .into(),
-        ),
-    );
-    m.insert(
-        "requiredScopes".into(),
-        JsonValue::Array(
-            spec.required_scopes
-                .iter()
-                .cloned()
-                .map(JsonValue::String)
-                .collect(),
-        ),
-    );
-    m.insert("available".into(), JsonValue::Bool(t.available));
-    m.insert(
-        "unavailableReason".into(),
-        t.unavailable_reason
-            .clone()
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    JsonValue::Object(m)
 }
 
 pub(crate) fn now_ms() -> i64 {

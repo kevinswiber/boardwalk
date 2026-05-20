@@ -3,7 +3,8 @@
 use futures::future::BoxFuture;
 
 use crate::Boardwalk;
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

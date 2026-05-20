@@ -9,8 +9,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use serde_json::Value as Json;
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{Core, CoreBuilder, router};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

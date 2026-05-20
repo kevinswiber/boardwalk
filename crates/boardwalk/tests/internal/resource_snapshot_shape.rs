@@ -8,9 +8,13 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput, TransitionSpec};
-use crate::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
+use crate::core::{Device, DeviceConfig, DeviceError};
+use crate::http::CoreBuilder;
 use crate::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
+use crate::runtime::{
+    Effect, Idempotency, ResourceSnapshot, SnapshotStreamSpec as StreamSpec, TransitionAffordance,
+    TransitionInput, TransitionResultKind, TransitionSpec, sanitize_properties,
+};
 
 fn sample() -> ResourceSnapshot {
     let mut properties = Map::new();
@@ -62,23 +66,23 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
         node: "hub".into(),
         properties: Map::new(),
         labels,
-        transitions: vec![crate::http::TransitionAffordance {
+        transitions: vec![TransitionAffordance {
             spec: TransitionSpec {
                 name: "cancel".into(),
                 title: Some("Cancel job".into()),
                 allowed_states: vec!["running".into()],
                 input_schema: Some(serde_json::json!({"type": "object"})),
                 output_schema: None,
-                result: crate::core::TransitionResultKind::Sync,
-                idempotency: crate::core::Idempotency::Required,
-                effect: crate::core::Effect::UnsafeIdempotent,
+                result: TransitionResultKind::Sync,
+                idempotency: Idempotency::Required,
+                effect: Effect::UnsafeIdempotent,
                 required_scopes: vec!["job.cancel".into()],
                 fields: vec![],
             },
             available: true,
             unavailable_reason: None,
         }],
-        streams: vec![crate::http::StreamSpec {
+        streams: vec![StreamSpec {
             name: "logs".into(),
             kind: "object".into(),
         }],
@@ -152,7 +156,7 @@ fn sanitize_properties_strips_all_reserved_resource_fields() {
     hostile.insert("type".into(), Json::String("user-type".into()));
     hostile.insert("color".into(), Json::String("red".into()));
 
-    let cleaned = crate::http::sanitize_properties(hostile);
+    let cleaned = sanitize_properties(hostile);
     assert_eq!(
         cleaned.len(),
         2,
@@ -259,7 +263,7 @@ fn reserved_fields_are_stripped_from_properties() {
     hostile.insert("metadata".into(), Json::Object(Map::new()));
     hostile.insert("properties".into(), Json::Object(Map::new()));
 
-    let cleaned = crate::http::sanitize_properties(hostile);
+    let cleaned = sanitize_properties(hostile);
     assert_eq!(cleaned.len(), 1);
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
@@ -269,7 +273,7 @@ fn type_is_not_reserved_at_snapshot_level() {
     let mut props = Map::new();
     props.insert("type".into(), Json::String("shadow-led".into()));
     props.insert("color".into(), Json::String("red".into()));
-    let cleaned = crate::http::sanitize_properties(props);
+    let cleaned = sanitize_properties(props);
     assert_eq!(
         cleaned.get("type"),
         Some(&Json::String("shadow-led".into())),
@@ -349,7 +353,8 @@ async fn adapter_populates_allowed_states_from_when() {
 /// "turn-on", ...)` would silently overwrite `allowed_states`.
 #[test]
 fn device_config_transition_preserves_allowed_states_set_by_when() {
-    use crate::core::{DeviceConfig, FieldSpec};
+    use crate::core::DeviceConfig;
+    use crate::runtime::FieldSpec;
     let mut cfg = DeviceConfig::default();
     cfg.when("off", &["turn-on"])
         .when("on", &["turn-off"])

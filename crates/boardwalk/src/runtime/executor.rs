@@ -13,9 +13,8 @@ use tokio::task::JoinHandle;
 
 use super::actor::{Actor, ActorCtx, TransitionCtx, TransitionError};
 use super::context::RequestCtx;
-use super::resource::{Resource, ResourceCtx, ResourceError};
-use crate::core::{TransitionInput, TransitionOutcome};
-use crate::http::ResourceSnapshot;
+use super::resource::{Resource, ResourceCtx, ResourceError, ResourceSnapshot};
+use super::transition::{TransitionInput, TransitionOutcome};
 
 /// One message queued to an actor. The runtime never exposes
 /// `Stop` directly; it's sent by `ActorHandle::shutdown` so the actor

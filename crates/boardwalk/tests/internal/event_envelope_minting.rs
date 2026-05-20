@@ -8,11 +8,10 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
-};
+use crate::core::{Device, DeviceConfig, DeviceCtx, DeviceError, StreamSink};
 use crate::events::{StreamRegistry, SubscribeOpts, TopicPattern};
 use crate::http::{Core, CoreBuilder};
+use crate::runtime::{StreamKind, TransitionInput};
 
 /// Test device implementation that publishes `n` events to one stream the moment
 /// `on_start` is invoked.

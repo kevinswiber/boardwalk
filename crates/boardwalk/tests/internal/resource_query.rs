@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
 
-use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::core::{Device, DeviceConfig, DeviceError};
 use crate::http::{Core, CoreBuilder, ServerHandle, router};
+use crate::runtime::TransitionInput;
 
 #[derive(Default)]
 struct Led {

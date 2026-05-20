@@ -40,12 +40,11 @@ mod internal_adapter_tests;
 
 pub use boardwalk_macros::{actor, transition};
 
-pub use crate::core::{
-    ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSpec, StateName,
-    StreamKind, StreamSpec, TransitionInput, TransitionName, TransitionOutcome,
-    TransitionResultKind, TransitionSpec,
-};
 pub use crate::events::SlowConsumerPolicy;
-pub use crate::http::{ResourceSnapshot, StreamSpec as SnapshotStreamSpec, TransitionAffordance};
-pub use crate::runtime::{Actor, Node, NodeBuilder, NodeHandle, Resource};
+pub use crate::runtime::{
+    Actor, ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, Node, NodeBuilder, NodeHandle,
+    Resource, ResourceKind, ResourceSnapshot, ResourceSpec, SnapshotStreamSpec, StateName,
+    StreamKind, StreamSpec, TransitionAffordance, TransitionInput, TransitionName,
+    TransitionOutcome, TransitionResultKind, TransitionSpec,
+};
 pub use crate::server::Boardwalk;

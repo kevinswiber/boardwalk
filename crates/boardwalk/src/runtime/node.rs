@@ -10,9 +10,8 @@ use super::actor::{Actor, ActorCtx};
 use super::context::Publisher;
 use super::directory::ResourceDirectory;
 use super::executor::ActorHandle;
-use super::resource::{ResourceCtx, ResourceError};
+use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
 use crate::events::{EventBus, StreamRegistry};
-use crate::http::ResourceSnapshot;
 
 /// Builder for a node runtime. Constructs the event bus, the shared
 /// `StreamRegistry`, and the directory using the same single-registry

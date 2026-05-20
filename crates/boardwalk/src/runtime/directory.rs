@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::executor::{ActorHandle, ActorSlot};
-use super::resource::{ResourceCtx, ResourceError};
-use crate::http::ResourceSnapshot;
+use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
 
 /// One registered entry in the directory. Holds the live actor task
 /// handle so the node can shut it down deterministically.

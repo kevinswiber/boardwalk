@@ -122,6 +122,76 @@ fn public_facade_exports_only_intended_api() {
 }
 
 #[test]
+fn runtime_owns_final_resource_and_transition_contracts() {
+    use boardwalk::runtime::{
+        ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSnapshot,
+        ResourceSpec, SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance,
+        TransitionInput, TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
+    };
+
+    fn assert_public<T>() {}
+    assert_public::<ActorSpec>();
+    assert_public::<Effect>();
+    assert_public::<FieldSpec>();
+    assert_public::<Idempotency>();
+    assert_public::<JobHandle>();
+    assert_public::<ResourceKind>();
+    assert_public::<ResourceSnapshot>();
+    assert_public::<ResourceSpec>();
+    assert_public::<SnapshotStreamSpec>();
+    assert_public::<StateName>();
+    assert_public::<StreamKind>();
+    assert_public::<StreamSpec>();
+    assert_public::<TransitionAffordance>();
+    assert_public::<TransitionInput>();
+    assert_public::<TransitionName>();
+    assert_public::<TransitionOutcome>();
+    assert_public::<TransitionResultKind>();
+    assert_public::<TransitionSpec>();
+
+    let root_snapshot: Option<boardwalk::ResourceSnapshot> = None;
+    let runtime_snapshot: Option<ResourceSnapshot> = root_snapshot;
+    let _: Option<ResourceSnapshot> = runtime_snapshot;
+
+    let runtime_dir = repo_path("crates/boardwalk/src/runtime");
+    let mut runtime_files = Vec::new();
+    collect_files(&runtime_dir, &mut runtime_files);
+    let mut runtime_offenders = Vec::new();
+    for path in runtime_files {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("could not read {path:?}: {e}"));
+        if source.contains("crate::http") {
+            runtime_offenders.push(path.display().to_string());
+        }
+    }
+    assert!(
+        runtime_offenders.is_empty(),
+        "runtime contract modules must not import HTTP-owned types:\n{}",
+        runtime_offenders.join("\n")
+    );
+
+    let core = read("crates/boardwalk/src/core.rs");
+    for snippet in [
+        "pub struct TransitionInput",
+        "pub struct StreamSpec",
+        "pub struct FieldSpec",
+        "pub enum TransitionResultKind",
+        "pub enum Idempotency",
+        "pub enum Effect",
+        "pub struct TransitionSpec",
+        "pub struct ResourceSpec",
+        "pub struct ActorSpec",
+        "pub struct JobHandle",
+        "pub enum TransitionOutcome",
+    ] {
+        assert!(
+            !core.contains(snippet),
+            "final Resource/Actor contract definition still lives in core.rs: `{snippet}`"
+        );
+    }
+}
+
+#[test]
 fn boardwalk_builder_does_not_expose_private_adapter_surface() {
     let server = read("crates/boardwalk/src/server.rs");
     for snippet in [

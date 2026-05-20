@@ -11,8 +11,7 @@ mod routes;
 mod ws;
 
 #[allow(unused_imports)]
-pub(crate) use core::{Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, sanitize_properties};
-pub use core::{ResourceSnapshot, StreamSpec, TransitionAffordance};
+pub(crate) use core::{Core, CoreBuilder, DeviceHandle};
 
 #[allow(unused_imports)]
 pub(crate) use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
