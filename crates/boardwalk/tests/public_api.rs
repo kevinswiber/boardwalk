@@ -319,6 +319,14 @@ fn boardwalk_builder_does_not_expose_private_adapter_surface() {
         "Boardwalk should expose actor-native registration"
     );
     assert!(
+        server.contains("pub async fn listen_on"),
+        "Boardwalk should expose serving on an already-bound listener"
+    );
+    assert!(
+        server.contains("pub async fn listen_until_on"),
+        "Boardwalk should expose graceful serving on an already-bound listener"
+    );
+    assert!(
         !server.contains("Vec<Box<dyn Device>>"),
         "Boardwalk must not collect boxed private adapter resources"
     );

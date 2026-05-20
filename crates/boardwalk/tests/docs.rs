@@ -163,6 +163,10 @@ fn docs_describe_reusable_actor_http_runtime() {
         "peers.md should show actor registration through the Boardwalk builder"
     );
     assert!(
+        peers.contains("listen_until_on"),
+        "peers.md should document graceful serving on an already-bound listener"
+    );
+    assert!(
         peers.contains("`NodeBuilder`"),
         "peers.md should explain the relationship to the actor runtime"
     );

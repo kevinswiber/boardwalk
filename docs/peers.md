@@ -119,4 +119,6 @@ Boardwalk::new()
 ```
 
 `listen_until` accepts any `Future<Output = ()>` as the shutdown
-signal. Peer tasks, app tasks, and scout tasks are aborted on return.
+signal. Use `listen_until_on` when the listener is already bound, such
+as in test harnesses that need to reserve an ephemeral port. Peer tasks,
+app tasks, and scout tasks are aborted on return.

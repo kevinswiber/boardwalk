@@ -217,9 +217,20 @@ impl Boardwalk {
         addr: SocketAddr,
         signal: F,
     ) -> anyhow::Result<()> {
-        let built = self.build()?;
-        tracing::info!(%addr, "boardwalk-rs listening (graceful)");
         let listener = tokio::net::TcpListener::bind(addr).await.context("bind")?;
+        self.listen_until_on(listener, signal).await
+    }
+
+    /// Serve on an already-bound listener until `signal` resolves.
+    pub async fn listen_until_on<F: std::future::Future<Output = ()> + Send + 'static>(
+        self,
+        listener: tokio::net::TcpListener,
+        signal: F,
+    ) -> anyhow::Result<()> {
+        let built = self.build()?;
+        if let Ok(addr) = listener.local_addr() {
+            tracing::info!(%addr, "boardwalk-rs listening (graceful)");
+        }
         let res = axum::serve(listener, built.router)
             .with_graceful_shutdown(signal)
             .await
