@@ -32,7 +32,7 @@ The example performs the same steps an application would:
 ```rust,ignore
 use std::sync::Arc;
 
-use boardwalk::core::TransitionInput;
+use boardwalk::TransitionInput;
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::runtime::{NodeBuilder, NodeHandle};
 use boardwalk_mock_led::Led;

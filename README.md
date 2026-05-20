@@ -70,24 +70,19 @@ cargo run --bin tunnel-poc
 ## Module layout
 
 The whole library lives in the single [`boardwalk`] crate. The
-Resource/Actor model lives in `boardwalk::runtime`, `ResourceSnapshot`
-lives in `boardwalk::http`, transition metadata lives in
-`boardwalk::core`, and event delivery lives in `boardwalk::events`.
-Submodules expose lower-level surface for embedders:
+Resource/Actor model lives behind a small crate-root facade, with
+curated `runtime`, `query`, `caql`, and `events` modules for focused
+subdomains.
+The crate root exports the authoring facade: `Boardwalk`, `Resource`,
+`Actor`, `NodeBuilder`, `ResourceSnapshot`, transition metadata, and
+stream specs. Curated submodules cover focused domains:
 
-| Module                 | What's in it                                                        |
-| ---------------------- | ------------------------------------------------------------------- |
-| `boardwalk::core`      | Transition metadata, `TransitionInput`, `TransitionOutcome`, specs  |
-| `boardwalk::runtime`   | `Resource`, `Actor`, `Node`, runtime handles, lifecycle contexts     |
-| `boardwalk::siren`     | Siren entity / action / link / field types + serde                  |
-| `boardwalk::query`     | Runtime-owned query AST + evaluator (`Query`, `Predicate`, …)       |
-| `boardwalk::caql`      | Calypso Query Language — text syntax that parses into `query::Query` |
-| `boardwalk::events`    | Event bus, envelopes, topic matching, slow-consumer policies         |
-| `boardwalk::registry`  | redb-backed persistent resource + peer registries                   |
-| `boardwalk::http`      | `ResourceSnapshot`, axum router, Siren rendering, WS endpoint       |
-| `boardwalk::tunnel`    | WebSocket-upgrade + HTTP/2-prior-knowledge tunnel primitives        |
-| `boardwalk::peer`      | Outbound peer client and inbound peer acceptor                      |
-| `boardwalk::server`    | `Boardwalk::new()…listen()` builder                                 |
+| Module               | What's in it                                                        |
+| -------------------- | ------------------------------------------------------------------- |
+| `boardwalk::runtime` | Node runtime, handles, lifecycle contexts, Resource/Actor traits     |
+| `boardwalk::query`   | Runtime-owned query AST + evaluator (`Query`, `Predicate`, …)       |
+| `boardwalk::caql`    | Calypso Query Language — text syntax that parses into `query::Query` |
+| `boardwalk::events`  | Event bus, envelopes, topic matching, slow-consumer policies         |
 
 The `#[actor]` and `#[transition]` proc macros ship in the separate
 [`boardwalk-macros`] crate (a Rust requirement — proc-macro crates can't

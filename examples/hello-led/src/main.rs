@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::core::TransitionInput;
+use boardwalk::TransitionInput;
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::runtime::{NodeBuilder, NodeHandle};
 use boardwalk_mock_led::Led;
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn state(snapshot: &boardwalk::http::ResourceSnapshot) -> &str {
+fn state(snapshot: &boardwalk::ResourceSnapshot) -> &str {
     snapshot.state.as_deref().unwrap_or("unknown")
 }
 

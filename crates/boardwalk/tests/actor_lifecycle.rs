@@ -7,12 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::{
     Actor, ActorCtx, ActorError, ActorHandle, DynFuture, NodeBuilder, Resource, ResourceCtx,
     ResourceError, TransitionCtx, TransitionError,
 };
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 
 struct Tracked {
     started: Arc<AtomicBool>,

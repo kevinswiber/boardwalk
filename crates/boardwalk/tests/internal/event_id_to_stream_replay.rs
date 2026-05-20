@@ -9,12 +9,13 @@
 
 use std::sync::Arc;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::events::{SubscribeOpts, TopicPattern};
-use boardwalk::http::{Core, CoreBuilder};
-use boardwalk::runtime::RequestCtx;
 use futures::future::BoxFuture;
 use uuid::Uuid;
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::events::{SubscribeOpts, TopicPattern};
+use crate::http::{Core, CoreBuilder};
+use crate::runtime::RequestCtx;
 
 #[derive(Default)]
 struct Led {

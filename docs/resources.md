@@ -72,8 +72,7 @@ execution is not part of its contract. Implement `Actor` when the
 resource owns state and accepts transitions.
 
 ```rust,ignore
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 use boardwalk::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx, TransitionError,
 };

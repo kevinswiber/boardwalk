@@ -1,7 +1,7 @@
 //! Proc macros for ergonomic Boardwalk actors.
 //!
 //! ```ignore
-//! use boardwalk::core::{TransitionInput, TransitionOutcome};
+//! use boardwalk::{TransitionInput, TransitionOutcome};
 //! use boardwalk::runtime::{TransitionCtx, TransitionError};
 //! use boardwalk_macros::{actor, transition};
 //!
@@ -127,11 +127,11 @@ pub fn actor(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 &'__a mut self,
                 __ctx: #bw::runtime::TransitionCtx,
                 __name: &'__a str,
-                __input: #bw::core::TransitionInput,
+                __input: #bw::TransitionInput,
             ) -> #bw::runtime::DynFuture<
                 '__a,
                 ::std::result::Result<
-                    #bw::core::TransitionOutcome,
+                    #bw::TransitionOutcome,
                     #bw::runtime::TransitionError,
                 >,
             > {

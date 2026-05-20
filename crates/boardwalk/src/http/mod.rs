@@ -10,16 +10,17 @@ mod render;
 mod routes;
 mod ws;
 
-pub use core::{
-    Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, ResourceSnapshot, StreamSpec,
-    TransitionAffordance, sanitize_properties,
-};
+#[allow(unused_imports)]
+pub(crate) use core::{Core, CoreBuilder, DeviceHandle, RESERVED_FIELDS, sanitize_properties};
+pub use core::{ResourceSnapshot, StreamSpec, TransitionAffordance};
 
-pub use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
-pub use peer_streams::PeerStreamHub;
+#[allow(unused_imports)]
+pub(crate) use app::{App, AppError, DeviceProxy, Scout, ScoutCtx, ServerHandle};
+pub(crate) use peer_streams::PeerStreamHub;
 // Internal-only assembly types; surfaced to sibling modules
 // (`crate::server`, `crate::peer`) but not re-exported.
 pub(crate) use routes::{
     AppState, DeviceRegistrar, DeviceRegistration, PeerHandler, PeerInitState, router_with,
 };
-pub use routes::{PeerSenders, router};
+#[allow(unused_imports)]
+pub(crate) use routes::{PeerSenders, router};

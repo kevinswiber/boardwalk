@@ -9,21 +9,22 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::Boardwalk;
-use boardwalk::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, ResourceSpec, StreamKind, StreamSpec,
-    TransitionInput, TransitionOutcome,
-};
-use boardwalk::events::{SubscribeOpts, TopicPattern};
-use boardwalk::http::ResourceSnapshot;
-use boardwalk::runtime::{
-    Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
-    TransitionError,
-};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::Boardwalk;
+use crate::core::{
+    Device, DeviceConfig, DeviceCtx, DeviceError, ResourceSpec, StreamKind, StreamSpec,
+    TransitionInput, TransitionOutcome,
+};
+use crate::events::{SubscribeOpts, TopicPattern};
+use crate::http::ResourceSnapshot;
+use crate::runtime::{
+    Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
+    TransitionError,
+};
 
 #[derive(Default)]
 struct Photocell;
@@ -253,7 +254,7 @@ impl Actor for EagerLed {
     }
 }
 
-async fn led_proxy(handle: &NodeHandle, id: &str) -> boardwalk::runtime::ResourceProxy {
+async fn led_proxy(handle: &NodeHandle, id: &str) -> crate::runtime::ResourceProxy {
     handle
         .query("where kind = \"led\"")
         .await

@@ -24,6 +24,7 @@ pub type TransitionName = String;
 /// Wire-level identity of a state.
 pub type StateName = String;
 
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum DeviceError {
     #[error("invalid input: {0}")]
@@ -206,6 +207,7 @@ pub enum TransitionOutcome {
 pub type ResourceKind = String;
 
 /// Builder accepted by `Device::config`.
+#[allow(dead_code)]
 #[derive(Default, Debug, Clone)]
 pub struct DeviceConfig {
     pub type_: Option<String>,
@@ -217,6 +219,7 @@ pub struct DeviceConfig {
     pub monitored: Vec<String>,
 }
 
+#[allow(dead_code)]
 impl DeviceConfig {
     pub fn type_(&mut self, ty: impl Into<String>) -> &mut Self {
         self.type_ = Some(ty.into());
@@ -316,6 +319,7 @@ impl DeviceConfig {
 
 /// Context handed to a device's `run` task. Lets the device publish to
 /// its declared streams.
+#[allow(dead_code)]
 pub struct DeviceCtx {
     pub id: DeviceId,
     pub type_: String,
@@ -324,11 +328,15 @@ pub struct DeviceCtx {
 
 /// Erased sink used by `DeviceCtx::publish` so `boardwalk-core` doesn't have
 /// to know what the event bus is. The runtime crate provides the impl.
+#[allow(dead_code)]
 pub trait StreamSink: Send + Sync {
     fn publish(&self, stream: &str, data: Value);
 }
 
+// Scout + App live in boardwalk-http (they need Core access).
+
 /// Stable wire identity for a device — what gets serialized in Siren.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProperties {
     pub id: DeviceId,
@@ -340,55 +348,11 @@ pub struct DeviceProperties {
     pub extra: Map<String, Value>,
 }
 
-// Scout + App live in boardwalk-http (they need Core access).
-
 // -- Future-pin helper -----------------------------------------------------
 
 /// `BoxFuture` re-export so device implementations don't need a futures dependency.
+#[allow(dead_code)]
 pub type DynFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
-
-/// Build a `transition` method body that dispatches to inherent
-/// async methods. Use inside a `Device` impl:
-///
-/// ```ignore
-/// impl Led {
-///     async fn turn_on(&mut self) -> Result<(), DeviceError> { ... }
-///     async fn turn_off(&mut self) -> Result<(), DeviceError> { ... }
-/// }
-///
-/// impl Device for Led {
-///     fn config(&self, cfg: &mut DeviceConfig) { ... }
-///     fn state(&self) -> &str { ... }
-///     crate::core::transitions! {
-///         "turn-on" => turn_on,
-///         "turn-off" => turn_off,
-///     }
-/// }
-/// ```
-///
-/// The generated `transition` matches on the wire name and dispatches
-/// to the method; unknown names yield `DeviceError::Invalid`.
-#[macro_export]
-macro_rules! transitions {
-    ( $( $wire:literal => $method:ident ),* $(,)? ) => {
-        fn transition<'a>(
-            &'a mut self,
-            name: &'a str,
-            _input: $crate::TransitionInput,
-        ) -> ::futures::future::BoxFuture<'a, ::std::result::Result<(), $crate::DeviceError>> {
-            ::std::boxed::Box::pin(async move {
-                match name {
-                    $( $wire => self.$method().await, )*
-                    other => ::std::result::Result::Err(
-                        $crate::DeviceError::Invalid(::std::format!(
-                            "unknown transition `{}`", other
-                        )),
-                    ),
-                }
-            })
-        }
-    };
-}
 
 #[cfg(test)]
 mod tests {

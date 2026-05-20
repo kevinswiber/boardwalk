@@ -8,12 +8,11 @@
 use std::collections::BTreeMap;
 
 use axum::http::{HeaderMap, HeaderValue};
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::{
     Actor, ActorCtx, DynFuture, RequestCtx, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 
 #[test]
 fn request_ctx_extracts_traceparent_tracestate_and_x_request_id() {

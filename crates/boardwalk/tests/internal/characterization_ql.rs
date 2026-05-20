@@ -9,9 +9,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{Core, CoreBuilder, ServerHandle, router};
 use serde_json::{Map, Value as Json};
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{Core, CoreBuilder, ServerHandle, router};
 
 #[derive(Default)]
 struct Led {

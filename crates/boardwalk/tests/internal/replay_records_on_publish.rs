@@ -4,13 +4,14 @@
 
 use std::sync::Arc;
 
-use boardwalk::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
-};
-use boardwalk::events::{NodeId, StreamId, SubscribeOpts, TopicPattern};
-use boardwalk::http::CoreBuilder;
 use serde_json::json;
 use uuid::Uuid;
+
+use crate::core::{
+    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
+};
+use crate::events::{NodeId, StreamId, SubscribeOpts, TopicPattern};
+use crate::http::CoreBuilder;
 
 struct TestPublishOnStart {
     stream: String,

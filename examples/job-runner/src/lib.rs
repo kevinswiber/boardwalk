@@ -16,18 +16,18 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use boardwalk::core::{
-    Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSpec, StreamKind, StreamSpec,
-    TransitionInput, TransitionOutcome, TransitionResultKind, TransitionSpec,
-};
 use boardwalk::events::{
     EventEnvelope, NodeId, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern,
 };
-use boardwalk::http::{ResourceSnapshot, StreamSpec as SnapshotStreamSpec, TransitionAffordance};
 use boardwalk::query::FieldPath;
 use boardwalk::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, NodeHandle, Resource, ResourceCtx,
     ResourceError, ResourceProxy, TransitionCtx, TransitionError,
+};
+use boardwalk::{
+    Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSnapshot, ResourceSpec,
+    SnapshotStreamSpec, StreamKind, StreamSpec, TransitionAffordance, TransitionInput,
+    TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};

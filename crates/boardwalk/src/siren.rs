@@ -11,6 +11,7 @@ use url::Url;
 /// Standard rels used throughout Boardwalk. Strings are kept verbatim with
 /// the rel URIs the original Node implementation emits, so existing
 /// clients keep working.
+#[allow(dead_code)]
 pub mod rels {
     pub const SELF: &str = "self";
     pub const UP: &str = "up";
@@ -133,6 +134,7 @@ impl Entity {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_title(mut self, t: impl Into<String>) -> Self {
         self.title = Some(t.into());
         self
@@ -158,6 +160,7 @@ impl Entity {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_self_link(mut self, href: Url) -> Self {
         self.links.push(Link::new(rels::SELF, href));
         self
@@ -226,6 +229,7 @@ impl Action {
 }
 
 impl Field {
+    #[allow(dead_code)]
     pub fn hidden(name: impl Into<String>, value: impl Into<Value>) -> Self {
         Self {
             name: name.into(),

@@ -3,12 +3,13 @@
 
 use std::time::Duration;
 
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::Value as Json;
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 
 #[derive(Default)]
 struct Led {
@@ -153,7 +154,7 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
 async fn cloud_dedups_peer_subscriptions() {
     use std::sync::Arc;
 
-    use boardwalk::http::Core;
+    use crate::http::Core;
 
     let cloud = Boardwalk::new().name("cloud").build().unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

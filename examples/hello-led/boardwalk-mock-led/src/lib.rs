@@ -4,13 +4,13 @@
 
 use std::collections::BTreeMap;
 
-use boardwalk::core::{
-    Effect, ResourceSpec, StreamKind, StreamSpec as ResourceStreamSpec, TransitionInput,
-    TransitionOutcome, TransitionResultKind, TransitionSpec,
-};
-use boardwalk::http::{ResourceSnapshot, StreamSpec as SnapshotStreamSpec, TransitionAffordance};
 use boardwalk::runtime::{
     DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx, TransitionError,
+};
+use boardwalk::{
+    Effect, ResourceSnapshot, ResourceSpec, SnapshotStreamSpec, StreamKind,
+    StreamSpec as ResourceStreamSpec, TransitionAffordance, TransitionInput, TransitionOutcome,
+    TransitionResultKind, TransitionSpec,
 };
 use serde_json::json;
 

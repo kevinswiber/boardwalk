@@ -27,6 +27,7 @@ pub enum PeerError {
     #[error("hyper: {0}")]
     Hyper(#[from] hyper::Error),
     #[error("hyper legacy: {0}")]
+    #[allow(dead_code)]
     HyperLegacy(String),
 }
 
@@ -140,12 +141,14 @@ impl PeerAcceptors {
         *self.registry.lock().unwrap() = Some(registry);
     }
 
+    #[allow(dead_code)]
     pub fn confirmation_count(&self) -> u64 {
         self.confirmations.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Wait until at least one peer confirmation has happened, or
     /// timeout. Returns true on success.
+    #[allow(dead_code)]
     pub async fn wait_for_first(&self, timeout: std::time::Duration) -> bool {
         if self.confirmation_count() > 0 {
             return true;
@@ -222,6 +225,7 @@ impl PeerAcceptors {
         inner.insert(peer_name, task);
     }
 
+    #[allow(dead_code)]
     pub async fn active(&self) -> Vec<String> {
         self.inner.lock().await.keys().cloned().collect()
     }

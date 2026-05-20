@@ -6,10 +6,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{Core, CoreBuilder, router};
 use futures::StreamExt;
 use serde_json::Value as Json;
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{Core, CoreBuilder, router};
 
 #[derive(Default)]
 struct Led {

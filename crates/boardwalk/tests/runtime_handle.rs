@@ -5,13 +5,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::query::Query;
 use boardwalk::runtime::{
     Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 
 #[derive(Default)]
 struct Counter {

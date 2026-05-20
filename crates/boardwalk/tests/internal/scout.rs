@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{Scout, ScoutCtx};
 use futures::future::BoxFuture;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{Scout, ScoutCtx};
 
 #[derive(Default)]
 struct Sensor {

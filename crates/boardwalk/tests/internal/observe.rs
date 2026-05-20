@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{App, AppError, Scout, ScoutCtx, ServerHandle};
 use futures::future::BoxFuture;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{App, AppError, Scout, ScoutCtx, ServerHandle};
 
 #[derive(Default)]
 struct Led;

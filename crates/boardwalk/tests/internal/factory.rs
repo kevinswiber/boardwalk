@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use serde_json::Value as Json;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 
 #[derive(Default)]
 struct Led {

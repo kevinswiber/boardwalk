@@ -10,12 +10,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::{
     Actor, ActorHandle, DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 
 struct Slow {
     delay: Duration,

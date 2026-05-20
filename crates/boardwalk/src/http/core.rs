@@ -64,6 +64,7 @@ impl CoreBuilder {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_device<D: Device + 'static>(&mut self, device: D) -> DeviceId {
         let id = Uuid::new_v4();
         self.add_device_with_id(id, device);
@@ -72,6 +73,7 @@ impl CoreBuilder {
 
     /// Add a device with a caller-supplied id. Used when persistence is
     /// enabled and a stable id was retrieved from the registry.
+    #[allow(dead_code)]
     pub fn add_device_with_id<D: Device + 'static>(&mut self, id: DeviceId, device: D) {
         let mut cfg = DeviceConfig::default();
         device.config(&mut cfg);
@@ -131,6 +133,7 @@ impl CoreBuilder {
 
 /// `StreamSink` impl backed by the event bus. Mints an [`EventEnvelope`]
 /// per publish via the shared [`StreamRegistry`].
+#[allow(dead_code)]
 struct BusSink {
     bus: EventBus,
     registry: StreamRegistry,

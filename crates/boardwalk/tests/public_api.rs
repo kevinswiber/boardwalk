@@ -93,6 +93,54 @@ fn public_api_no_longer_exports_device_names() {
 }
 
 #[test]
+fn public_facade_exports_only_intended_api() {
+    use boardwalk::{
+        Actor, Boardwalk, Resource, ResourceSnapshot, StreamSpec, TransitionInput,
+        TransitionOutcome, TransitionSpec,
+    };
+
+    fn assert_public<T: ?Sized>() {}
+    assert_public::<Boardwalk>();
+    assert_public::<TransitionInput>();
+    assert_public::<TransitionOutcome>();
+    assert_public::<TransitionSpec>();
+    assert_public::<ResourceSnapshot>();
+    assert_public::<StreamSpec>();
+    assert_public::<dyn Actor>();
+    assert_public::<dyn Resource>();
+
+    let lib = read("crates/boardwalk/src/lib.rs");
+    for module in [
+        "core", "http", "peer", "registry", "server", "siren", "tunnel",
+    ] {
+        let declaration = format!("pub mod {module};");
+        assert!(
+            !lib.contains(&declaration),
+            "crate root must not expose broad internal module `{module}`"
+        );
+    }
+}
+
+#[test]
+fn boardwalk_builder_does_not_expose_private_adapter_surface() {
+    let server = read("crates/boardwalk/src/server.rs");
+    for snippet in [
+        "pub fn use_actor",
+        "pub fn use_app",
+        "pub fn use_scout",
+        "pub fn register_factory",
+        "pub fn build(self) -> anyhow::Result<Built>",
+        "pub struct Built",
+        "pub use crate::peer::PeerAcceptors",
+    ] {
+        assert!(
+            !server.contains(snippet),
+            "Boardwalk public facade must not expose private adapter surface `{snippet}`"
+        );
+    }
+}
+
+#[test]
 fn proc_macros_no_longer_generate_device_surface() {
     let macros = read("crates/boardwalk-macros/src/lib.rs");
     let snippets = [

@@ -8,12 +8,11 @@
 
 use std::collections::BTreeMap;
 
-use boardwalk::core::{ResourceSpec, TransitionInput, TransitionOutcome};
-use boardwalk::http::ResourceSnapshot;
 use boardwalk::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
+use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
 
 struct MetadataResource;
 

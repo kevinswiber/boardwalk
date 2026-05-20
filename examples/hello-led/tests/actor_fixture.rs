@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::core::{TransitionInput, TransitionOutcome};
 use boardwalk::events::{SubscribeOpts, TopicPattern};
 use boardwalk::runtime::{Actor, NodeBuilder, NodeHandle, Resource, TransitionError};
+use boardwalk::{TransitionInput, TransitionOutcome};
 use boardwalk_mock_led::Led;
 use serde_json::json;
 

@@ -9,12 +9,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::Value as Json;
 use tokio_rustls::TlsAcceptor;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 
 #[derive(Default)]
 struct Led {

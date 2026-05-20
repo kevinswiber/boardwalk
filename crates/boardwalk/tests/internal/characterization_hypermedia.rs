@@ -8,10 +8,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{Core, CoreBuilder, router};
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{Core, CoreBuilder, router};
 
 #[derive(Default)]
 struct Led {

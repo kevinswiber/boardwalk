@@ -89,6 +89,7 @@ impl PeerStreamHub {
     }
 
     /// Count of distinct (peer, topic) entries. Useful for tests.
+    #[allow(dead_code)]
     pub async fn active_streams(&self) -> usize {
         self.inner.lock().await.len()
     }
@@ -96,6 +97,7 @@ impl PeerStreamHub {
     /// Refcount for a specific `(peer, topic)` stream. `None` if no
     /// stream is registered. Test-only — callers should not depend on
     /// the exact number outside tests.
+    #[allow(dead_code)]
     pub async fn refcount(&self, peer: &str, topic: &str) -> Option<usize> {
         let map = self.inner.lock().await;
         map.get(&(peer.to_string(), topic.to_string()))
@@ -106,6 +108,7 @@ impl PeerStreamHub {
     /// sender. Lets tests inject events directly without going through
     /// the hub's NDJSON ingest path, which is how lag can be forced
     /// deterministically.
+    #[allow(dead_code)]
     pub async fn broadcast_sender(
         &self,
         peer: &str,

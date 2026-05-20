@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use boardwalk::core::{
+use serde_json::{Value as Json, json};
+
+use crate::core::{
     Device, DeviceConfig, DeviceError, Effect, Idempotency, TransitionInput, TransitionResultKind,
 };
-use boardwalk::http::{Core, CoreBuilder, router};
-use serde_json::{Value as Json, json};
+use crate::http::{Core, CoreBuilder, router};
 
 struct SchemaLed;
 

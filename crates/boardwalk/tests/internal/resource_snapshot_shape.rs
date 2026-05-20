@@ -5,11 +5,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput, TransitionSpec};
-use boardwalk::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
-use boardwalk::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput, TransitionSpec};
+use crate::http::{CoreBuilder, ResourceSnapshot, StreamSpec, TransitionAffordance};
+use crate::query::{self, ComparisonOp, FieldPath, Literal, Predicate, Projection, Query};
 
 fn sample() -> ResourceSnapshot {
     let mut properties = Map::new();
@@ -61,23 +62,23 @@ fn resource_snapshot_query_value_exposes_widened_contract() {
         node: "hub".into(),
         properties: Map::new(),
         labels,
-        transitions: vec![boardwalk::http::TransitionAffordance {
+        transitions: vec![crate::http::TransitionAffordance {
             spec: TransitionSpec {
                 name: "cancel".into(),
                 title: Some("Cancel job".into()),
                 allowed_states: vec!["running".into()],
                 input_schema: Some(serde_json::json!({"type": "object"})),
                 output_schema: None,
-                result: boardwalk::core::TransitionResultKind::Sync,
-                idempotency: boardwalk::core::Idempotency::Required,
-                effect: boardwalk::core::Effect::UnsafeIdempotent,
+                result: crate::core::TransitionResultKind::Sync,
+                idempotency: crate::core::Idempotency::Required,
+                effect: crate::core::Effect::UnsafeIdempotent,
                 required_scopes: vec!["job.cancel".into()],
                 fields: vec![],
             },
             available: true,
             unavailable_reason: None,
         }],
-        streams: vec![boardwalk::http::StreamSpec {
+        streams: vec![crate::http::StreamSpec {
             name: "logs".into(),
             kind: "object".into(),
         }],
@@ -151,7 +152,7 @@ fn sanitize_properties_strips_all_reserved_resource_fields() {
     hostile.insert("type".into(), Json::String("user-type".into()));
     hostile.insert("color".into(), Json::String("red".into()));
 
-    let cleaned = boardwalk::http::sanitize_properties(hostile);
+    let cleaned = crate::http::sanitize_properties(hostile);
     assert_eq!(
         cleaned.len(),
         2,
@@ -258,7 +259,7 @@ fn reserved_fields_are_stripped_from_properties() {
     hostile.insert("metadata".into(), Json::Object(Map::new()));
     hostile.insert("properties".into(), Json::Object(Map::new()));
 
-    let cleaned = boardwalk::http::sanitize_properties(hostile);
+    let cleaned = crate::http::sanitize_properties(hostile);
     assert_eq!(cleaned.len(), 1);
     assert_eq!(cleaned.get("color"), Some(&Json::String("red".into())));
 }
@@ -268,7 +269,7 @@ fn type_is_not_reserved_at_snapshot_level() {
     let mut props = Map::new();
     props.insert("type".into(), Json::String("shadow-led".into()));
     props.insert("color".into(), Json::String("red".into()));
-    let cleaned = boardwalk::http::sanitize_properties(props);
+    let cleaned = crate::http::sanitize_properties(props);
     assert_eq!(
         cleaned.get("type"),
         Some(&Json::String("shadow-led".into())),
@@ -309,7 +310,7 @@ impl Device for AdapterLed {
     }
 }
 
-async fn one_device(led: AdapterLed) -> Arc<boardwalk::http::Core> {
+async fn one_device(led: AdapterLed) -> Arc<crate::http::Core> {
     let mut b = CoreBuilder::new("hub");
     b.add_device(led);
     b.build()
@@ -348,7 +349,7 @@ async fn adapter_populates_allowed_states_from_when() {
 /// "turn-on", ...)` would silently overwrite `allowed_states`.
 #[test]
 fn device_config_transition_preserves_allowed_states_set_by_when() {
-    use boardwalk::core::{DeviceConfig, FieldSpec};
+    use crate::core::{DeviceConfig, FieldSpec};
     let mut cfg = DeviceConfig::default();
     cfg.when("off", &["turn-on"])
         .when("on", &["turn-off"])
@@ -461,7 +462,7 @@ async fn adapter_to_query_value_used_by_query_eval() {
     let d = core.list_devices().await.into_iter().next().unwrap();
     let snap = d.to_resource_snapshot("hub");
 
-    let q = boardwalk::caql::parse(r#"where kind = "led""#).unwrap();
+    let q = crate::caql::parse(r#"where kind = "led""#).unwrap();
     assert!(query::matches(&q, &snap.to_query_value()).unwrap());
 }
 

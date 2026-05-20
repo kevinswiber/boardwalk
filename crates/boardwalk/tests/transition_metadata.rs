@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use boardwalk::core::{
+use boardwalk::{
     ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceSpec, StreamKind, StreamSpec,
     TransitionOutcome, TransitionResultKind, TransitionSpec,
 };

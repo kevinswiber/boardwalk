@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::http::{App, AppError, CoreBuilder, ServerHandle};
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json};
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::http::{App, AppError, CoreBuilder, ServerHandle};
 
 #[derive(Default)]
 struct Led {

@@ -31,7 +31,7 @@
 //!   segment of `p` resolves, including when the final value is
 //!   `null`.
 //!
-//! See [`docs/caql.md`] in the repo for the full user-facing reference.
+//! See `docs/caql.md` in the repo for the full user-facing reference.
 
 #![forbid(unsafe_code)]
 

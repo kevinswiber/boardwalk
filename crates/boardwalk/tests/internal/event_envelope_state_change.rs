@@ -7,17 +7,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, HeaderValue};
-use boardwalk::core::{
+use futures::future::BoxFuture;
+use uuid::Uuid;
+
+use crate::core::{
     Device, DeviceConfig, DeviceError, ResourceSpec, StreamSpec, TransitionInput, TransitionOutcome,
 };
-use boardwalk::events::{SubscribeOpts, TopicPattern};
-use boardwalk::http::{Core, CoreBuilder, ResourceSnapshot, router};
-use boardwalk::runtime::{
+use crate::events::{SubscribeOpts, TopicPattern};
+use crate::http::{Core, CoreBuilder, ResourceSnapshot, router};
+use crate::runtime::{
     Actor, DynFuture, NodeBuilder, NodeHandle, RequestCtx, Resource, ResourceCtx, ResourceError,
     TransitionCtx, TransitionError,
 };
-use futures::future::BoxFuture;
-use uuid::Uuid;
 
 const TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 

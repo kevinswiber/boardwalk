@@ -9,10 +9,10 @@
 //! Common imports for the Resource/Actor surface:
 //!
 //! ```rust
-//! use boardwalk::core::{TransitionInput, TransitionOutcome};
-//! use boardwalk::events::SlowConsumerPolicy;
-//! use boardwalk::http::ResourceSnapshot;
-//! use boardwalk::runtime::{Actor, NodeBuilder, Resource};
+//! use boardwalk::{
+//!     Actor, NodeBuilder, Resource, ResourceSnapshot, SlowConsumerPolicy,
+//!     TransitionInput, TransitionOutcome,
+//! };
 //! ```
 //!
 //! The `examples/job-runner` package shows async transition acceptance
@@ -24,18 +24,28 @@
 #![forbid(unsafe_code)]
 
 pub mod caql;
-pub mod core;
+mod core;
 pub mod events;
-pub mod http;
-pub mod peer;
+mod http;
+mod peer;
 pub mod query;
-pub mod registry;
+mod registry;
 pub mod runtime;
-pub mod server;
-pub mod siren;
-pub mod tunnel;
+mod server;
+mod siren;
+mod tunnel;
+
+#[cfg(test)]
+mod internal_adapter_tests;
 
 pub use boardwalk_macros::{actor, transition};
 
-pub use crate::core::{TransitionInput, TransitionOutcome};
+pub use crate::core::{
+    ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSpec, StateName,
+    StreamKind, StreamSpec, TransitionInput, TransitionName, TransitionOutcome,
+    TransitionResultKind, TransitionSpec,
+};
+pub use crate::events::SlowConsumerPolicy;
+pub use crate::http::{ResourceSnapshot, StreamSpec as SnapshotStreamSpec, TransitionAffordance};
+pub use crate::runtime::{Actor, Node, NodeBuilder, NodeHandle, Resource};
 pub use crate::server::Boardwalk;

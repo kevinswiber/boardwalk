@@ -5,13 +5,14 @@
 
 use std::sync::Arc;
 
-use boardwalk::core::{
-    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
-};
-use boardwalk::events::{StreamRegistry, SubscribeOpts, TopicPattern};
-use boardwalk::http::{Core, CoreBuilder};
 use serde_json::json;
 use uuid::Uuid;
+
+use crate::core::{
+    Device, DeviceConfig, DeviceCtx, DeviceError, StreamKind, StreamSink, TransitionInput,
+};
+use crate::events::{StreamRegistry, SubscribeOpts, TopicPattern};
+use crate::http::{Core, CoreBuilder};
 
 /// Test device implementation that publishes `n` events to one stream the moment
 /// `on_start` is invoked.

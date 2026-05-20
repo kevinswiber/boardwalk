@@ -16,8 +16,7 @@ use crate::http::{
     App, AppState, Core, CoreBuilder, DeviceRegistrar, DeviceRegistration, PeerHandler,
     PeerInitState, Scout, ScoutCtx, ServerHandle, router_with,
 };
-pub use crate::peer::PeerAcceptors;
-use crate::peer::PeerClient;
+use crate::peer::{PeerAcceptors, PeerClient};
 use crate::registry::{DeviceRecord, Registry};
 
 pub struct Boardwalk {
@@ -61,17 +60,20 @@ impl Boardwalk {
     /// Register an actor with this Boardwalk instance.
     ///
     /// Actor implementations currently satisfy the core [`Device`] trait.
-    pub fn use_actor<D: Device>(mut self, d: D) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn use_actor<D: Device>(mut self, d: D) -> Self {
         self.devices.push(Box::new(d));
         self
     }
 
-    pub fn use_app<A: App>(mut self, a: A) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn use_app<A: App>(mut self, a: A) -> Self {
         self.apps.push(Arc::new(a));
         self
     }
 
-    pub fn use_scout<S: Scout>(mut self, s: S) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn use_scout<S: Scout>(mut self, s: S) -> Self {
         self.scouts.push(Arc::new(s));
         self
     }
@@ -80,7 +82,8 @@ impl Boardwalk {
     /// receives the form fields from `POST /resources` (minus the
     /// standard `type`/`id`/`name` fields, which are extracted
     /// separately) and returns a freshly-built device.
-    pub fn register_factory<F>(mut self, type_name: impl Into<String>, factory: F) -> Self
+    #[allow(dead_code)]
+    pub(crate) fn register_factory<F>(mut self, type_name: impl Into<String>, factory: F) -> Self
     where
         F: Fn(HashMap<String, String>) -> Result<Box<dyn Device>, DeviceError>
             + Send
@@ -145,8 +148,8 @@ impl Boardwalk {
     }
 
     /// Build the runtime + router + spawn peer clients without binding.
-    /// Useful for integration tests.
-    pub fn build(self) -> anyhow::Result<Built> {
+    /// Useful for crate-local integration tests.
+    pub(crate) fn build(self) -> anyhow::Result<Built> {
         // Open the registry if persistence was requested. Device IDs
         // are then stable across restarts (keyed by type + name).
         let registry = self
@@ -347,13 +350,14 @@ fn resolve_runtime_id(
 }
 
 /// Materialized server pieces, returned by `Boardwalk::build()`.
-pub struct Built {
-    pub core: Arc<Core>,
-    pub peer_tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub app_tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub scout_tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub router: axum::Router,
-    pub acceptors: PeerAcceptors,
-    pub peer_streams: crate::http::PeerStreamHub,
-    pub registry: Option<Arc<Registry>>,
+#[allow(dead_code)]
+pub(crate) struct Built {
+    pub(crate) core: Arc<Core>,
+    pub(crate) peer_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub(crate) app_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub(crate) scout_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub(crate) router: axum::Router,
+    pub(crate) acceptors: PeerAcceptors,
+    pub(crate) peer_streams: crate::http::PeerStreamHub,
+    pub(crate) registry: Option<Arc<Registry>>,
 }

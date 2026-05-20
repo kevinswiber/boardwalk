@@ -64,6 +64,7 @@ pub fn ws_new_key() -> String {
 /// What `dial_initiator` returns once the WS upgrade is complete.
 pub struct InitiatorReady {
     pub upgraded: hyper::upgrade::Upgraded,
+    #[allow(dead_code)]
     pub remote_authority: String,
 }
 
@@ -209,6 +210,7 @@ pub fn build_upgrade_response(
 }
 
 /// Helper re-export of the hyper-util executor used for serving H2.
+#[allow(unused_imports)]
 pub use hyper_util::rt::TokioExecutor as H2Executor;
 
 /// Helper trait alias for boxed I/O.

@@ -7,13 +7,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
-use boardwalk::events::{ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId};
-use boardwalk::http::{Core, CoreBuilder, router};
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
+use crate::events::{ENVELOPE_VERSION, EventEnvelope, EventId, NodeId, StreamId};
+use crate::http::{Core, CoreBuilder, router};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

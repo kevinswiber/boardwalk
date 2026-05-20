@@ -4,6 +4,9 @@
 //! the server boots. The handle lets the app run CaQL queries against
 //! the local registry and operate on devices.
 
+// App/Scout compatibility is private until the actor-backed HTTP facade lands.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};

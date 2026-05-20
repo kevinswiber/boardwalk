@@ -3,10 +3,11 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use boardwalk::Boardwalk;
-use boardwalk::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 use futures::future::BoxFuture;
 use tokio::sync::oneshot;
+
+use crate::Boardwalk;
+use crate::core::{Device, DeviceConfig, DeviceError, TransitionInput};
 
 #[derive(Default)]
 struct Led;

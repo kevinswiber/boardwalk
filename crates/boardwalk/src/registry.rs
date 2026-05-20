@@ -69,6 +69,7 @@ pub enum PeerStatus {
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 
+#[allow(dead_code)]
 pub struct Config {
     pub root: PathBuf,
 }
@@ -116,6 +117,7 @@ impl Registry {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_device(&self, id: &Uuid) -> Result<Option<DeviceRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(DEVICES)?;
@@ -136,6 +138,7 @@ impl Registry {
         Ok(out)
     }
 
+    #[allow(dead_code)]
     pub fn delete_device(&self, id: &Uuid) -> Result<bool, RegistryError> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -174,6 +177,7 @@ impl Registry {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_peer(&self, name: &str) -> Result<Option<PeerRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(PEERS)?;
@@ -183,6 +187,7 @@ impl Registry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn list_peers(&self) -> Result<Vec<PeerRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(PEERS)?;
@@ -194,6 +199,7 @@ impl Registry {
         Ok(out)
     }
 
+    #[allow(dead_code)]
     pub fn delete_peer(&self, name: &str) -> Result<bool, RegistryError> {
         let txn = self.db.begin_write()?;
         let removed = {

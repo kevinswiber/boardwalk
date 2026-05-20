@@ -87,6 +87,7 @@ pub(crate) struct AppState {
     pub device_registrar: Option<DeviceRegistrar>,
 }
 
+#[allow(dead_code)]
 pub fn router(core: Arc<Core>) -> Router {
     router_with(AppState {
         core,
