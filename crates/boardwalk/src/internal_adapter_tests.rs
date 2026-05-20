@@ -4,6 +4,10 @@ mod actor_led_fixture;
 mod boardwalk_builder;
 #[path = "../tests/internal/event_id_to_stream_replay.rs"]
 mod event_id_to_stream_replay;
+#[path = "../tests/internal/event_stream_contracts.rs"]
+mod event_stream_contracts;
+#[path = "../tests/internal/explicit_stream_emission.rs"]
+mod explicit_stream_emission;
 #[path = "../tests/internal/peer.rs"]
 mod peer;
 #[path = "../tests/internal/peer_broadcast_lag_emits_stream_gap.rs"]
@@ -20,6 +24,8 @@ mod resource_actor_http_core;
 mod resource_event_wire_shape;
 #[path = "../tests/internal/resource_registration.rs"]
 mod resource_registration;
+#[path = "../tests/internal/resource_registry_persistence.rs"]
+mod resource_registry_persistence;
 #[path = "../tests/internal/shutdown.rs"]
 mod shutdown;
 #[path = "../tests/internal/tls.rs"]
