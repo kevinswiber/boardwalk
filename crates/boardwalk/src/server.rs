@@ -58,6 +58,9 @@ impl Boardwalk {
         self
     }
 
+    /// Register an actor with this Boardwalk instance.
+    ///
+    /// Actor implementations currently satisfy the core [`Device`] trait.
     pub fn use_actor<D: Device>(mut self, d: D) -> Self {
         self.devices.push(Box::new(d));
         self
