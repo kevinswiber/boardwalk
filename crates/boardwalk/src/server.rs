@@ -309,10 +309,7 @@ impl Boardwalk {
         let mut node_builder = NodeBuilder::new(node_id.clone());
         for actor in self.actors {
             let PendingActor { spec, id, register } = actor;
-            let id = match id {
-                Some(id) => id,
-                None => resolve_resource_id(repository_ref(&repositories), &spec)?,
-            };
+            let id = resolve_resource_id(repository_ref(&repositories), &spec, id)?;
             node_builder = register(node_builder, id)
                 .map_err(|err| anyhow::anyhow!("register actor: {err:?}"))?;
         }
@@ -428,7 +425,7 @@ fn build_resource_registrar(
                     })?;
                     let actor = factory(registration)?;
                     let spec = actor.spec();
-                    let id = resolve_or_create_resource_identity(
+                    let id = resolve_or_create_resource_identity_uuid(
                         repository_ref(&repositories),
                         &spec,
                         explicit_id,
@@ -452,9 +449,9 @@ fn build_resource_registrar(
 fn resolve_resource_id(
     repositories: Option<&dyn Repositories>,
     spec: &ResourceSpec,
+    explicit: Option<String>,
 ) -> anyhow::Result<String> {
-    resolve_or_create_resource_identity(repositories, spec, None)
-        .map(|id| id.to_string())
+    resolve_or_create_resource_identity(repositories, spec, explicit)
         .map_err(resource_identity_anyhow)
 }
 
@@ -467,17 +464,17 @@ enum ResourceIdentityError {
 fn resolve_or_create_resource_identity(
     repositories: Option<&dyn Repositories>,
     spec: &ResourceSpec,
-    explicit: Option<Uuid>,
-) -> Result<Uuid, ResourceIdentityError> {
+    explicit: Option<String>,
+) -> Result<String, ResourceIdentityError> {
     let Some(repositories) = repositories else {
-        return Ok(explicit.unwrap_or_else(Uuid::new_v4));
+        return Ok(explicit.unwrap_or_else(|| Uuid::new_v4().to_string()));
     };
     let identities = repositories.resource_identities();
     let identity_keys = resource_identity_keys(spec);
 
     if let Some(id) = explicit {
         if let Some(existing) = identities
-            .get(&id.to_string())
+            .get(&id)
             .map_err(resource_identity_storage_error)?
         {
             if resource_identity_record_matches(&existing, spec) {
@@ -488,36 +485,51 @@ fn resolve_or_create_resource_identity(
             )));
         }
         if let Some(existing) = find_resource_identity(identities, &identity_keys)?
-            && existing.id != id.to_string()
+            && existing.id != id
         {
             return Err(ResourceIdentityError::Conflict(format!(
                 "resource identity `{}` is already registered",
                 resource_identity_label(spec)
             )));
         }
-        put_resource_identity(identities, spec, &identity_keys, id)?;
+        put_resource_identity(identities, spec, &identity_keys, &id)?;
         return Ok(id);
     }
 
     if let Some(existing) = find_resource_identity(identities, &identity_keys)? {
-        return resource_identity_uuid(&existing);
+        return Ok(existing.id);
     }
 
-    let id = Uuid::new_v4();
-    put_resource_identity(identities, spec, &identity_keys, id)?;
+    let id = Uuid::new_v4().to_string();
+    put_resource_identity(identities, spec, &identity_keys, &id)?;
     Ok(id)
+}
+
+fn resolve_or_create_resource_identity_uuid(
+    repositories: Option<&dyn Repositories>,
+    spec: &ResourceSpec,
+    explicit: Option<Uuid>,
+) -> Result<Uuid, ResourceIdentityError> {
+    let id =
+        resolve_or_create_resource_identity(repositories, spec, explicit.map(|id| id.to_string()))?;
+    Uuid::parse_str(&id).map_err(|_| {
+        ResourceIdentityError::Conflict(format!(
+            "resource identity `{}` is already registered",
+            resource_identity_label(spec)
+        ))
+    })
 }
 
 fn put_resource_identity(
     identities: &dyn crate::persistence::ResourceIdentityRepository,
     spec: &ResourceSpec,
     identity_keys: &[IdentityKey],
-    id: Uuid,
+    id: &str,
 ) -> Result<(), ResourceIdentityError> {
     let now_ms = now_ms();
     identities
         .put(ResourceIdentityRecord {
-            id: id.to_string(),
+            id: id.into(),
             kind: spec.kind.clone(),
             name: spec.name.clone(),
             identity_keys: identity_keys.to_vec(),
@@ -545,10 +557,6 @@ fn find_resource_identity(
 
 fn resource_identity_record_matches(record: &ResourceIdentityRecord, spec: &ResourceSpec) -> bool {
     record.kind == spec.kind && record.name == spec.name
-}
-
-fn resource_identity_uuid(record: &ResourceIdentityRecord) -> Result<Uuid, ResourceIdentityError> {
-    Uuid::parse_str(&record.id).map_err(|_| ResourceIdentityError::Storage)
 }
 
 fn resource_identity_keys(spec: &ResourceSpec) -> Vec<IdentityKey> {

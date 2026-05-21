@@ -973,6 +973,51 @@ async fn explicit_factory_id_conflict_is_reported_before_actor_starts() {
 }
 
 #[tokio::test]
+async fn explicit_static_actor_id_conflict_is_reported_before_actor_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    repos
+        .resource_identities()
+        .put(identity_record("front-panel"))
+        .unwrap();
+    drop(repos);
+
+    let result = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build();
+    let Err(err) = result else {
+        panic!("expected explicit actor id conflict");
+    };
+
+    assert!(
+        err.to_string().contains("already registered"),
+        "expected explicit actor id conflict, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn factory_registration_conflicts_with_static_actor_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build()
+        .unwrap();
+
+    let err = try_register_factory_resource(&db_path, "led", "LED", None)
+        .await
+        .unwrap_err();
+
+    assert_conflict(err);
+}
+
+#[tokio::test]
 async fn resource_id_is_random_without_persistence() {
     let first = Boardwalk::new()
         .name("hub")
