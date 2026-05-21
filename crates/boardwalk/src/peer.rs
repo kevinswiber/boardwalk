@@ -88,10 +88,7 @@ impl RouteName {
         if route_name.trim().is_empty() {
             return Err(PeerModelError::EmptyRouteName);
         }
-        if route_name
-            .chars()
-            .any(|ch| matches!(ch, '/' | '?' | '#' | '%'))
-        {
+        if !route_name.chars().all(is_route_name_char) {
             return Err(PeerModelError::InvalidRouteName(route_name));
         }
         Ok(Self(route_name))
@@ -100,6 +97,10 @@ impl RouteName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn is_route_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | '_' | '~')
 }
 
 impl fmt::Display for RouteName {
@@ -713,7 +714,7 @@ impl PeerAcceptors {
                 .lock()
                 .await
                 .insert(peer_name_for_task.clone(), admitted_for_task.clone());
-            match drive_acceptor(
+            let drive_succeeded = match drive_acceptor(
                 peer_name_for_task.clone(),
                 connection_id,
                 upgraded,
@@ -730,6 +731,7 @@ impl PeerAcceptors {
                         .confirmations
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     acceptors.notify.notify_waiters();
+                    true
                 }
                 Err(e) => {
                     acceptors.contexts.lock().await.remove(&peer_name_for_task);
@@ -737,8 +739,9 @@ impl PeerAcceptors {
                         write_peer(reg, &admitted_for_task, PeerConnectionStatus::Failed);
                     }
                     tracing::warn!(peer = %peer_name_for_task, error = %e, "peer acceptor failed");
+                    false
                 }
-            }
+            };
             let mut inner = acceptors.inner.lock().await;
             inner.remove(&peer_name_for_task);
             // The senders entry is cleaned up by the conn-cleanup task
@@ -748,7 +751,10 @@ impl PeerAcceptors {
                 // Best-effort: if the sender is still there, leave the
                 // status alone; otherwise mark disconnected.
                 let senders = acceptors.senders.lock().await;
-                if !senders.contains_key(&peer_name_for_task) {
+                if should_record_disconnected(
+                    drive_succeeded,
+                    senders.contains_key(&peer_name_for_task),
+                ) {
                     write_peer(reg, &admitted_for_task, PeerConnectionStatus::Disconnected);
                 }
             }
@@ -846,6 +852,10 @@ async fn drive_acceptor(
     Ok(())
 }
 
+fn should_record_disconnected(drive_succeeded: bool, sender_active: bool) -> bool {
+    drive_succeeded && !sender_active
+}
+
 fn write_peer(
     registry: &Registry,
     admitted: &AdmittedPeerConnection,
@@ -925,6 +935,24 @@ mod peer_model_tests {
     }
 
     #[test]
+    fn peer_model_route_name_rejects_unsafe_path_segment_chars() {
+        for name in [
+            "hub name", "hub/name", "hub?x", "hub#frag", "hub%2f", "hub\n",
+        ] {
+            assert!(
+                RouteName::new(name).is_err(),
+                "route name {name:?} should be rejected"
+            );
+        }
+        for name in ["hub", "peer-hub", "peer.hub", "peer_hub", "peer~hub"] {
+            assert!(
+                RouteName::new(name).is_ok(),
+                "route name {name:?} should be accepted"
+            );
+        }
+    }
+
+    #[test]
     fn peer_model_capabilities_parse_and_intersect_known_names() {
         let requested = PeerCapabilities::parse_list("resource.read,stream.subscribe").unwrap();
         let allowed = PeerCapabilities::parse_list("resource.read,transition.invoke").unwrap();
@@ -946,6 +974,13 @@ mod peer_model_tests {
         let conn = PeerConnection::opening(peer.peer_id.clone(), "hub", Uuid::new_v4()).unwrap();
 
         assert_ne!(peer.peer_id.to_string(), conn.connection_id.to_string());
+    }
+
+    #[test]
+    fn failed_acceptor_setup_does_not_immediately_overwrite_failed_status() {
+        assert!(!should_record_disconnected(false, false));
+        assert!(should_record_disconnected(true, false));
+        assert!(!should_record_disconnected(true, true));
     }
 
     #[test]

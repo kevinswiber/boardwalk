@@ -15,7 +15,7 @@ use hyper_util::rt::TokioIo;
 use uuid::Uuid;
 
 use crate::Boardwalk;
-use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerLinkConfig};
+use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerConnectionStatus, PeerLinkConfig};
 use crate::registry::{PeerRecord, Registry};
 use crate::server::Built;
 use crate::tunnel::SUBPROTOCOL;
@@ -239,6 +239,10 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
     )
     .await;
     let first_record = wait_for_peer_record(registry, "hub").await;
+    assert_eq!(
+        first_record.peer_id, "peer-hub-kid-1",
+        "durable token-bound peer identity should include route name and token id"
+    );
 
     let first_connection = registry
         .latest_peer_connection("hub")
@@ -279,6 +283,49 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         second_connection.connection_id, first_connection.connection_id,
         "reconnect must create a new connection without replacing peer identity"
     );
+}
+
+#[tokio::test]
+async fn failed_peer_confirmation_persists_failed_connection_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry_path = dir.path().join("boardwalk.redb");
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .persist(&registry_path)
+            .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
+    )
+    .await;
+    let registry = cloud.built.registry.as_ref().expect("registry");
+
+    let connection_id = Uuid::new_v4();
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", connection_id)
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .token("kid-1", "secret"),
+    )
+    .await;
+    assert_eq!(upgrade.status, StatusCode::SWITCHING_PROTOCOLS);
+    let upgraded = upgrade.upgraded.expect("upgraded stream");
+    let _h2_server = tokio::spawn(async move {
+        let service = Router::new()
+            .route(
+                "/_initiate_peer/{id}",
+                get(|| async { StatusCode::NOT_FOUND }),
+            )
+            .into_service::<Incoming>();
+        let service = hyper_util::service::TowerToHyperService::new(service);
+        let _ = hyper::server::conn::http2::Builder::new(crate::tunnel::H2Executor::new())
+            .serve_connection(upgraded, service)
+            .await;
+    });
+
+    let connection =
+        wait_for_peer_connection_status(registry, "hub", PeerConnectionStatus::Failed).await;
+    assert_eq!(connection.connection_id, connection_id);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
 }
 
 struct RunningBoardwalk {
@@ -358,6 +405,25 @@ async fn wait_for_peer_record(registry: &Registry, route_name: &str) -> PeerReco
     })
     .await
     .expect("peer record")
+}
+
+async fn wait_for_peer_connection_status(
+    registry: &Registry,
+    route_name: &str,
+    status: PeerConnectionStatus,
+) -> crate::registry::PeerConnectionRecord {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(connection) = registry.latest_peer_connection(route_name).unwrap()
+                && connection.status == status
+            {
+                return connection;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("peer connection status")
 }
 
 async fn assert_no_peer_sender_registered(built: &Built, route_name: &str) {

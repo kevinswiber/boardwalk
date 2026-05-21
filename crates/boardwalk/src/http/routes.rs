@@ -1808,12 +1808,19 @@ mod tests {
         for denied in [
             "authorization",
             "cookie",
+            "proxy-authenticate",
             "proxy-authorization",
+            "proxy-debug",
             "proxy-connection",
             "connection",
+            "sec-websocket-accept",
+            "sec-websocket-extensions",
             "sec-websocket-key",
+            "sec-websocket-protocol",
+            "sec-websocket-version",
             "forwarded",
             "x-forwarded-for",
+            "x-forwarded-port",
         ] {
             assert!(
                 !headers.contains_key(denied),
@@ -1828,6 +1835,23 @@ mod tests {
             headers.get("x-forwarded-proto"),
             Some(&"http".to_string()),
             "gateway should not trust inbound x-forwarded-proto spoofing"
+        );
+        assert_eq!(
+            headers.get("x-forwarded-host"),
+            Some(&"external.example".to_string()),
+            "gateway should not trust inbound x-forwarded-host spoofing"
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.as_str().starts_with("x-forwarded-"))
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("x-forwarded-host", "external.example"),
+                ("x-forwarded-proto", "http")
+            ],
+            "gateway should only write fresh x-forwarded metadata: {headers:?}"
         );
         assert_eq!(
             headers.get("x-boardwalk-forwarded-by"),
@@ -1856,12 +1880,19 @@ mod tests {
         for denied in [
             "authorization",
             "cookie",
+            "proxy-authenticate",
             "proxy-authorization",
+            "proxy-debug",
             "proxy-connection",
             "connection",
+            "sec-websocket-accept",
+            "sec-websocket-extensions",
             "sec-websocket-key",
+            "sec-websocket-protocol",
+            "sec-websocket-version",
             "forwarded",
             "x-forwarded-for",
+            "x-forwarded-port",
         ] {
             assert!(
                 !headers.contains_key(denied),
@@ -1879,6 +1910,23 @@ mod tests {
                 .get("x-forwarded-proto")
                 .and_then(|value| value.to_str().ok()),
             Some("http")
+        );
+        assert_eq!(
+            headers
+                .get("x-forwarded-host")
+                .and_then(|value| value.to_str().ok()),
+            Some("external.example")
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.as_str().starts_with("x-forwarded-"))
+                .map(|(name, value)| (name.as_str(), value.to_str().unwrap()))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            std::collections::BTreeMap::from([
+                ("x-forwarded-host", "external.example"),
+                ("x-forwarded-proto", "http")
+            ])
         );
         assert_eq!(
             headers
@@ -2074,6 +2122,14 @@ mod tests {
             HeaderValue::from_static("Basic secret"),
         );
         headers.insert(
+            HeaderName::from_static("proxy-authenticate"),
+            HeaderValue::from_static("Basic realm=secret"),
+        );
+        headers.insert(
+            HeaderName::from_static("proxy-debug"),
+            HeaderValue::from_static("leak"),
+        );
+        headers.insert(
             HeaderName::from_static("proxy-connection"),
             HeaderValue::from_static("keep-alive"),
         );
@@ -2086,6 +2142,22 @@ mod tests {
             HeaderValue::from_static("not-for-h2-forward"),
         );
         headers.insert(
+            HeaderName::from_static("sec-websocket-protocol"),
+            HeaderValue::from_static("boardwalk-peer/3"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-websocket-version"),
+            HeaderValue::from_static("13"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-websocket-extensions"),
+            HeaderValue::from_static("permessage-deflate"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-websocket-accept"),
+            HeaderValue::from_static("not-for-h2-forward"),
+        );
+        headers.insert(
             HeaderName::from_static("forwarded"),
             HeaderValue::from_static("for=198.51.100.10"),
         );
@@ -2094,8 +2166,16 @@ mod tests {
             HeaderValue::from_static("198.51.100.10"),
         );
         headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("spoofed.example"),
+        );
+        headers.insert(
             HeaderName::from_static("x-forwarded-proto"),
             HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-port"),
+            HeaderValue::from_static("443"),
         );
         headers.insert(
             HeaderName::from_static("x-boardwalk-external-base"),
