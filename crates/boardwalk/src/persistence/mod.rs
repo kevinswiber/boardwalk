@@ -6,10 +6,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::peer::{PeerCapabilities, PeerConnectionStatus};
 use crate::runtime::ResourceSnapshot;
+
+pub(crate) mod redb;
 
 #[derive(Debug, Error)]
 pub(crate) enum StorageError {
@@ -17,9 +20,11 @@ pub(crate) enum StorageError {
     LockPoisoned,
     #[error("identity conflict: {0}")]
     IdentityConflict(String),
+    #[error("storage backend: {0}")]
+    Backend(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct IdentityKey {
     pub(crate) namespace: String,
     pub(crate) kind: String,
@@ -36,7 +41,7 @@ impl IdentityKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResourceIdentityRecord {
     pub(crate) id: String,
     pub(crate) kind: String,
@@ -47,7 +52,7 @@ pub(crate) struct ResourceIdentityRecord {
     pub(crate) updated_ms: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResourceSnapshotRecord {
     pub(crate) resource_id: String,
     pub(crate) node_id: String,
@@ -57,7 +62,7 @@ pub(crate) struct ResourceSnapshotRecord {
     pub(crate) source_event_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NodeConfigRecord {
     pub(crate) node_id: String,
     pub(crate) display_name: String,
@@ -65,7 +70,7 @@ pub(crate) struct NodeConfigRecord {
     pub(crate) updated_ms: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PeerConfigRecord {
     pub(crate) peer_id: String,
     pub(crate) route_name: String,
@@ -75,7 +80,7 @@ pub(crate) struct PeerConfigRecord {
     pub(crate) updated_ms: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PeerConnectionStatusRecord {
     pub(crate) connection_id: String,
     pub(crate) peer_id: String,

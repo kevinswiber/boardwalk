@@ -6,11 +6,15 @@ use std::path::Path;
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 use crate::http::{ResourceRegistration, ResourceRegistrationError};
+use crate::peer::{PeerCapabilities, PeerConnectionStatus};
+use crate::persistence::redb::RedbRepositories;
 use crate::persistence::{
-    EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRepository,
-    PeerConfigRepository, PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
+    EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRecord,
+    NodeConfigRepository, PeerConfigRecord, PeerConfigRepository, PeerConnectionStatusRecord,
+    PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
     ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository,
 };
+use crate::registry::{Registry, ResourceRecord};
 use crate::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
@@ -66,6 +70,76 @@ fn repository_facade_exposes_domain_repositories() {
 
     let facade: &dyn Repositories = &repos;
     assert!(facade.event_history().is_none());
+}
+
+#[test]
+fn redb_repositories_round_trip_domain_records() {
+    let (repos, _dir) = temp_redb_repositories();
+
+    repos
+        .resource_identities()
+        .put(identity_record("front"))
+        .unwrap();
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record("front", "off"))
+        .unwrap();
+    repos.node_config().put(node_config("hub")).unwrap();
+    repos.peer_configs().put(peer_config("hub-peer")).unwrap();
+    repos
+        .peer_connection_status()
+        .put_latest(connection_status("hub-peer"))
+        .unwrap();
+
+    assert!(
+        repos
+            .resource_snapshots()
+            .latest("front")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repos
+            .peer_connection_status()
+            .latest_by_route("hub")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn redb_repositories_adapt_existing_resource_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let resource_id = uuid::Uuid::new_v4();
+    let registry = Registry::open(&db_path).unwrap();
+    registry
+        .put_resource(&ResourceRecord {
+            id: resource_id,
+            type_: "led".into(),
+            name: Some("front".into()),
+            properties: serde_json::Map::new(),
+        })
+        .unwrap();
+    drop(registry);
+
+    let repos = RedbRepositories::open(&db_path).unwrap();
+
+    let by_key = repos
+        .resource_identities()
+        .find_by_identity_key(&IdentityKey::static_name("led", "front"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_key.id, resource_id.to_string());
+    assert_eq!(
+        repos
+            .resource_identities()
+            .get(&resource_id.to_string())
+            .unwrap()
+            .unwrap()
+            .kind,
+        "led"
+    );
 }
 
 #[test]
@@ -283,6 +357,13 @@ fn temp_repositories() -> (MemoryRepositories, tempfile::TempDir) {
     (repos, dir)
 }
 
+fn temp_redb_repositories() -> (RedbRepositories, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    (repos, dir)
+}
+
 fn identity_record(resource_id: &str) -> ResourceIdentityRecord {
     ResourceIdentityRecord {
         id: resource_id.into(),
@@ -303,6 +384,37 @@ fn latest_snapshot_record(resource_id: &str, state: &str) -> ResourceSnapshotRec
         revision: Some("rev-1".into()),
         updated_ms: 2,
         source_event_id: None,
+    }
+}
+
+fn node_config(node_id: &str) -> NodeConfigRecord {
+    NodeConfigRecord {
+        node_id: node_id.into(),
+        display_name: "Hub".into(),
+        route_name: "hub".into(),
+        updated_ms: 1,
+    }
+}
+
+fn peer_config(peer_id: &str) -> PeerConfigRecord {
+    PeerConfigRecord {
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        node_id: Some("node-hub-1".into()),
+        display_name: Some("Hub".into()),
+        allowed_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 1,
+    }
+}
+
+fn connection_status(peer_id: &str) -> PeerConnectionStatusRecord {
+    PeerConnectionStatusRecord {
+        connection_id: uuid::Uuid::new_v4().to_string(),
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        status: PeerConnectionStatus::Connected,
+        negotiated_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 2,
     }
 }
 
