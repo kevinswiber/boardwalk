@@ -74,6 +74,19 @@ pub(crate) struct ResourceSnapshotRecord {
     pub(crate) source_event_id: Option<String>,
 }
 
+impl ResourceSnapshotRecord {
+    pub(crate) fn latest(snapshot: ResourceSnapshot, updated_ms: i64) -> Self {
+        Self {
+            resource_id: snapshot.id.clone(),
+            node_id: snapshot.node.clone(),
+            revision: snapshot.revision.clone(),
+            snapshot,
+            updated_ms,
+            source_event_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NodeConfigRecord {
     pub(crate) node_id: String,

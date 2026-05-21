@@ -18,7 +18,8 @@ use crate::http::{
 };
 use crate::peer::{PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig};
 use crate::persistence::{
-    DefaultRepositories, IdentityKey, Repositories, ResourceIdentityRecord, StorageError,
+    DefaultRepositories, IdentityKey, Repositories, ResourceIdentityRecord, ResourceSnapshotRecord,
+    StorageError,
 };
 use crate::registry::Registry;
 use crate::runtime::{
@@ -302,10 +303,11 @@ impl Boardwalk {
                 .try_build()
                 .map_err(|err| anyhow::anyhow!("build node: {err:?}"))?,
         );
-        let core: Arc<Core> = Core::from_node_with_name_and_registry(
+        let core: Arc<Core> = Core::from_node_with_name_and_persistence(
             self.name.clone(),
             node.clone(),
             registry.clone(),
+            repositories.clone(),
         );
 
         let peer_init = PeerInitState::default();
@@ -411,6 +413,9 @@ fn build_resource_registrar(
                     node.register_with_id(id.to_string(), actor)
                         .await
                         .map_err(registration_resource_error)?;
+                    if let Ok(Some(snapshot)) = node.resource_snapshot(&id.to_string()).await {
+                        persist_latest_resource_snapshot(repository_ref(&repositories), &snapshot);
+                    }
                     Ok(id.to_string())
                 })
             },
@@ -569,6 +574,19 @@ fn repository_ref(repositories: &Option<Arc<DefaultRepositories>>) -> Option<&dy
     repositories
         .as_deref()
         .map(|repositories| repositories as &dyn Repositories)
+}
+
+fn persist_latest_resource_snapshot(
+    repositories: Option<&dyn Repositories>,
+    snapshot: &ResourceSnapshot,
+) {
+    let Some(repositories) = repositories else {
+        return;
+    };
+    let record = ResourceSnapshotRecord::latest(snapshot.clone(), now_ms());
+    if let Err(err) = repositories.resource_snapshots().upsert_latest(record) {
+        tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to persist latest resource snapshot");
+    }
 }
 
 fn now_ms() -> i64 {

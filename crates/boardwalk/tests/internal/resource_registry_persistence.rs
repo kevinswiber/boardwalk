@@ -22,8 +22,8 @@ use crate::registry::{
     PeerConnectionDirection, PeerConnectionRecord, PeerRecord, Registry, ResourceRecord,
 };
 use crate::runtime::{
-    Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
-    TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
+    Actor, DynFuture, RequestCtx, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
+    ResourceSpec, TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
 };
 
 #[test]
@@ -550,6 +550,130 @@ async fn persistent_factory_resource_identity_records_kind_name_and_identity_key
             .iter()
             .any(|key| { key.namespace == "static" && key.kind == "job" && key.key == "build-1" })
     );
+}
+
+#[tokio::test]
+async fn factory_registration_persists_initial_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("job", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "queued",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.as_ref().unwrap();
+
+    let id = registrar(ResourceRegistration {
+        kind: "job".into(),
+        name: Some("build-1".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap();
+
+    let latest = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(latest.resource_id, id);
+    assert_eq!(latest.node_id, "hub");
+    assert_eq!(latest.snapshot.kind, "job");
+    assert_eq!(latest.snapshot.name.as_deref(), Some("build-1"));
+    assert_eq!(latest.snapshot.state.as_deref(), Some("queued"));
+    assert!(latest.updated_ms > 0);
+}
+
+#[tokio::test]
+async fn successful_transition_updates_latest_persisted_snapshot_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build()
+        .unwrap();
+
+    built
+        .core
+        .run_resource_transition(
+            "front-panel",
+            "turn-on",
+            TransitionInput::default(),
+            RequestCtx::default(),
+        )
+        .await
+        .unwrap();
+
+    let latest = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(latest.snapshot.state.as_deref(), Some("on"));
+    assert!(latest.updated_ms > 0);
+}
+
+#[tokio::test]
+async fn resource_reads_do_not_rewrite_unchanged_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+
+    built
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    let first = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    built
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    let second = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(second.updated_ms, first.updated_ms);
+    assert_eq!(second.snapshot.state.as_deref(), Some("off"));
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::events::{EventBus, SubscribeOpts, Subscription, SubscriptionId, TopicPattern};
+use crate::persistence::{DefaultRepositories, ResourceSnapshotRecord, ResourceSnapshotRepository};
 use crate::registry::Registry;
 use crate::runtime::{
     ActorSpec, Node, NodeHandle, RequestCtx, ResourceError, ResourceSnapshot, ResourceSnapshotRead,
@@ -13,6 +14,7 @@ pub struct Core {
     pub bus: EventBus,
     node: Arc<Node>,
     registry: Option<Arc<Registry>>,
+    repositories: Option<Arc<DefaultRepositories>>,
 }
 
 #[derive(Debug)]
@@ -50,11 +52,21 @@ impl Core {
         node: Arc<Node>,
         registry: Option<Arc<Registry>>,
     ) -> Arc<Self> {
+        Self::from_node_with_name_and_persistence(name, node, registry, None)
+    }
+
+    pub(crate) fn from_node_with_name_and_persistence(
+        name: impl Into<String>,
+        node: Arc<Node>,
+        registry: Option<Arc<Registry>>,
+        repositories: Option<Arc<DefaultRepositories>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name: name.into(),
             bus: node.events().clone(),
             node,
             registry,
+            repositories,
         })
     }
 
@@ -171,6 +183,22 @@ impl Core {
     }
 
     fn persist_latest_resource_snapshot(&self, snapshot: &ResourceSnapshot) {
+        if let Some(repositories) = self.repositories.as_ref() {
+            let snapshots = repositories.resource_snapshots();
+            match snapshots.latest(&snapshot.id) {
+                Ok(Some(existing)) if snapshots_match(&existing.snapshot, snapshot) => return,
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to read latest resource snapshot before persist");
+                }
+            }
+            let record = ResourceSnapshotRecord::latest(snapshot.clone(), now_ms());
+            if let Err(err) = snapshots.upsert_latest(record) {
+                tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to persist latest resource snapshot");
+            }
+            return;
+        }
+
         if let Some(registry) = self.registry.as_ref()
             && let Err(err) = registry.put_latest_resource_snapshot(snapshot)
         {
@@ -183,15 +211,37 @@ impl Core {
         resource_id: &str,
     ) -> Result<Option<ResourceSnapshot>, String> {
         let Some(registry) = self.registry.as_ref() else {
+            if let Some(repositories) = self.repositories.as_ref() {
+                return repositories
+                    .resource_snapshots()
+                    .latest(resource_id)
+                    .map(|record| record.map(|record| record.snapshot))
+                    .map_err(|err| {
+                        tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
+                        "storage unavailable".to_string()
+                    });
+            }
             return Ok(None);
         };
-        registry
-            .latest_resource_snapshot(resource_id)
-            .map_err(|err| {
-                tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
-                "storage unavailable".to_string()
-            })
+        if let Some(repositories) = self.repositories.as_ref() {
+            return repositories
+                .resource_snapshots()
+                .latest(resource_id)
+                .map(|record| record.map(|record| record.snapshot))
+                .map_err(|err| {
+                    tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
+                    "storage unavailable".to_string()
+                });
+        }
+        registry.latest_resource_snapshot(resource_id).map_err(|err| {
+            tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
+            "storage unavailable".to_string()
+        })
     }
+}
+
+fn snapshots_match(left: &ResourceSnapshot, right: &ResourceSnapshot) -> bool {
+    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
 }
 
 fn resource_read_error(err: ResourceError) -> ResourceReadError {
