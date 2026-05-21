@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use crate::events::{EventBus, SubscribeOpts, Subscription, SubscriptionId, TopicPattern};
+use crate::registry::{Registry, RegistryError};
 use crate::runtime::{
-    ActorSpec, Node, NodeHandle, RequestCtx, ResourceError, ResourceSnapshot, TransitionCtx,
-    TransitionError, TransitionInput, TransitionOutcome,
+    ActorSpec, Node, NodeHandle, RequestCtx, ResourceError, ResourceSnapshot, ResourceSnapshotRead,
+    TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
 };
 
 /// Runtime owned by the HTTP layer and shared with peer/stream routes.
@@ -11,6 +12,7 @@ pub struct Core {
     pub name: String,
     pub bus: EventBus,
     node: Arc<Node>,
+    registry: Option<Arc<Registry>>,
 }
 
 #[derive(Debug)]
@@ -40,15 +42,43 @@ impl Core {
     }
 
     pub(crate) fn from_node_with_name(name: impl Into<String>, node: Arc<Node>) -> Arc<Self> {
+        Self::from_node_with_name_and_registry(name, node, None)
+    }
+
+    pub(crate) fn from_node_with_name_and_registry(
+        name: impl Into<String>,
+        node: Arc<Node>,
+        registry: Option<Arc<Registry>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name: name.into(),
             bus: node.events().clone(),
             node,
+            registry,
         })
     }
 
     pub async fn list_resources(&self) -> Vec<ResourceSnapshot> {
-        self.node.resources().await
+        self.node
+            .resource_snapshot_reads()
+            .await
+            .into_iter()
+            .filter_map(|read| match read {
+                ResourceSnapshotRead::Available(snapshot) => {
+                    self.persist_latest_resource_snapshot(&snapshot);
+                    Some(snapshot)
+                }
+                ResourceSnapshotRead::Unavailable {
+                    resource_id,
+                    placeholder,
+                } => self
+                    .latest_resource_snapshot(&resource_id)
+                    .ok()
+                    .flatten()
+                    .or(Some(placeholder)),
+                ResourceSnapshotRead::Failed => None,
+            })
+            .collect()
     }
 
     pub async fn query_resources(
@@ -69,15 +99,17 @@ impl Core {
         &self,
         id: &str,
     ) -> Result<Option<ResourceSnapshot>, ResourceReadError> {
-        let handle = NodeHandle::new(self.node.clone());
-        let Some(proxy) = handle.resource(id).await else {
-            return Ok(None);
-        };
-        proxy
-            .snapshot()
-            .await
-            .map(Some)
-            .map_err(resource_read_error)
+        match self.node.resource_snapshot(id).await {
+            Ok(Some(snapshot)) => {
+                self.persist_latest_resource_snapshot(&snapshot);
+                Ok(Some(snapshot))
+            }
+            Ok(None) => Ok(None),
+            Err(ResourceError::Unavailable(message)) => {
+                self.snapshot_from_repository_or_unavailable(id, message)
+            }
+            Err(err) => Err(resource_read_error(err)),
+        }
     }
 
     pub async fn actor_specs(&self) -> Vec<ActorSpec> {
@@ -119,10 +151,41 @@ impl Core {
                     .snapshot()
                     .await
                     .map_err(resource_error_to_transition)?;
+                self.persist_latest_resource_snapshot(&snapshot);
                 Ok(TransitionOutcome::Completed { output, snapshot })
             }
             TransitionOutcome::Accepted { .. } => Ok(outcome),
         }
+    }
+
+    fn snapshot_from_repository_or_unavailable(
+        &self,
+        id: &str,
+        message: String,
+    ) -> Result<Option<ResourceSnapshot>, ResourceReadError> {
+        match self.latest_resource_snapshot(id) {
+            Ok(Some(snapshot)) => Ok(Some(snapshot)),
+            Ok(None) => Err(ResourceReadError::Unavailable(message)),
+            Err(err) => Err(ResourceReadError::Internal(err.to_string())),
+        }
+    }
+
+    fn persist_latest_resource_snapshot(&self, snapshot: &ResourceSnapshot) {
+        if let Some(registry) = self.registry.as_ref()
+            && let Err(err) = registry.put_latest_resource_snapshot(snapshot)
+        {
+            tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to persist latest resource snapshot");
+        }
+    }
+
+    fn latest_resource_snapshot(
+        &self,
+        resource_id: &str,
+    ) -> Result<Option<ResourceSnapshot>, RegistryError> {
+        let Some(registry) = self.registry.as_ref() else {
+            return Ok(None);
+        };
+        registry.latest_resource_snapshot(resource_id)
     }
 }
 

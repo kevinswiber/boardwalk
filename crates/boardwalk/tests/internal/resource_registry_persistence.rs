@@ -7,7 +7,10 @@ use crate::Boardwalk;
 use crate::persistence::{
     IdentityKey, Repositories, ResourceIdentityRecord, ResourceSnapshotRecord,
 };
-use crate::runtime::ResourceSnapshot;
+use crate::runtime::{
+    Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
+    TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
+};
 
 #[test]
 fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
@@ -77,6 +80,86 @@ async fn resource_id_is_stable_across_builds() {
 }
 
 #[tokio::test]
+async fn persisted_latest_snapshot_is_used_when_actor_is_unavailable_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+    assert_eq!(
+        first
+            .core
+            .get_resource("front-panel")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("off")
+    );
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let snapshot = second
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.state.as_deref(), Some("off"));
+}
+
+#[tokio::test]
+async fn live_snapshot_wins_over_persisted_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+    assert_eq!(
+        first
+            .core
+            .get_resource("front-panel")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("off")
+    );
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("on"))
+        .build()
+        .unwrap();
+
+    let snapshot = second
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.state.as_deref(), Some("on"));
+}
+
+#[tokio::test]
 async fn resource_id_is_random_without_persistence() {
     let first = Boardwalk::new()
         .name("hub")
@@ -140,5 +223,79 @@ fn led_snapshot(state: &str) -> ResourceSnapshot {
         streams: Vec::new(),
         revision: Some("rev-1".into()),
         metadata: serde_json::Map::new(),
+    }
+}
+
+struct SnapshotActor {
+    state: String,
+}
+
+impl SnapshotActor {
+    fn new(state: impl Into<String>) -> Self {
+        Self {
+            state: state.into(),
+        }
+    }
+}
+
+impl Resource for SnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some("front".into()),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move { Ok(led_snapshot(&self.state)) })
+    }
+}
+
+impl Actor for SnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
+    }
+}
+
+struct UnavailableSnapshotActor;
+
+impl Resource for UnavailableSnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some("front".into()),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async { Err(ResourceError::Unavailable("offline".into())) })
+    }
+}
+
+impl Actor for UnavailableSnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
     }
 }

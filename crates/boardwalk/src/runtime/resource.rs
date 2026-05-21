@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
 use super::transition::{
@@ -50,7 +51,7 @@ pub enum ResourceError {
 /// event/schema layers. Fields are deliberately reserved at the top
 /// level: extra resource-specific data lives under `properties` and
 /// never collides with these names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceSnapshot {
     pub id: String,
     pub kind: String,
@@ -71,7 +72,7 @@ pub struct ResourceSnapshot {
 /// `available` reflects whether the transition can fire in the
 /// resource's current state; `unavailable_reason` carries an optional,
 /// human-readable hint when `available` is false.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransitionAffordance {
     pub spec: TransitionSpec,
     pub available: bool,
@@ -89,7 +90,7 @@ impl TransitionAffordance {
 /// One stream a resource publishes. `kind` is the wire kind hint
 /// (`"object"` or `"binary"`), serialized lowercase into the query
 /// value and metadata renders.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotStreamSpec {
     pub name: String,
     pub kind: String,

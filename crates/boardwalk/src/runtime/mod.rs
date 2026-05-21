@@ -19,6 +19,7 @@ pub use context::{CommandId, RequestCtx};
 pub use directory::ResourceDirectory;
 pub use executor::{ActorHandle, NodePolicy, PendingTransition};
 pub use handle::{ActorProxy, NodeHandle, NodeHandleError, ResourceProxy};
+pub(crate) use node::ResourceSnapshotRead;
 pub use node::{Node, NodeBuilder};
 pub use resource::{
     DynFuture, JobHandle, Resource, ResourceCtx, ResourceError, ResourceSnapshot,

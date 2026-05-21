@@ -70,6 +70,8 @@ pub struct PeerConnectionRecord {
 }
 
 const RESOURCE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("resources");
+const RESOURCE_LATEST_SNAPSHOTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("resource_latest_snapshots_v1");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers_v2");
 const PEER_CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("peer_connections_v1");
 
@@ -103,6 +105,7 @@ impl Registry {
         // Materialize the tables so first reads don't fail.
         let txn = db.begin_write()?;
         txn.open_table(RESOURCE_TABLE)?;
+        txn.open_table(RESOURCE_LATEST_SNAPSHOTS)?;
         txn.open_table(PEERS)?;
         txn.open_table(PEER_CONNECTIONS)?;
         txn.commit()?;
@@ -167,6 +170,32 @@ impl Registry {
             }
         }
         Ok(None)
+    }
+
+    pub fn put_latest_resource_snapshot(
+        &self,
+        snapshot: &crate::runtime::ResourceSnapshot,
+    ) -> Result<(), RegistryError> {
+        let bytes = serde_json::to_vec(snapshot)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut t = txn.open_table(RESOURCE_LATEST_SNAPSHOTS)?;
+            t.insert(snapshot.id.as_str(), bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn latest_resource_snapshot(
+        &self,
+        resource_id: &str,
+    ) -> Result<Option<crate::runtime::ResourceSnapshot>, RegistryError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(RESOURCE_LATEST_SNAPSHOTS)?;
+        match t.get(resource_id)? {
+            Some(av) => Ok(Some(serde_json::from_slice(av.value())?)),
+            None => Ok(None),
+        }
     }
 
     // -- peers ------------------------------------------------------------
