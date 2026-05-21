@@ -46,6 +46,10 @@ impl RedbRepositories {
             std::fs::create_dir_all(parent).map_err(storage_error)?;
         }
         let db = Arc::new(Database::create(path).map_err(storage_error)?);
+        Self::from_database(db)
+    }
+
+    pub(crate) fn from_database(db: Arc<Database>) -> Result<Self, StorageError> {
         materialize_tables(&db)?;
         Ok(Self {
             resource_identities: RedbResourceIdentityRepository::new(Arc::clone(&db)),

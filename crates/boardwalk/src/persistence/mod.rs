@@ -14,6 +14,7 @@ use crate::registry::PeerConnectionDirection;
 use crate::runtime::ResourceSnapshot;
 
 pub(crate) mod redb;
+pub(crate) use redb::RedbRepositories as DefaultRepositories;
 
 #[derive(Debug, Error)]
 pub(crate) enum StorageError {
@@ -40,6 +41,14 @@ impl IdentityKey {
             namespace: "static".into(),
             kind: kind.into(),
             key: name.into(),
+        }
+    }
+
+    pub(crate) fn static_unnamed(kind: impl Into<String>) -> Self {
+        Self {
+            namespace: "static".into(),
+            kind: kind.into(),
+            key: String::new(),
         }
     }
 }

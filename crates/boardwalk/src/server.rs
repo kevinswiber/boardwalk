@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,7 +17,10 @@ use crate::http::{
     ResourceRegistrationError, router_with,
 };
 use crate::peer::{PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig};
-use crate::registry::{Registry, ResourceRecord};
+use crate::persistence::{
+    DefaultRepositories, IdentityKey, Repositories, ResourceIdentityRecord, StorageError,
+};
+use crate::registry::Registry;
 use crate::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, Resource, ResourceCtx,
     ResourceError, ResourceSnapshot, ResourceSpec, TransitionCtx, TransitionError, TransitionInput,
@@ -275,6 +278,11 @@ impl Boardwalk {
             .map(|p| Registry::open(p).map_err(storage_unavailable_error))
             .transpose()?
             .map(Arc::new);
+        let repositories = registry
+            .as_ref()
+            .map(|registry| registry.repositories().map_err(storage_unavailable_error))
+            .transpose()?
+            .map(Arc::new);
 
         let node_id = self.node_id.unwrap_or_else(|| self.name.clone());
         let local_display_name = self.name.clone();
@@ -284,7 +292,7 @@ impl Boardwalk {
             let PendingActor { spec, id, register } = actor;
             let id = match id {
                 Some(id) => id,
-                None => resolve_resource_id(&registry, &spec)?,
+                None => resolve_resource_id(repository_ref(&repositories), &spec)?,
             };
             node_builder = register(node_builder, id)
                 .map_err(|err| anyhow::anyhow!("register actor: {err:?}"))?;
@@ -320,7 +328,7 @@ impl Boardwalk {
         let peer_streams = crate::http::PeerStreamHub::new();
 
         let resource_registrar =
-            build_resource_registrar(self.actor_factories, node.clone(), registry.clone());
+            build_resource_registrar(self.actor_factories, node.clone(), repositories.clone());
 
         let state = AppState {
             core: core.clone(),
@@ -360,6 +368,7 @@ impl Boardwalk {
             registry,
             peer_admission: self.accepted_peer_tokens,
             resource_registrar,
+            repositories,
         })
     }
 }
@@ -367,7 +376,7 @@ impl Boardwalk {
 fn build_resource_registrar(
     factories: HashMap<String, ActorFactory>,
     node: Arc<Node>,
-    registry: Option<Arc<Registry>>,
+    repositories: Option<Arc<DefaultRepositories>>,
 ) -> Option<ResourceRegistrar> {
     if factories.is_empty() {
         return None;
@@ -382,7 +391,7 @@ fn build_resource_registrar(
             > {
                 let factories = factories.clone();
                 let node = node.clone();
-                let registry = registry.clone();
+                let repositories = repositories.clone();
                 Box::pin(async move {
                     let kind = registration.kind.clone();
                     let explicit_id = registration.id;
@@ -393,8 +402,12 @@ fn build_resource_registrar(
                     })?;
                     let actor = factory(registration)?;
                     let spec = actor.spec();
-                    let id = resolve_or_create_resource_identity(&registry, &spec, explicit_id)
-                        .map_err(registration_identity_error)?;
+                    let id = resolve_or_create_resource_identity(
+                        repository_ref(&repositories),
+                        &spec,
+                        explicit_id,
+                    )
+                    .map_err(registration_identity_error)?;
                     node.register_with_id(id.to_string(), actor)
                         .await
                         .map_err(registration_resource_error)?;
@@ -408,10 +421,10 @@ fn build_resource_registrar(
 /// Look up a stable resource ID by (kind, name) identity, or mint a new
 /// one and persist the record.
 fn resolve_resource_id(
-    registry: &Option<Arc<Registry>>,
+    repositories: Option<&dyn Repositories>,
     spec: &ResourceSpec,
 ) -> anyhow::Result<String> {
-    resolve_or_create_resource_identity(registry, spec, None)
+    resolve_or_create_resource_identity(repositories, spec, None)
         .map(|id| id.to_string())
         .map_err(resource_identity_anyhow)
 }
@@ -423,69 +436,97 @@ enum ResourceIdentityError {
 }
 
 fn resolve_or_create_resource_identity(
-    registry: &Option<Arc<Registry>>,
+    repositories: Option<&dyn Repositories>,
     spec: &ResourceSpec,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, ResourceIdentityError> {
-    let Some(reg) = registry.as_ref() else {
+    let Some(repositories) = repositories else {
         return Ok(explicit.unwrap_or_else(Uuid::new_v4));
     };
+    let identities = repositories.resource_identities();
+    let identity_keys = resource_identity_keys(spec);
 
     if let Some(id) = explicit {
-        if let Some(existing) = reg
-            .get_resource(&id)
-            .map_err(resource_identity_registry_error)?
+        if let Some(existing) = identities
+            .get(&id.to_string())
+            .map_err(resource_identity_storage_error)?
         {
-            if resource_record_matches(&existing, spec) {
+            if resource_identity_record_matches(&existing, spec) {
                 return Ok(id);
             }
             return Err(ResourceIdentityError::Conflict(format!(
                 "resource id `{id}` is already registered"
             )));
         }
-        if let Some(existing) = reg
-            .find_resource_by_identity(&spec.kind, spec.name.as_deref())
-            .map_err(resource_identity_registry_error)?
-            && existing.id != id
+        if let Some(existing) = find_resource_identity(identities, &identity_keys)?
+            && existing.id != id.to_string()
         {
             return Err(ResourceIdentityError::Conflict(format!(
                 "resource identity `{}` is already registered",
                 resource_identity_label(spec)
             )));
         }
-        put_resource_identity(reg, spec, id)?;
+        put_resource_identity(identities, spec, &identity_keys, id)?;
         return Ok(id);
     }
 
-    if let Some(existing) = reg
-        .find_resource_by_identity(&spec.kind, spec.name.as_deref())
-        .map_err(resource_identity_registry_error)?
-    {
-        return Ok(existing.id);
+    if let Some(existing) = find_resource_identity(identities, &identity_keys)? {
+        return resource_identity_uuid(&existing);
     }
 
     let id = Uuid::new_v4();
-    put_resource_identity(reg, spec, id)?;
+    put_resource_identity(identities, spec, &identity_keys, id)?;
     Ok(id)
 }
 
 fn put_resource_identity(
-    registry: &Registry,
+    identities: &dyn crate::persistence::ResourceIdentityRepository,
     spec: &ResourceSpec,
+    identity_keys: &[IdentityKey],
     id: Uuid,
 ) -> Result<(), ResourceIdentityError> {
-    registry
-        .put_resource(&ResourceRecord {
-            id,
-            type_: spec.kind.clone(),
+    let now_ms = now_ms();
+    identities
+        .put(ResourceIdentityRecord {
+            id: id.to_string(),
+            kind: spec.kind.clone(),
             name: spec.name.clone(),
-            properties: serde_json::Map::new(),
+            identity_keys: identity_keys.to_vec(),
+            labels: BTreeMap::new(),
+            created_ms: now_ms,
+            updated_ms: now_ms,
         })
-        .map_err(resource_identity_registry_error)
+        .map_err(resource_identity_storage_error)
 }
 
-fn resource_record_matches(record: &ResourceRecord, spec: &ResourceSpec) -> bool {
-    record.type_ == spec.kind && record.name == spec.name
+fn find_resource_identity(
+    identities: &dyn crate::persistence::ResourceIdentityRepository,
+    identity_keys: &[IdentityKey],
+) -> Result<Option<ResourceIdentityRecord>, ResourceIdentityError> {
+    for key in identity_keys {
+        if let Some(record) = identities
+            .find_by_identity_key(key)
+            .map_err(resource_identity_storage_error)?
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
+fn resource_identity_record_matches(record: &ResourceIdentityRecord, spec: &ResourceSpec) -> bool {
+    record.kind == spec.kind && record.name == spec.name
+}
+
+fn resource_identity_uuid(record: &ResourceIdentityRecord) -> Result<Uuid, ResourceIdentityError> {
+    Uuid::parse_str(&record.id).map_err(|_| ResourceIdentityError::Storage)
+}
+
+fn resource_identity_keys(spec: &ResourceSpec) -> Vec<IdentityKey> {
+    match spec.name.as_deref() {
+        Some(name) => vec![IdentityKey::static_name(spec.kind.clone(), name.to_owned())],
+        None => vec![IdentityKey::static_unnamed(spec.kind.clone())],
+    }
 }
 
 fn resource_identity_label(spec: &ResourceSpec) -> String {
@@ -511,12 +552,27 @@ fn registration_identity_error(err: ResourceIdentityError) -> ResourceRegistrati
     }
 }
 
-fn resource_identity_registry_error(_err: impl std::fmt::Display) -> ResourceIdentityError {
-    ResourceIdentityError::Storage
+fn resource_identity_storage_error(err: StorageError) -> ResourceIdentityError {
+    match err {
+        StorageError::Conflict(msg) => ResourceIdentityError::Conflict(msg),
+        StorageError::Unavailable(_) | StorageError::Corrupt(_) | StorageError::Internal(_) => {
+            ResourceIdentityError::Storage
+        }
+    }
 }
 
 fn storage_unavailable_error(_err: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("storage unavailable")
+}
+
+fn repository_ref(repositories: &Option<Arc<DefaultRepositories>>) -> Option<&dyn Repositories> {
+    repositories
+        .as_deref()
+        .map(|repositories| repositories as &dyn Repositories)
+}
+
+fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
 fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {
@@ -544,4 +600,12 @@ pub(crate) struct Built {
     pub(crate) registry: Option<Arc<Registry>>,
     pub(crate) peer_admission: Vec<PeerAdmissionConfig>,
     pub(crate) resource_registrar: Option<ResourceRegistrar>,
+    repositories: Option<Arc<DefaultRepositories>>,
+}
+
+impl Built {
+    #[cfg(test)]
+    pub(crate) fn repositories(&self) -> Option<&dyn Repositories> {
+        repository_ref(&self.repositories)
+    }
 }

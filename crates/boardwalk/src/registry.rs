@@ -6,6 +6,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::peer::{PeerCapabilities, PeerConnectionStatus};
+use crate::persistence::StorageError;
+use crate::persistence::redb::RedbRepositories;
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -88,7 +91,7 @@ impl Default for Config {
 }
 
 pub struct Registry {
-    db: Database,
+    db: Arc<Database>,
 }
 
 impl Registry {
@@ -101,7 +104,7 @@ impl Registry {
         {
             std::fs::create_dir_all(parent)?;
         }
-        let db = Database::create(path)?;
+        let db = Arc::new(Database::create(path)?);
         // Materialize the tables so first reads don't fail.
         let txn = db.begin_write()?;
         txn.open_table(RESOURCE_TABLE)?;
@@ -112,8 +115,13 @@ impl Registry {
         Ok(Self { db })
     }
 
+    pub(crate) fn repositories(&self) -> Result<RedbRepositories, StorageError> {
+        RedbRepositories::from_database(Arc::clone(&self.db))
+    }
+
     // -- resources -------------------------------------------------------
 
+    #[allow(dead_code)]
     pub fn put_resource(&self, rec: &ResourceRecord) -> Result<(), RegistryError> {
         let bytes = serde_json::to_vec(rec)?;
         let txn = self.db.begin_write()?;
@@ -135,6 +143,7 @@ impl Registry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn list_resources(&self) -> Result<Vec<ResourceRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(RESOURCE_TABLE)?;
@@ -159,6 +168,7 @@ impl Registry {
 
     /// Find an existing resource by (kind, name) identity. Returns the
     /// first match. Used at boot to restore stable resource IDs.
+    #[allow(dead_code)]
     pub fn find_resource_by_identity(
         &self,
         type_: &str,

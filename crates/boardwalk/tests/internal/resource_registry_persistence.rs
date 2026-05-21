@@ -466,6 +466,93 @@ async fn resource_id_is_stable_across_builds() {
 }
 
 #[tokio::test]
+async fn persistent_static_resource_identity_records_kind_name_and_identity_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor(ActorLed::default())
+        .build()
+        .unwrap();
+
+    let id = built.core.list_resources().await[0].id.clone();
+    let record = built
+        .repositories()
+        .unwrap()
+        .resource_identities()
+        .get(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.kind, "led");
+    assert_eq!(record.name.as_deref(), Some("LED"));
+    assert!(
+        record
+            .identity_keys
+            .iter()
+            .any(|key| { key.namespace == "static" && key.kind == "led" && key.key == "LED" })
+    );
+
+    drop(built);
+    let legacy_registry = Registry::open(&db_path).unwrap();
+    assert!(
+        legacy_registry
+            .get_resource(&uuid::Uuid::parse_str(&id).unwrap())
+            .unwrap()
+            .is_none(),
+        "resource identity should not be persisted as an empty legacy resource record"
+    );
+}
+
+#[tokio::test]
+async fn persistent_factory_resource_identity_records_kind_name_and_identity_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("job", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "queued",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.as_ref().unwrap();
+
+    let id = registrar(ResourceRegistration {
+        kind: "job".into(),
+        name: Some("build-1".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap();
+
+    let record = built
+        .repositories()
+        .unwrap()
+        .resource_identities()
+        .get(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.kind, "job");
+    assert_eq!(record.name.as_deref(), Some("build-1"));
+    assert!(
+        record
+            .identity_keys
+            .iter()
+            .any(|key| { key.namespace == "static" && key.kind == "job" && key.key == "build-1" })
+    );
+}
+
+#[tokio::test]
 async fn persisted_latest_snapshot_is_used_when_actor_is_unavailable_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
