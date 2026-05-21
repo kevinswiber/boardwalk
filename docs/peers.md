@@ -61,10 +61,10 @@ They are used for admission checks and are not persisted into peer
 records. A token is bound to a route name; an admission policy can also
 require the expected node id presented during the upgrade.
 
-The public `.link(...)` convenience remains a local-development peer
-initiator. A cloud exposed beyond a trusted development environment
-should use token admission and TLS, and should reject unknown peers
-before the WebSocket upgrade completes.
+The public `.link(...)` convenience remains a trusted local-development
+peer initiator. At present, public outbound token-bound links are not available yet;
+a cloud exposed beyond a trusted development environment should use token admission
+and TLS, and should reject unknown peers before the WebSocket upgrade completes.
 
 ```rust,ignore
 Boardwalk::new()

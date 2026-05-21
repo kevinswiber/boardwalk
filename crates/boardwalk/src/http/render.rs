@@ -85,6 +85,10 @@ impl RenderPolicy {
         self.allows(PeerCapabilities::resource_query())
     }
 
+    fn can_read_resources(self) -> bool {
+        self.allows(PeerCapabilities::resource_read())
+    }
+
     fn can_stream(self) -> bool {
         self.allows(PeerCapabilities::stream_subscribe_capability())
     }
@@ -147,7 +151,7 @@ pub(crate) fn render_resources(
         .with_link(Link::new(rels::SELF, h.resources_url()));
     e = with_query_action(e, h, policy);
     for snap in snaps {
-        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
+        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap, policy)));
     }
     e
 }
@@ -160,19 +164,27 @@ pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot], policy: Rende
         .with_link(Link::new(rels::RESOURCES, h.resources_url()));
     e = with_query_action(e, h, policy);
     for snap in snaps {
-        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
+        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap, policy)));
     }
     e
 }
 
-pub(crate) fn resource_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> EmbeddedEntity {
+pub(crate) fn resource_sub_entity(
+    h: &Hrefs,
+    snap: &ResourceSnapshot,
+    policy: RenderPolicy,
+) -> EmbeddedEntity {
     let mut e = EmbeddedEntity::new([rels::RESOURCE])
         .with_class("resource")
         .with_class(snap.kind.clone());
 
     e = apply_resource_properties(e, snap);
-    e.with_link(Link::new(rels::SELF, h.resource_url(&snap.id)))
-        .with_link(Link::rels([rels::UP, rels::RESOURCES], h.resources_url()))
+    if policy.can_read_resources() {
+        e = e
+            .with_link(Link::new(rels::SELF, h.resource_url(&snap.id)))
+            .with_link(Link::rels([rels::UP, rels::RESOURCES], h.resources_url()));
+    }
+    e
 }
 
 pub(crate) fn render_resource(h: &Hrefs, snap: &ResourceSnapshot, policy: RenderPolicy) -> Entity {
@@ -246,7 +258,7 @@ pub(crate) fn render_search_results(
         .with_link(Link::new(rels::SELF, self_url));
     e = with_query_action(e, h, policy);
     for snap in snaps {
-        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
+        e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap, policy)));
     }
     e
 }
@@ -529,7 +541,7 @@ mod tests {
     fn render_resource_sub_entity_from_resource_snapshot_includes_kind() {
         let h = hrefs();
         let snap = led_snapshot();
-        let sub = resource_sub_entity(&h, &snap);
+        let sub = resource_sub_entity(&h, &snap, RenderPolicy::local());
         let v = serde_json::to_value(&sub).unwrap();
         let classes: Vec<&str> = v["class"]
             .as_array()
@@ -593,7 +605,7 @@ mod tests {
         snap.properties
             .insert("color".into(), Json::String("red".into()));
 
-        let sub = resource_sub_entity(&h, &snap);
+        let sub = resource_sub_entity(&h, &snap, RenderPolicy::local());
         let v = serde_json::to_value(&sub).unwrap();
         assert_eq!(v["properties"]["type"], "shadow-led");
         // Other extras still present.

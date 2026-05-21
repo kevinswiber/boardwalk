@@ -249,6 +249,29 @@ async fn directed_peer_query_forwards_to_one_peer_when_allowed() {
 }
 
 #[tokio::test]
+async fn directed_peer_query_without_resource_read_suppresses_resource_read_links() {
+    let p = boot_pair_with_capabilities(Some(["resource.query"])).await;
+
+    let response = reqwest::get(format!(
+        "http://{}/servers/hub?ql=where%20kind%20%3D%20%22led%22",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Json = response.json().await.unwrap();
+
+    let entities = body["entities"].as_array().expect("query entities");
+    assert!(!entities.is_empty());
+    for entity in entities {
+        assert!(
+            !links(entity).any(link_has_resource_read_rel),
+            "query-only peer results should not advertise resource-read links: {entity}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn wildcard_federation_query_requires_explicit_policy_and_limit() {
     let p = boot_pair().await;
 
@@ -454,6 +477,13 @@ fn link_has_peer_server_rel(link: &Json) -> bool {
 fn link_has_monitor_rel(link: &Json) -> bool {
     link_rels(link).contains(&"monitor")
         || link_rels(link).contains(&"https://rels.boardwalk.to/object-stream")
+}
+
+fn link_has_resource_read_rel(link: &Json) -> bool {
+    let rels = link_rels(link);
+    rels.contains(&"self")
+        || rels.contains(&"up")
+        || rels.contains(&"https://rels.boardwalk.to/resources")
 }
 
 fn link_has_peer_management_rel(link: &Json) -> bool {

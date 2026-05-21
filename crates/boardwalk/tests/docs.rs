@@ -414,6 +414,7 @@ fn peers_doc_describes_admission_capabilities_and_limits() {
     let s = read("docs/peers.md");
     for required in [
         "accept_peer_token",
+        "public outbound token-bound links are not available yet",
         "route name",
         "expected node id",
         "resource.read",
