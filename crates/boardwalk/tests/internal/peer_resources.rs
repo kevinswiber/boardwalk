@@ -108,6 +108,19 @@ async fn peer_read_without_resource_read_is_403() {
 }
 
 #[tokio::test]
+async fn root_does_not_render_peer_link_without_resource_read() {
+    let p = boot_pair_with_capabilities(Some(["stream.subscribe"])).await;
+    let root: Json = reqwest::get(format!("http://{}/", p.cloud_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(!links(&root).any(link_has_peer_server_rel));
+}
+
+#[tokio::test]
 async fn transition_forward_requires_transition_invoke() {
     let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
     let id = resource_id_via(p.cloud_addr).await;
@@ -131,6 +144,42 @@ async fn transition_forward_requires_transition_invoke() {
         .await
         .unwrap();
     assert_eq!(direct["properties"]["state"], "off");
+}
+
+#[tokio::test]
+async fn remote_resource_suppresses_transition_actions_without_invoke_capability() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+
+    let resource: Json = reqwest::get(format!(
+        "http://{}/servers/hub/resources/{id}",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    assert!(actions(&resource).all(|action| action["class"] != json!(["transition"])));
+}
+
+#[tokio::test]
+async fn remote_resource_suppresses_stream_links_without_subscribe_capability() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+
+    let resource: Json = reqwest::get(format!(
+        "http://{}/servers/hub/resources/{id}",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    assert!(!links(&resource).any(link_has_monitor_rel));
 }
 
 #[tokio::test]
@@ -307,6 +356,33 @@ fn hrefs(entity: &Json) -> Vec<&str> {
     let mut out = Vec::new();
     collect_hrefs(entity, &mut out);
     out
+}
+
+fn links(entity: &Json) -> impl Iterator<Item = &Json> {
+    entity["links"].as_array().into_iter().flatten()
+}
+
+fn actions(entity: &Json) -> impl Iterator<Item = &Json> {
+    entity["actions"].as_array().into_iter().flatten()
+}
+
+fn link_has_peer_server_rel(link: &Json) -> bool {
+    link_rels(link).contains(&"https://rels.boardwalk.to/peer")
+        && link_rels(link).contains(&"https://rels.boardwalk.to/server")
+}
+
+fn link_has_monitor_rel(link: &Json) -> bool {
+    link_rels(link).contains(&"monitor")
+        || link_rels(link).contains(&"https://rels.boardwalk.to/object-stream")
+}
+
+fn link_rels(link: &Json) -> Vec<&str> {
+    link["rel"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|rel| rel.as_str())
+        .collect()
 }
 
 fn collect_hrefs<'a>(value: &'a Json, out: &mut Vec<&'a str>) {

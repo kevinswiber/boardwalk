@@ -4,6 +4,7 @@ use serde_json::Value;
 use url::Url;
 
 use super::core::Core;
+use crate::peer::PeerCapabilities;
 use crate::runtime::{
     ActorSpec, Effect, Idempotency, ResourceSnapshot, StreamKind, TransitionResultKind,
 };
@@ -65,55 +66,109 @@ impl Hrefs {
     }
 }
 
-pub(crate) fn render_root(_core: &Arc<Core>, h: &Hrefs, peers: &[String]) -> Entity {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderPolicy {
+    capabilities: PeerCapabilities,
+}
+
+impl RenderPolicy {
+    pub(crate) fn local() -> Self {
+        Self::from_capabilities(PeerCapabilities::all())
+    }
+
+    pub(crate) fn from_capabilities(capabilities: PeerCapabilities) -> Self {
+        Self { capabilities }
+    }
+
+    fn allows(self, capability: PeerCapabilities) -> bool {
+        self.capabilities.contains(capability)
+    }
+
+    fn can_query(self) -> bool {
+        self.allows(PeerCapabilities::resource_query())
+    }
+
+    fn can_stream(self) -> bool {
+        self.allows(PeerCapabilities::stream_subscribe_capability())
+    }
+
+    fn can_invoke_transition(self) -> bool {
+        self.allows(PeerCapabilities::transition_invoke())
+    }
+
+    fn can_admin_peers(self) -> bool {
+        self.allows(PeerCapabilities::peer_admin())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PeerRenderPolicy {
+    pub route_name: String,
+    pub capabilities: PeerCapabilities,
+}
+
+impl PeerRenderPolicy {
+    fn can_read_resources(&self) -> bool {
+        self.capabilities
+            .contains(PeerCapabilities::resource_read())
+    }
+}
+
+pub(crate) fn render_root(
+    _core: &Arc<Core>,
+    h: &Hrefs,
+    peers: &[PeerRenderPolicy],
+    policy: RenderPolicy,
+) -> Entity {
     let mut e = Entity::new()
         .with_class("root")
         .with_link(Link::new(rels::SELF, h.root()))
         .with_link(Link::new(rels::RESOURCES, h.resources_url()))
         .with_link(Link::new(rels::SERVER, h.server_url()).with_title(h.server.clone()));
-    for peer in peers {
+    for peer in peers.iter().filter(|peer| peer.can_read_resources()) {
         let url = h
             .http
-            .join(&format!("servers/{}", urlencoding::encode(peer)))
+            .join(&format!(
+                "servers/{}",
+                urlencoding::encode(&peer.route_name)
+            ))
             .unwrap();
-        e = e.with_link(Link::rels([rels::PEER, rels::SERVER], url).with_title(peer.clone()));
+        e = e.with_link(
+            Link::rels([rels::PEER, rels::SERVER], url).with_title(peer.route_name.clone()),
+        );
     }
-    e.with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()))
-        .with_link(Link::new(rels::EVENTS, h.events_url()))
-        .with_action(
-            Action::new("query-resources", "GET", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("ql", "text")),
-        )
+    if policy.can_admin_peers() {
+        e = e.with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()));
+    }
+    if policy.can_stream() {
+        e = e.with_link(Link::new(rels::EVENTS, h.events_url()));
+    }
+    with_query_action(e, h, policy)
 }
 
-pub(crate) fn render_resources(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
+pub(crate) fn render_resources(
+    h: &Hrefs,
+    snaps: &[ResourceSnapshot],
+    policy: RenderPolicy,
+) -> Entity {
     let mut e = Entity::new()
         .with_class("resources")
         .with_property("node", Value::String(h.server.clone()))
-        .with_link(Link::new(rels::SELF, h.resources_url()))
-        .with_action(
-            Action::new("query-resources", "GET", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("ql", "text")),
-        );
+        .with_link(Link::new(rels::SELF, h.resources_url()));
+    e = with_query_action(e, h, policy);
     for snap in snaps {
         e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
     }
     e
 }
 
-pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot]) -> Entity {
+pub(crate) fn render_server(h: &Hrefs, snaps: &[ResourceSnapshot], policy: RenderPolicy) -> Entity {
     let mut e = Entity::new()
         .with_class("server")
         .with_property("name", Value::String(h.server.clone()))
         .with_link(Link::new(rels::SELF, h.server_url()))
-        .with_link(Link::new(rels::RESOURCES, h.resources_url()))
-        .with_action(
-            Action::new("query-resources", "GET", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("ql", "text")),
-        );
+        .with_link(Link::new(rels::RESOURCES, h.resources_url()));
+    e = with_query_action(e, h, policy);
     for snap in snaps {
         e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
     }
@@ -130,7 +185,7 @@ pub(crate) fn resource_sub_entity(h: &Hrefs, snap: &ResourceSnapshot) -> Embedde
         .with_link(Link::rels([rels::UP, rels::RESOURCES], h.resources_url()))
 }
 
-pub(crate) fn render_resource(h: &Hrefs, snap: &ResourceSnapshot) -> Entity {
+pub(crate) fn render_resource(h: &Hrefs, snap: &ResourceSnapshot, policy: RenderPolicy) -> Entity {
     let mut e = Entity::new()
         .with_class("resource")
         .with_class(snap.kind.clone());
@@ -149,38 +204,47 @@ pub(crate) fn render_resource(h: &Hrefs, snap: &ResourceSnapshot) -> Entity {
     // Actions for currently-allowed transitions. Field shapes come
     // from the snapshot's `TransitionAffordance`, not from runtime
     // internals, so rendering stays a pure projection step.
-    for t_name in snap.transitions.iter().filter(|t| t.available) {
-        let spec = &t_name.spec;
-        let mut action = Action::new(
-            spec.name.clone(),
-            "POST",
-            h.resource_transition_url(&snap.id, &spec.name),
-        )
-        .with_class("transition")
-        .json();
-        for f in &spec.fields {
-            let mut field = Field::typed(f.name.clone(), f.type_.clone());
-            field.title = f.title.clone();
-            field.value = f.value.clone();
-            action = action.with_field(field);
+    if policy.can_invoke_transition() {
+        for t_name in snap.transitions.iter().filter(|t| t.available) {
+            let spec = &t_name.spec;
+            let mut action = Action::new(
+                spec.name.clone(),
+                "POST",
+                h.resource_transition_url(&snap.id, &spec.name),
+            )
+            .with_class("transition")
+            .json();
+            for f in &spec.fields {
+                let mut field = Field::typed(f.name.clone(), f.type_.clone());
+                field.title = f.title.clone();
+                field.value = f.value.clone();
+                action = action.with_field(field);
+            }
+            e = e.with_action(action);
         }
-        e = e.with_action(action);
     }
 
     // Stream links for every declared stream on the snapshot.
-    for stream in &snap.streams {
-        let link = Link::rels(
-            [rels::MONITOR, rels::OBJECT_STREAM],
-            h.stream_url(&snap.kind, &snap.id, &stream.name),
-        )
-        .with_title(stream.name.clone());
-        e = e.with_link(link);
+    if policy.can_stream() {
+        for stream in &snap.streams {
+            let link = Link::rels(
+                [rels::MONITOR, rels::OBJECT_STREAM],
+                h.stream_url(&snap.kind, &snap.id, &stream.name),
+            )
+            .with_title(stream.name.clone());
+            e = e.with_link(link);
+        }
     }
 
     e
 }
 
-pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapshot]) -> Entity {
+pub(crate) fn render_search_results(
+    h: &Hrefs,
+    ql: &str,
+    snaps: &[ResourceSnapshot],
+    policy: RenderPolicy,
+) -> Entity {
     let mut self_url = h.resources_url();
     self_url.query_pairs_mut().append_pair("ql", ql);
 
@@ -189,16 +253,26 @@ pub(crate) fn render_search_results(h: &Hrefs, ql: &str, snaps: &[ResourceSnapsh
         .with_class("search-results")
         .with_property("name", Value::String(h.server.clone()))
         .with_property("ql", Value::String(ql.to_string()))
-        .with_link(Link::new(rels::SELF, self_url))
-        .with_action(
-            Action::new("query-resources", "GET", h.resources_url())
-                .form_urlencoded()
-                .with_field(Field::typed("ql", "text")),
-        );
+        .with_link(Link::new(rels::SELF, self_url));
+    e = with_query_action(e, h, policy);
     for snap in snaps {
         e = e.with_sub_entity(SubEntity::Embedded(resource_sub_entity(h, snap)));
     }
     e
+}
+
+fn with_query_action(entity: Entity, h: &Hrefs, policy: RenderPolicy) -> Entity {
+    if policy.can_query() {
+        entity.with_action(query_action(h))
+    } else {
+        entity
+    }
+}
+
+fn query_action(h: &Hrefs) -> Action {
+    Action::new("query-resources", "GET", h.resources_url())
+        .form_urlencoded()
+        .with_field(Field::typed("ql", "text"))
 }
 
 trait WithResourceProperty: Sized {
@@ -252,17 +326,19 @@ pub(crate) struct KindMeta {
     pub spec: ActorSpec,
 }
 
-pub(crate) fn render_meta(h: &Hrefs, types: &[KindMeta]) -> Entity {
+pub(crate) fn render_meta(h: &Hrefs, types: &[KindMeta], policy: RenderPolicy) -> Entity {
     let mut e = Entity::new()
         .with_class("metadata")
         .with_property("name", Value::String(h.server.clone()))
         .with_link(Link::new(rels::SELF, h.meta_url()))
-        .with_link(Link::new(rels::RESOURCES, h.resources_url()))
-        .with_link(Link::new(rels::MONITOR, {
+        .with_link(Link::new(rels::RESOURCES, h.resources_url()));
+    if policy.can_stream() {
+        e = e.with_link(Link::new(rels::MONITOR, {
             let mut u = h.events_url();
             u.query_pairs_mut().append_pair("topic", "meta");
             u
         }));
+    }
 
     // Until resource-kind registration is explicit, multiple resources
     // of the same kind should expose the same ActorSpec. If they drift,
@@ -534,7 +610,7 @@ mod tests {
         assert_eq!(v["properties"]["color"], "red");
 
         // Same guarantee on the full resource render.
-        let resource = render_resource(&h, &snap);
+        let resource = render_resource(&h, &snap, RenderPolicy::local());
         let v = serde_json::to_value(&resource).unwrap();
         assert_eq!(v["properties"]["type"], "shadow-led");
         assert_eq!(v["properties"]["color"], "red");
@@ -556,7 +632,7 @@ mod tests {
                 value: Some(Json::from(42)),
             });
 
-        let resource = render_resource(&h, &snap);
+        let resource = render_resource(&h, &snap, RenderPolicy::local());
         let v = serde_json::to_value(&resource).unwrap();
 
         assert_eq!(v["properties"]["kind"], "led");

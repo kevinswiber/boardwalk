@@ -20,6 +20,8 @@ use crate::query::FieldPath;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
+const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
+
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
 pub(crate) type PeerHandler = Arc<
@@ -186,20 +188,26 @@ async fn maybe_forward_or_404(
     let Some(mut sender) = senders.sender(target_name).await else {
         return Some(unknown_server_response());
     };
-    let req =
-        match build_peer_forward_request(&state.core.name, target_name, method, uri, headers, body)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return Some(
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("forward build: {e}"),
-                    )
-                        .into_response(),
-                );
-            }
-        };
+    let req = match build_peer_forward_request(
+        &state.core.name,
+        target_name,
+        method,
+        uri,
+        headers,
+        body,
+        context.negotiated_capabilities,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("forward build: {e}"),
+                )
+                    .into_response(),
+            );
+        }
+    };
     tracing::debug!(
         peer = %target_name,
         method = %req.method(),
@@ -317,6 +325,7 @@ fn build_peer_forward_request(
     uri: &Uri,
     headers: &HeaderMap,
     body: Body,
+    render_capabilities: PeerCapabilities,
 ) -> Result<http::Request<Body>, http::Error> {
     let path_and_query = uri
         .path_and_query()
@@ -339,6 +348,7 @@ fn build_peer_forward_request(
         .header("x-boardwalk-external-base", bases.http)
         .header("x-boardwalk-external-ws-base", bases.ws)
         .header("x-boardwalk-forwarded-by", gateway_name)
+        .header(RENDER_CAPABILITIES_HEADER, render_capabilities.to_string())
         .header("x-boardwalk-correlation-id", Uuid::new_v4().to_string());
     builder.body(body)
 }
@@ -453,6 +463,18 @@ fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
     }
 }
 
+fn render_policy_from_headers(headers: &HeaderMap) -> render::RenderPolicy {
+    let Some(value) = headers.get(RENDER_CAPABILITIES_HEADER) else {
+        return render::RenderPolicy::local();
+    };
+    let Ok(value) = value.to_str() else {
+        return render::RenderPolicy::from_capabilities(PeerCapabilities::empty());
+    };
+    let capabilities =
+        PeerCapabilities::parse_list(value).unwrap_or_else(|_| PeerCapabilities::empty());
+    render::RenderPolicy::from_capabilities(capabilities)
+}
+
 struct ForwardedExternalBases {
     host: String,
     scheme: String,
@@ -505,18 +527,33 @@ async fn root(
 ) -> Response {
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
+    let policy = render_policy_from_headers(&headers);
     if let Some(ql) = params.ql {
         return match core.query_resources(&ql).await {
-            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps, policy)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
     let _ = params.server;
     let peers = match &state.peer_senders {
-        Some(p) => p.names().await,
+        Some(p) => peer_render_policies(p).await,
         None => Vec::new(),
     };
-    siren_response(render::render_root(&core, &h, &peers))
+    siren_response(render::render_root(&core, &h, &peers, policy))
+}
+
+async fn peer_render_policies(senders: &Arc<dyn PeerSenders>) -> Vec<render::PeerRenderPolicy> {
+    let names = senders.names().await;
+    let mut peers = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some(context) = senders.peer_context(&name).await {
+            peers.push(render::PeerRenderPolicy {
+                route_name: name,
+                capabilities: context.negotiated_capabilities,
+            });
+        }
+    }
+    peers
 }
 
 async fn server_get(
@@ -531,14 +568,15 @@ async fn server_get(
     }
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
+    let policy = render_policy_from_headers(&headers);
     if let Some(ql) = params.ql {
         return match core.query_resources(&ql).await {
-            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps, policy)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
     let snaps = core.list_resources().await;
-    siren_response(render::render_server(&h, &snaps))
+    siren_response(render::render_server(&h, &snaps, policy))
 }
 
 async fn server_resources_get(
@@ -617,14 +655,15 @@ async fn resources_response(
     params: QueryParams,
 ) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
+    let policy = render_policy_from_headers(headers);
     if let Some(ql) = params.ql {
         return match core.query_resources(&ql).await {
-            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps)),
+            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps, policy)),
             Err(e) => query_error_response(&ql, &e),
         };
     }
     let snaps = core.list_resources().await;
-    siren_response(render::render_resources(&h, &snaps))
+    siren_response(render::render_resources(&h, &snaps, policy))
 }
 
 async fn resources_post(
@@ -707,7 +746,8 @@ async fn resources_post(
             return problem_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &msg, None);
         }
     };
-    let mut resp = siren_response(render::render_resource(&h, &snap));
+    let policy = render_policy_from_headers(&headers);
+    let mut resp = siren_response(render::render_resource(&h, &snap, policy));
     *resp.status_mut() = StatusCode::CREATED;
     resp.headers_mut().insert(
         http::header::LOCATION,
@@ -727,8 +767,9 @@ async fn resource_get(
 
 async fn resource_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri, id: &str) -> Response {
     let h = build_hrefs(headers, uri, &core.name);
+    let policy = render_policy_from_headers(headers);
     match core.get_resource(id).await {
-        Ok(Some(snapshot)) => siren_response(render::render_resource(&h, &snapshot)),
+        Ok(Some(snapshot)) => siren_response(render::render_resource(&h, &snapshot, policy)),
         Ok(None) => (StatusCode::NOT_FOUND, "unknown resource").into_response(),
         Err(ResourceReadError::NotFound) => {
             (StatusCode::NOT_FOUND, "unknown resource").into_response()
@@ -1357,7 +1398,8 @@ async fn meta_response(core: &Arc<Core>, headers: &HeaderMap, uri: &Uri) -> Resp
         .iter()
         .map(|spec| render::KindMeta { spec: spec.clone() })
         .collect();
-    siren_response(render::render_meta(&h, &types))
+    let policy = render_policy_from_headers(headers);
+    siren_response(render::render_meta(&h, &types, policy))
 }
 
 async fn meta_type_response(
@@ -1736,6 +1778,7 @@ mod tests {
             &"/servers/hub/resources/resource-1".parse().unwrap(),
             &sensitive_gateway_headers(),
             Body::empty(),
+            PeerCapabilities::resource_read(),
         )
         .expect("forward request");
         let headers = req.headers();
@@ -1783,6 +1826,16 @@ mod tests {
         );
         assert_eq!(
             headers.get_all("x-boardwalk-correlation-id").iter().count(),
+            1
+        );
+        assert_eq!(
+            headers
+                .get(RENDER_CAPABILITIES_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("resource.read")
+        );
+        assert_eq!(
+            headers.get_all(RENDER_CAPABILITIES_HEADER).iter().count(),
             1
         );
     }
@@ -1985,6 +2038,10 @@ mod tests {
         headers.insert(
             HeaderName::from_static("x-boardwalk-correlation-id"),
             HeaderValue::from_static("attacker-correlation"),
+        );
+        headers.insert(
+            HeaderName::from_static(RENDER_CAPABILITIES_HEADER),
+            HeaderValue::from_static("peer.admin"),
         );
         headers
     }
