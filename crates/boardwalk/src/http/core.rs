@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::events::{EventBus, SubscribeOpts, Subscription, SubscriptionId, TopicPattern};
-use crate::registry::{Registry, RegistryError};
+use crate::registry::Registry;
 use crate::runtime::{
     ActorSpec, Node, NodeHandle, RequestCtx, ResourceError, ResourceSnapshot, ResourceSnapshotRead,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
@@ -181,11 +181,13 @@ impl Core {
     fn latest_resource_snapshot(
         &self,
         resource_id: &str,
-    ) -> Result<Option<ResourceSnapshot>, RegistryError> {
+    ) -> Result<Option<ResourceSnapshot>, String> {
         let Some(registry) = self.registry.as_ref() else {
             return Ok(None);
         };
-        registry.latest_resource_snapshot(resource_id)
+        registry
+            .latest_resource_snapshot(resource_id)
+            .map_err(|err| err.to_string())
     }
 }
 

@@ -51,6 +51,60 @@ fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
     );
 }
 
+#[test]
+fn resource_identity_repository_rejects_key_reassignment() {
+    let (repos, _dir) = temp_repositories();
+    let first_id = uuid::Uuid::new_v4().to_string();
+    let second_id = uuid::Uuid::new_v4().to_string();
+
+    repos
+        .resource_identities()
+        .put(identity_record(&first_id))
+        .unwrap();
+    let err = repos
+        .resource_identities()
+        .put(identity_record(&second_id))
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("identity conflict"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn resource_identity_repository_replaces_stale_keys_for_same_record() {
+    let (repos, _dir) = temp_repositories();
+    let resource_id = uuid::Uuid::new_v4().to_string();
+    repos
+        .resource_identities()
+        .put(identity_record(&resource_id))
+        .unwrap();
+
+    let replacement = ResourceIdentityRecord {
+        identity_keys: vec![IdentityKey::static_name("led", "back")],
+        ..identity_record(&resource_id)
+    };
+    repos.resource_identities().put(replacement).unwrap();
+
+    assert!(
+        repos
+            .resource_identities()
+            .find_by_identity_key(&IdentityKey::static_name("led", "front"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repos
+            .resource_identities()
+            .find_by_identity_key(&IdentityKey::static_name("led", "back"))
+            .unwrap()
+            .unwrap()
+            .id,
+        resource_id
+    );
+}
+
 #[tokio::test]
 async fn resource_id_is_stable_across_builds() {
     let dir = tempfile::tempdir().unwrap();
@@ -208,8 +262,7 @@ async fn resource_id_is_random_without_persistence() {
 
 fn temp_repositories() -> (Repositories, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("boardwalk.redb");
-    let repos = Repositories::open(&db_path).unwrap();
+    let repos = Repositories::memory();
     (repos, dir)
 }
 

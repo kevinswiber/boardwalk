@@ -4,7 +4,6 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use thiserror::Error;
@@ -15,6 +14,8 @@ use crate::runtime::ResourceSnapshot;
 pub(crate) enum StorageError {
     #[error("repository lock poisoned")]
     LockPoisoned,
+    #[error("identity conflict: {0}")]
+    IdentityConflict(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -73,12 +74,12 @@ pub(crate) struct Repositories {
 }
 
 impl Repositories {
-    pub(crate) fn open(_path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    pub(crate) fn memory() -> Self {
         let state = Arc::new(Mutex::new(RepositoryState::default()));
-        Ok(Self {
+        Self {
             resource_identities: ResourceIdentityStore::new(Arc::clone(&state)),
             resource_snapshots: ResourceSnapshotStore::new(state),
-        })
+        }
     }
 
     pub(crate) fn resource_identities(&self) -> &ResourceIdentityStore {
@@ -122,6 +123,24 @@ impl ResourceIdentityStore {
 impl ResourceIdentityRepository for ResourceIdentityStore {
     fn put(&self, record: ResourceIdentityRecord) -> Result<(), StorageError> {
         let mut state = lock_state(&self.state)?;
+        for key in &record.identity_keys {
+            if let Some(existing_id) = state.identity_keys.get(key)
+                && existing_id != &record.id
+            {
+                return Err(StorageError::IdentityConflict(format!(
+                    "identity key is already assigned to `{existing_id}`"
+                )));
+            }
+        }
+        if let Some(previous_keys) = state
+            .identities
+            .get(&record.id)
+            .map(|previous| previous.identity_keys.clone())
+        {
+            for key in &previous_keys {
+                state.identity_keys.remove(key);
+            }
+        }
         for key in &record.identity_keys {
             state.identity_keys.insert(key.clone(), record.id.clone());
         }

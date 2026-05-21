@@ -418,7 +418,7 @@ fn resolve_resource_id(
 
 #[derive(Debug)]
 enum ResourceIdentityError {
-    Registry(crate::registry::RegistryError),
+    Registry(Box<crate::registry::RegistryError>),
     Conflict(String),
 }
 
@@ -434,7 +434,7 @@ fn resolve_or_create_resource_identity(
     if let Some(id) = explicit {
         if let Some(existing) = reg
             .get_resource(&id)
-            .map_err(ResourceIdentityError::Registry)?
+            .map_err(resource_identity_registry_error)?
         {
             if resource_record_matches(&existing, spec) {
                 return Ok(id);
@@ -445,7 +445,7 @@ fn resolve_or_create_resource_identity(
         }
         if let Some(existing) = reg
             .find_resource_by_identity(&spec.kind, spec.name.as_deref())
-            .map_err(ResourceIdentityError::Registry)?
+            .map_err(resource_identity_registry_error)?
             && existing.id != id
         {
             return Err(ResourceIdentityError::Conflict(format!(
@@ -453,19 +453,19 @@ fn resolve_or_create_resource_identity(
                 resource_identity_label(spec)
             )));
         }
-        put_resource_identity(reg, spec, id).map_err(ResourceIdentityError::Registry)?;
+        put_resource_identity(reg, spec, id)?;
         return Ok(id);
     }
 
     if let Some(existing) = reg
         .find_resource_by_identity(&spec.kind, spec.name.as_deref())
-        .map_err(ResourceIdentityError::Registry)?
+        .map_err(resource_identity_registry_error)?
     {
         return Ok(existing.id);
     }
 
     let id = Uuid::new_v4();
-    put_resource_identity(reg, spec, id).map_err(ResourceIdentityError::Registry)?;
+    put_resource_identity(reg, spec, id)?;
     Ok(id)
 }
 
@@ -473,13 +473,15 @@ fn put_resource_identity(
     registry: &Registry,
     spec: &ResourceSpec,
     id: Uuid,
-) -> Result<(), crate::registry::RegistryError> {
-    registry.put_resource(&ResourceRecord {
-        id,
-        type_: spec.kind.clone(),
-        name: spec.name.clone(),
-        properties: serde_json::Map::new(),
-    })
+) -> Result<(), ResourceIdentityError> {
+    registry
+        .put_resource(&ResourceRecord {
+            id,
+            type_: spec.kind.clone(),
+            name: spec.name.clone(),
+            properties: serde_json::Map::new(),
+        })
+        .map_err(resource_identity_registry_error)
 }
 
 fn resource_record_matches(record: &ResourceRecord, spec: &ResourceSpec) -> bool {
@@ -507,6 +509,10 @@ fn registration_identity_error(err: ResourceIdentityError) -> ResourceRegistrati
         }
         ResourceIdentityError::Conflict(msg) => ResourceRegistrationError::Conflict(msg),
     }
+}
+
+fn resource_identity_registry_error(err: crate::registry::RegistryError) -> ResourceIdentityError {
+    ResourceIdentityError::Registry(Box::new(err))
 }
 
 fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {
