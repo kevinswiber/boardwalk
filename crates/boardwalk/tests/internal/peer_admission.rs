@@ -109,8 +109,14 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
     .await;
     let first_record = wait_for_peer_record(registry, "hub").await;
 
+    let first_connection = registry
+        .latest_peer_connection("hub")
+        .unwrap()
+        .expect("first peer connection");
+    assert_eq!(first_connection.connection_id, first_connection_id);
     assert_ne!(
-        first_record.id, first_connection_id,
+        first_record.peer_id,
+        first_connection_id.to_string(),
         "durable peer identity must not be the transient connection id"
     );
 
@@ -126,13 +132,18 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
     )
     .await;
     let second_record = wait_for_peer_record(registry, "hub").await;
+    let second_connection = registry
+        .latest_peer_connection("hub")
+        .unwrap()
+        .expect("second peer connection");
 
     assert_eq!(
-        second_record.id, first_record.id,
+        second_record.peer_id, first_record.peer_id,
         "durable peer identity should remain stable across reconnects"
     );
+    assert_eq!(second_connection.connection_id, second_connection_id);
     assert_ne!(
-        second_record.id, second_connection_id,
+        second_connection.connection_id, first_connection.connection_id,
         "reconnect must create a new connection without replacing peer identity"
     );
 }

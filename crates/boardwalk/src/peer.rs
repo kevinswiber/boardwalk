@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,12 +12,13 @@ use http::Request;
 use http_body_util::BodyExt;
 use hyper::client::conn::http2::SendRequest;
 use hyper_util::rt::TokioExecutor;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
 use crate::http::{PeerInitState, PeerSenders};
-use crate::registry::{PeerDirection, PeerRecord, PeerStatus, Registry};
+use crate::registry::{PeerConnectionDirection, PeerConnectionRecord, PeerRecord, Registry};
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -29,6 +31,263 @@ pub enum PeerError {
     #[error("hyper legacy: {0}")]
     #[allow(dead_code)]
     HyperLegacy(String),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub(crate) enum PeerModelError {
+    #[error("node id cannot be empty")]
+    EmptyNodeId,
+    #[error("peer id cannot be empty")]
+    EmptyPeerId,
+    #[error("route name cannot be empty")]
+    EmptyRouteName,
+    #[error("route name `{0}` is not a URL path segment")]
+    InvalidRouteName(String),
+    #[error("unknown peer capability `{0}`")]
+    UnknownCapability(String),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct PeerId(String);
+
+#[allow(dead_code)]
+impl PeerId {
+    pub(crate) fn new(id: impl Into<String>) -> Result<Self, PeerModelError> {
+        let id = id.into();
+        if id.trim().is_empty() {
+            return Err(PeerModelError::EmptyPeerId);
+        }
+        Ok(Self(id))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RouteName(String);
+
+#[allow(dead_code)]
+impl RouteName {
+    pub(crate) fn new(route_name: impl Into<String>) -> Result<Self, PeerModelError> {
+        let route_name = route_name.into();
+        if route_name.trim().is_empty() {
+            return Err(PeerModelError::EmptyRouteName);
+        }
+        if route_name
+            .chars()
+            .any(|ch| matches!(ch, '/' | '?' | '#' | '%'))
+        {
+            return Err(PeerModelError::InvalidRouteName(route_name));
+        }
+        Ok(Self(route_name))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RouteName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NodeIdentity {
+    pub node_id: crate::events::NodeId,
+    pub display_name: String,
+    pub route_name: RouteName,
+}
+
+#[allow(dead_code)]
+impl NodeIdentity {
+    pub(crate) fn new(
+        node_id: impl Into<String>,
+        display_name: impl Into<String>,
+        route_name: impl Into<String>,
+    ) -> Result<Self, PeerModelError> {
+        let node_id = node_id.into();
+        if node_id.trim().is_empty() {
+            return Err(PeerModelError::EmptyNodeId);
+        }
+        Ok(Self {
+            node_id: crate::events::NodeId::new(node_id),
+            display_name: display_name.into(),
+            route_name: RouteName::new(route_name)?,
+        })
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct PeerCapabilities(u8);
+
+#[allow(dead_code)]
+impl PeerCapabilities {
+    const RESOURCE_READ: u8 = 1 << 0;
+    const RESOURCE_QUERY: u8 = 1 << 1;
+    const STREAM_SUBSCRIBE: u8 = 1 << 2;
+    const TRANSITION_INVOKE: u8 = 1 << 3;
+    const RESOURCE_REGISTER: u8 = 1 << 4;
+    const PEER_ADMIN: u8 = 1 << 5;
+
+    pub(crate) fn empty() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn all() -> Self {
+        Self(
+            Self::RESOURCE_READ
+                | Self::RESOURCE_QUERY
+                | Self::STREAM_SUBSCRIBE
+                | Self::TRANSITION_INVOKE
+                | Self::RESOURCE_REGISTER
+                | Self::PEER_ADMIN,
+        )
+    }
+
+    pub(crate) fn resource_read() -> Self {
+        Self(Self::RESOURCE_READ)
+    }
+
+    pub(crate) fn parse_list(input: &str) -> Result<Self, PeerModelError> {
+        let mut caps = Self::empty();
+        for raw in input.split(',') {
+            let name = raw.trim();
+            if name.is_empty() {
+                continue;
+            }
+            caps.0 |= match name {
+                "resource.read" => Self::RESOURCE_READ,
+                "resource.query" => Self::RESOURCE_QUERY,
+                "stream.subscribe" => Self::STREAM_SUBSCRIBE,
+                "transition.invoke" => Self::TRANSITION_INVOKE,
+                "resource.register" => Self::RESOURCE_REGISTER,
+                "peer.admin" => Self::PEER_ADMIN,
+                other => return Err(PeerModelError::UnknownCapability(other.to_string())),
+            };
+        }
+        Ok(caps)
+    }
+
+    pub(crate) fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        [
+            (Self::RESOURCE_READ, "resource.read"),
+            (Self::RESOURCE_QUERY, "resource.query"),
+            (Self::STREAM_SUBSCRIBE, "stream.subscribe"),
+            (Self::TRANSITION_INVOKE, "transition.invoke"),
+            (Self::RESOURCE_REGISTER, "resource.register"),
+            (Self::PEER_ADMIN, "peer.admin"),
+        ]
+        .into_iter()
+        .filter_map(move |(bit, name)| (self.0 & bit != 0).then_some(name))
+    }
+}
+
+impl fmt::Display for PeerCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names = self.names();
+        if let Some(first) = names.next() {
+            f.write_str(first)?;
+            for name in names {
+                f.write_str(",")?;
+                f.write_str(name)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Peer {
+    pub peer_id: PeerId,
+    pub route_name: RouteName,
+    pub expected_node_id: Option<crate::events::NodeId>,
+    pub display_name: Option<String>,
+    /// Negotiated capabilities are the ceiling for gateway forwarding
+    /// and for rendering remote hypermedia affordances.
+    pub allowed_capabilities: PeerCapabilities,
+}
+
+#[allow(dead_code)]
+impl Peer {
+    pub(crate) fn configured(
+        peer_id: impl Into<String>,
+        route_name: impl Into<String>,
+        expected_node_id: Option<&str>,
+    ) -> Result<Self, PeerModelError> {
+        Ok(Self {
+            peer_id: PeerId::new(peer_id)?,
+            route_name: RouteName::new(route_name)?,
+            expected_node_id: expected_node_id.map(crate::events::NodeId::new),
+            display_name: None,
+            allowed_capabilities: PeerCapabilities::all(),
+        })
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PeerConnectionStatus {
+    Opening,
+    Connected,
+    Disconnected,
+    Failed,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PeerConnection {
+    pub connection_id: Uuid,
+    pub peer_id: PeerId,
+    pub route_name: RouteName,
+    pub status: PeerConnectionStatus,
+    /// Negotiated capabilities are the ceiling for gateway forwarding
+    /// and for rendering remote hypermedia affordances.
+    pub negotiated_capabilities: PeerCapabilities,
+}
+
+#[allow(dead_code)]
+impl PeerConnection {
+    pub(crate) fn opening(
+        peer_id: PeerId,
+        route_name: impl Into<String>,
+        connection_id: Uuid,
+    ) -> Result<Self, PeerModelError> {
+        Ok(Self {
+            connection_id,
+            peer_id,
+            route_name: RouteName::new(route_name)?,
+            status: PeerConnectionStatus::Opening,
+            negotiated_capabilities: PeerCapabilities::empty(),
+        })
+    }
 }
 
 /// Outbound peer client. Establishes the tunnel, hosts a local H2
@@ -184,7 +443,7 @@ impl PeerAcceptors {
                             reg,
                             &peer_name_for_task,
                             connection_id,
-                            PeerStatus::Connected,
+                            PeerConnectionStatus::Connected,
                         );
                     }
                     acceptors
@@ -194,7 +453,12 @@ impl PeerAcceptors {
                 }
                 Err(e) => {
                     if let Some(reg) = &registry_snapshot {
-                        write_peer(reg, &peer_name_for_task, connection_id, PeerStatus::Failed);
+                        write_peer(
+                            reg,
+                            &peer_name_for_task,
+                            connection_id,
+                            PeerConnectionStatus::Failed,
+                        );
                     }
                     tracing::warn!(peer = %peer_name_for_task, error = %e, "peer acceptor failed");
                 }
@@ -213,7 +477,7 @@ impl PeerAcceptors {
                         reg,
                         &peer_name_for_task,
                         connection_id,
-                        PeerStatus::Disconnected,
+                        PeerConnectionStatus::Disconnected,
                     );
                 }
             }
@@ -300,22 +564,34 @@ async fn drive_acceptor(
     Ok(())
 }
 
-fn write_peer(registry: &Registry, name: &str, connection_id: Uuid, status: PeerStatus) {
+fn write_peer(registry: &Registry, name: &str, connection_id: Uuid, status: PeerConnectionStatus) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let url: url::Url = format!("peer://{name}/").parse().unwrap();
-    let record = PeerRecord {
-        id: connection_id,
-        name: name.to_string(),
-        url,
-        direction: PeerDirection::Acceptor,
-        status,
+    let peer_id = format!("peer-{name}");
+    let peer = PeerRecord {
+        peer_id: peer_id.clone(),
+        route_name: name.to_string(),
+        node_id: None,
+        display_name: None,
+        allowed_capabilities: PeerCapabilities::all(),
         updated_ms: now_ms,
     };
-    if let Err(e) = registry.put_peer(&record) {
+    if let Err(e) = registry.put_peer(&peer) {
         tracing::warn!(error = %e, "failed to persist peer record");
+    }
+    let connection = PeerConnectionRecord {
+        connection_id,
+        peer_id,
+        route_name: name.to_string(),
+        direction: PeerConnectionDirection::Acceptor,
+        status,
+        negotiated_capabilities: PeerCapabilities::all(),
+        updated_ms: now_ms,
+    };
+    if let Err(e) = registry.put_peer_connection(&connection) {
+        tracing::warn!(error = %e, "failed to persist peer connection record");
     }
 }
 
@@ -348,4 +624,42 @@ fn xorshift() -> u64 {
         s.set(x);
         x
     })
+}
+
+#[cfg(test)]
+mod peer_model_tests {
+    use super::*;
+
+    #[test]
+    fn peer_model_node_identity_separates_stable_node_id_from_route_name() {
+        let identity = NodeIdentity::new("node-hub-1", "Kitchen Hub", "hub").unwrap();
+
+        assert_eq!(identity.node_id.as_str(), "node-hub-1");
+        assert_eq!(identity.display_name, "Kitchen Hub");
+        assert_eq!(identity.route_name.as_str(), "hub");
+    }
+
+    #[test]
+    fn peer_model_capabilities_parse_and_intersect_known_names() {
+        let requested = PeerCapabilities::parse_list("resource.read,stream.subscribe").unwrap();
+        let allowed = PeerCapabilities::parse_list("resource.read,transition.invoke").unwrap();
+
+        assert_eq!(
+            requested.intersection(allowed),
+            PeerCapabilities::resource_read()
+        );
+    }
+
+    #[test]
+    fn peer_model_capabilities_reject_unknown_names() {
+        assert!(PeerCapabilities::parse_list("resource.read,unknown").is_err());
+    }
+
+    #[test]
+    fn peer_model_peer_connection_has_session_id_separate_from_peer_id() {
+        let peer = Peer::configured("peer-hub", "hub", Some("node-hub-1")).unwrap();
+        let conn = PeerConnection::opening(peer.peer_id.clone(), "hub", Uuid::new_v4()).unwrap();
+
+        assert_ne!(peer.peer_id.to_string(), conn.connection_id.to_string());
+    }
 }

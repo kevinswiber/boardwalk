@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use url::Url;
 use uuid::Uuid;
+
+use crate::peer::{PeerCapabilities, PeerConnectionStatus};
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -42,32 +43,35 @@ pub struct ResourceRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRecord {
-    pub id: Uuid,
-    pub name: String,
-    pub url: Url,
-    pub direction: PeerDirection,
-    pub status: PeerStatus,
+    pub peer_id: String,
+    pub route_name: String,
+    pub node_id: Option<String>,
+    pub display_name: Option<String>,
+    pub allowed_capabilities: PeerCapabilities,
     pub updated_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PeerDirection {
+pub enum PeerConnectionDirection {
     Initiator,
     Acceptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PeerStatus {
-    Connecting,
-    Connected,
-    Disconnected,
-    Failed,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerConnectionRecord {
+    pub connection_id: Uuid,
+    pub peer_id: String,
+    pub route_name: String,
+    pub direction: PeerConnectionDirection,
+    pub status: PeerConnectionStatus,
+    pub negotiated_capabilities: PeerCapabilities,
+    pub updated_ms: i64,
 }
 
 const RESOURCE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("resources");
-const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
+const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers_v2");
+const PEER_CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("peer_connections_v1");
 
 #[allow(dead_code)]
 pub struct Config {
@@ -100,6 +104,7 @@ impl Registry {
         let txn = db.begin_write()?;
         txn.open_table(RESOURCE_TABLE)?;
         txn.open_table(PEERS)?;
+        txn.open_table(PEER_CONNECTIONS)?;
         txn.commit()?;
         Ok(Self { db })
     }
@@ -171,7 +176,7 @@ impl Registry {
         let txn = self.db.begin_write()?;
         {
             let mut t = txn.open_table(PEERS)?;
-            t.insert(rec.name.as_str(), bytes.as_slice())?;
+            t.insert(rec.route_name.as_str(), bytes.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -179,9 +184,14 @@ impl Registry {
 
     #[allow(dead_code)]
     pub fn get_peer(&self, name: &str) -> Result<Option<PeerRecord>, RegistryError> {
+        self.get_peer_by_route(name)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_peer_by_route(&self, route_name: &str) -> Result<Option<PeerRecord>, RegistryError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(PEERS)?;
-        match t.get(name)? {
+        match t.get(route_name)? {
             Some(av) => Ok(Some(serde_json::from_slice(av.value())?)),
             None => Ok(None),
         }
@@ -208,6 +218,42 @@ impl Registry {
         };
         txn.commit()?;
         Ok(removed)
+    }
+
+    pub fn put_peer_connection(&self, rec: &PeerConnectionRecord) -> Result<(), RegistryError> {
+        let bytes = serde_json::to_vec(rec)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut t = txn.open_table(PEER_CONNECTIONS)?;
+            t.insert(rec.route_name.as_str(), bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn latest_peer_connection(
+        &self,
+        route_name: &str,
+    ) -> Result<Option<PeerConnectionRecord>, RegistryError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(PEER_CONNECTIONS)?;
+        match t.get(route_name)? {
+            Some(av) => Ok(Some(serde_json::from_slice(av.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn list_peer_connections(&self) -> Result<Vec<PeerConnectionRecord>, RegistryError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(PEER_CONNECTIONS)?;
+        let mut out = Vec::new();
+        for item in t.iter()? {
+            let (_, av) = item?;
+            out.push(serde_json::from_slice(av.value())?);
+        }
+        Ok(out)
     }
 }
 
@@ -247,16 +293,144 @@ mod tests {
     fn peers_round_trip() {
         let (reg, _dir) = temp_db();
         let rec = PeerRecord {
-            id: Uuid::new_v4(),
-            name: "cloud".into(),
-            url: "http://example.com/".parse().unwrap(),
-            direction: PeerDirection::Initiator,
-            status: PeerStatus::Connecting,
+            peer_id: "peer-cloud".into(),
+            route_name: "cloud".into(),
+            node_id: Some("node-cloud-1".into()),
+            display_name: Some("Cloud".into()),
+            allowed_capabilities: crate::peer::PeerCapabilities::resource_read(),
             updated_ms: 0,
         };
         reg.put_peer(&rec).unwrap();
         let got = reg.get_peer("cloud").unwrap().unwrap();
-        assert_eq!(got.url.as_str(), "http://example.com/");
+        assert_eq!(got.peer_id, "peer-cloud");
+        assert_eq!(got.route_name, "cloud");
         assert_eq!(reg.list_peers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn old_peer_status_rows_are_not_decoded_as_new_peer_records() {
+        let (reg, _dir) = temp_db_with_old_peer_status_rows();
+
+        assert!(reg.list_peers().unwrap().is_empty());
+        assert!(reg.list_peer_connections().unwrap().is_empty());
+    }
+
+    #[test]
+    fn durable_peer_and_peer_connection_records_are_separate() {
+        let (reg, _dir) = temp_db();
+        let peer = PeerRecord {
+            peer_id: "peer-hub".into(),
+            route_name: "hub".into(),
+            node_id: Some("node-hub-1".into()),
+            display_name: Some("Hub".into()),
+            allowed_capabilities: crate::peer::PeerCapabilities::resource_read(),
+            updated_ms: 1,
+        };
+        let connection = PeerConnectionRecord {
+            connection_id: Uuid::new_v4(),
+            peer_id: "peer-hub".into(),
+            route_name: "hub".into(),
+            direction: PeerConnectionDirection::Acceptor,
+            status: crate::peer::PeerConnectionStatus::Connected,
+            negotiated_capabilities: crate::peer::PeerCapabilities::resource_read(),
+            updated_ms: 2,
+        };
+
+        reg.put_peer(&peer).unwrap();
+        reg.put_peer_connection(&connection).unwrap();
+
+        assert_eq!(
+            reg.get_peer_by_route("hub").unwrap().unwrap().peer_id,
+            "peer-hub"
+        );
+        assert_eq!(
+            reg.latest_peer_connection("hub")
+                .unwrap()
+                .unwrap()
+                .connection_id,
+            connection.connection_id
+        );
+    }
+
+    #[test]
+    fn reconnect_updates_connection_without_changing_durable_peer_id() {
+        let (reg, _dir) = temp_db();
+        let peer = PeerRecord {
+            peer_id: "peer-hub".into(),
+            route_name: "hub".into(),
+            node_id: Some("node-hub-1".into()),
+            display_name: Some("Hub".into()),
+            allowed_capabilities: crate::peer::PeerCapabilities::resource_read(),
+            updated_ms: 1,
+        };
+        reg.put_peer(&peer).unwrap();
+
+        let first_connection_id = Uuid::new_v4();
+        reg.put_peer_connection(&PeerConnectionRecord {
+            connection_id: first_connection_id,
+            peer_id: "peer-hub".into(),
+            route_name: "hub".into(),
+            direction: PeerConnectionDirection::Acceptor,
+            status: crate::peer::PeerConnectionStatus::Connected,
+            negotiated_capabilities: crate::peer::PeerCapabilities::resource_read(),
+            updated_ms: 2,
+        })
+        .unwrap();
+        let second_connection_id = Uuid::new_v4();
+        reg.put_peer_connection(&PeerConnectionRecord {
+            connection_id: second_connection_id,
+            peer_id: "peer-hub".into(),
+            route_name: "hub".into(),
+            direction: PeerConnectionDirection::Acceptor,
+            status: crate::peer::PeerConnectionStatus::Connected,
+            negotiated_capabilities: crate::peer::PeerCapabilities::resource_read(),
+            updated_ms: 3,
+        })
+        .unwrap();
+
+        assert_eq!(
+            reg.get_peer_by_route("hub").unwrap().unwrap().peer_id,
+            "peer-hub"
+        );
+        let latest = reg.latest_peer_connection("hub").unwrap().unwrap();
+        assert_eq!(latest.connection_id, second_connection_id);
+        assert_ne!(latest.connection_id, first_connection_id);
+    }
+
+    fn temp_db_with_old_peer_status_rows() -> (Registry, tempfile::TempDir) {
+        use url::Url;
+
+        #[derive(Serialize)]
+        struct OldPeerStatusRow {
+            id: Uuid,
+            name: String,
+            url: Url,
+            direction: String,
+            status: String,
+            updated_ms: i64,
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boardwalk.redb");
+        let db = Database::create(&path).unwrap();
+        let old_peers: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(old_peers).unwrap();
+            let row = OldPeerStatusRow {
+                id: Uuid::new_v4(),
+                name: "hub".into(),
+                url: "peer://hub/".parse().unwrap(),
+                direction: "acceptor".into(),
+                status: "connected".into(),
+                updated_ms: 1,
+            };
+            let bytes = serde_json::to_vec(&row).unwrap();
+            table.insert("hub", bytes.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+
+        (Registry::open(&path).unwrap(), dir)
     }
 }
