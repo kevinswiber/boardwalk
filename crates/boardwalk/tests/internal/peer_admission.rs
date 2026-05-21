@@ -15,9 +15,66 @@ use hyper_util::rt::TokioIo;
 use uuid::Uuid;
 
 use crate::Boardwalk;
+use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerLinkConfig};
 use crate::registry::{PeerRecord, Registry};
 use crate::server::Built;
 use crate::tunnel::SUBPROTOCOL;
+
+#[tokio::test]
+async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry_path = dir.path().join("boardwalk.redb");
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .persist(&registry_path)
+            .expect_peer_token_with_capabilities(
+                "hub",
+                "kid-1",
+                "secret",
+                ["resource.read", "stream.subscribe"],
+            ),
+    )
+    .await;
+
+    let _hub = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-1")
+        .link_peer(
+            PeerLinkConfig::new(format!("http://{}", cloud.addr), "hub")
+                .unwrap()
+                .token("kid-1", "secret")
+                .node_id("node-hub-1")
+                .node_name("Kitchen Hub")
+                .request_capabilities(["resource.read", "transition.invoke"])
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    assert!(
+        cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_secs(5))
+            .await,
+        "cloud should confirm the admitted peer"
+    );
+
+    let registry = cloud.built.registry.as_ref().expect("registry");
+    let record = wait_for_peer_record(registry, "hub").await;
+    assert_eq!(record.node_id.as_deref(), Some("node-hub-1"));
+    assert_eq!(record.display_name.as_deref(), Some("Kitchen Hub"));
+
+    let connection = registry
+        .latest_peer_connection("hub")
+        .unwrap()
+        .expect("peer connection");
+    assert_eq!(
+        connection.negotiated_capabilities,
+        PeerCapabilities::resource_read()
+    );
+}
 
 #[tokio::test]
 async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
@@ -28,16 +85,63 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
     )
     .await;
 
-    let status = raw_peer_upgrade(
+    let upgrade = raw_peer_upgrade(
         cloud.addr,
         PeerUpgradeAttempt::new("hub", Uuid::new_v4())
             .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
             .without_token(),
     )
-    .await
-    .status;
+    .await;
 
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(upgrade.status, StatusCode::UNAUTHORIZED);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn peer_upgrade_with_wrong_bearer_token_is_rejected_before_upgrade() {
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .expect_peer_token("hub", "kid-1", "secret"),
+    )
+    .await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .token("kid-1", "wrong-secret"),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::UNAUTHORIZED);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn peer_upgrade_with_unknown_token_id_is_rejected_before_upgrade() {
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .expect_peer_token("hub", "kid-1", "secret"),
+    )
+    .await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .token("kid-2", "secret"),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::UNAUTHORIZED);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
     assert_no_peer_sender_registered(&cloud.built, "hub").await;
 }
 
@@ -50,16 +154,17 @@ async fn token_configured_for_one_route_cannot_claim_another_route_name() {
     )
     .await;
 
-    let status = raw_peer_upgrade(
+    let upgrade = raw_peer_upgrade(
         cloud.addr,
         PeerUpgradeAttempt::new("hub-b", Uuid::new_v4())
             .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
             .token("kid-1", "secret"),
     )
-    .await
-    .status;
+    .await;
 
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(upgrade.status, StatusCode::FORBIDDEN);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
     assert_no_peer_sender_registered(&cloud.built, "hub-b").await;
 }
 
@@ -73,16 +178,40 @@ async fn expected_node_id_mismatch_is_rejected_before_upgrade() {
     ))
     .await;
 
-    let status = raw_peer_upgrade(
+    let upgrade = raw_peer_upgrade(
         cloud.addr,
         PeerUpgradeAttempt::new("hub", Uuid::new_v4())
             .node_id("node-hub-2")
+            .request_capabilities(["resource.read"])
             .token("kid-1", "secret"),
     )
-    .await
-    .status;
+    .await;
 
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(upgrade.status, StatusCode::FORBIDDEN);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn empty_capability_intersection_is_rejected_before_upgrade() {
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .expect_peer_token_with_capabilities("hub", "kid-1", "secret", ["resource.read"]),
+    )
+    .await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["transition.invoke"])
+            .token("kid-1", "secret"),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::FORBIDDEN);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
     assert_no_peer_sender_registered(&cloud.built, "hub").await;
 }
 
@@ -104,6 +233,8 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         &cloud,
         PeerUpgradeAttempt::new("hub", first_connection_id)
             .node_id("node-hub-1")
+            .node_name("Kitchen Hub")
+            .request_capabilities(["resource.read"])
             .token("kid-1", "secret"),
     )
     .await;
@@ -128,6 +259,8 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         &cloud,
         PeerUpgradeAttempt::new("hub", second_connection_id)
             .node_id("node-hub-1")
+            .node_name("Kitchen Hub")
+            .request_capabilities(["resource.read"])
             .token("kid-1", "secret"),
     )
     .await;
@@ -259,6 +392,7 @@ async fn wait_for_no_peer_sender(built: &Built, route_name: &str) {
 
 struct PeerUpgradeResult {
     status: StatusCode,
+    headers: http::HeaderMap,
     upgraded: Option<hyper::upgrade::Upgraded>,
 }
 
@@ -298,11 +432,17 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
     if let Some(node_id) = attempt.node_id {
         builder = builder.header("x-boardwalk-node-id", node_id);
     }
+    if let Some(node_name) = attempt.node_name {
+        builder = builder.header("x-boardwalk-node-name", node_name);
+    }
     if let Some(token_id) = attempt.token_id {
-        builder = builder.header("x-boardwalk-token-id", token_id);
+        builder = builder.header("x-boardwalk-peer-token-id", token_id);
     }
     if let Some(secret) = attempt.secret {
         builder = builder.header("authorization", format!("Bearer {secret}"));
+    }
+    if let Some(capabilities) = attempt.requested_capabilities {
+        builder = builder.header("x-boardwalk-peer-capabilities", capabilities);
     }
 
     let response = sender
@@ -310,21 +450,33 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
         .await
         .unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let upgraded = if status == StatusCode::SWITCHING_PROTOCOLS {
         Some(hyper::upgrade::on(response).await.unwrap())
     } else {
         None
     };
 
-    PeerUpgradeResult { status, upgraded }
+    PeerUpgradeResult {
+        status,
+        headers,
+        upgraded,
+    }
+}
+
+fn assert_denied_without_websocket_upgrade_headers(upgrade: &PeerUpgradeResult) {
+    assert!(!upgrade.headers.contains_key("sec-websocket-accept"));
+    assert!(!upgrade.headers.contains_key("sec-websocket-protocol"));
 }
 
 struct PeerUpgradeAttempt {
     route_name: String,
     connection_id: Uuid,
     node_id: Option<&'static str>,
+    node_name: Option<&'static str>,
     token_id: Option<&'static str>,
     secret: Option<&'static str>,
+    requested_capabilities: Option<String>,
 }
 
 impl PeerUpgradeAttempt {
@@ -333,8 +485,10 @@ impl PeerUpgradeAttempt {
             route_name: route_name.into(),
             connection_id,
             node_id: None,
+            node_name: None,
             token_id: None,
             secret: None,
+            requested_capabilities: None,
         }
     }
 
@@ -343,9 +497,29 @@ impl PeerUpgradeAttempt {
         self
     }
 
+    fn node_name(mut self, node_name: &'static str) -> Self {
+        self.node_name = Some(node_name);
+        self
+    }
+
     fn token(mut self, token_id: &'static str, secret: &'static str) -> Self {
         self.token_id = Some(token_id);
         self.secret = Some(secret);
+        self
+    }
+
+    fn request_capabilities<I, S>(mut self, capabilities: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.requested_capabilities = Some(
+            capabilities
+                .into_iter()
+                .map(|capability| capability.as_ref().to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         self
     }
 
@@ -359,6 +533,17 @@ impl PeerUpgradeAttempt {
 trait PeerAdmissionConfigExt {
     fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self;
 
+    fn expect_peer_token_with_capabilities<I, S>(
+        self,
+        route_name: &str,
+        token_id: &str,
+        secret: &str,
+        allowed_capabilities: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>;
+
     fn expect_peer_token_for_node(
         self,
         route_name: &str,
@@ -370,8 +555,25 @@ trait PeerAdmissionConfigExt {
 
 impl PeerAdmissionConfigExt for Boardwalk {
     fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self {
-        let _ = (route_name, token_id, secret);
-        self
+        self.accept_peer_token(route_name, token_id, secret)
+    }
+
+    fn expect_peer_token_with_capabilities<I, S>(
+        self,
+        route_name: &str,
+        token_id: &str,
+        secret: &str,
+        allowed_capabilities: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
+            .unwrap()
+            .allow(allowed_capabilities)
+            .unwrap();
+        self.accept_peer_admission_config(config)
     }
 
     fn expect_peer_token_for_node(
@@ -381,7 +583,11 @@ impl PeerAdmissionConfigExt for Boardwalk {
         secret: &str,
         expected_node_id: &str,
     ) -> Self {
-        let _ = (route_name, token_id, secret, expected_node_id);
-        self
+        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
+            .unwrap()
+            .expected_node_id(expected_node_id)
+            .allow(["resource.read"])
+            .unwrap();
+        self.accept_peer_admission_config(config)
     }
 }

@@ -15,14 +15,18 @@ use uuid::Uuid;
 use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
+use crate::peer::{AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities};
 use crate::query::FieldPath;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
-pub(crate) type PeerHandler =
-    Arc<dyn Fn(String, Uuid, hyper::upgrade::Upgraded) -> BoxFuture<'static, ()> + Send + Sync>;
+pub(crate) type PeerHandler = Arc<
+    dyn Fn(AdmittedPeerConnection, hyper::upgrade::Upgraded) -> BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
 
 /// Cloud-side handle into the live HTTP/2 sender for each connected
 /// peer. The runtime (boardwalk-peer) implements this; the HTTP router
@@ -93,6 +97,7 @@ pub(crate) struct AppState {
     pub peer_init: PeerInitState,
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: super::peer_streams::PeerStreamHub,
+    pub peer_admission: Arc<Vec<PeerAdmissionConfig>>,
     pub resource_registrar: Option<ResourceRegistrar>,
 }
 
@@ -104,6 +109,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_init: PeerInitState::default(),
         peer_senders: None,
         peer_streams: super::peer_streams::PeerStreamHub::new(),
+        peer_admission: Arc::new(Vec::new()),
         resource_registrar: None,
     })
 }
@@ -1272,6 +1278,16 @@ async fn peers_upgrade(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "peering disabled").into_response(),
     };
 
+    let admitted = match admit_peer_connection(
+        &peer_name,
+        connection_id,
+        req.headers(),
+        &state.peer_admission,
+    ) {
+        Ok(admitted) => admitted,
+        Err(response) => return response,
+    };
+
     // Reject duplicate peer names. Two hubs with the same name landing
     // on the same cloud is a config error — fail fast with 409.
     if let Some(senders) = &state.peer_senders
@@ -1293,12 +1309,108 @@ async fn peers_upgrade(
     let on_upgrade = hyper::upgrade::on(&mut req);
     tokio::spawn(async move {
         match on_upgrade.await {
-            Ok(upgraded) => handler(peer_name, connection_id, upgraded).await,
+            Ok(upgraded) => handler(admitted, upgraded).await,
             Err(e) => tracing::warn!(%e, "peer upgrade failed"),
         }
     });
 
     upgrade_response
+}
+
+fn admit_peer_connection(
+    peer_name: &str,
+    connection_id: Uuid,
+    headers: &HeaderMap,
+    admissions: &[PeerAdmissionConfig],
+) -> Result<AdmittedPeerConnection, Response> {
+    if admissions.is_empty() {
+        return Ok(AdmittedPeerConnection::local_development(
+            peer_name.to_string(),
+            connection_id,
+        ));
+    }
+
+    let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "missing peer token id").into_response())?;
+    let bearer = bearer_token(headers)
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token").into_response())?;
+
+    let token_matches = admissions
+        .iter()
+        .filter(|config| config.token_id == token_id)
+        .collect::<Vec<_>>();
+    if token_matches.is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "unknown peer token id").into_response());
+    }
+
+    let verified = token_matches
+        .into_iter()
+        .filter(|config| config.token_verifier.verify(bearer))
+        .collect::<Vec<_>>();
+    if verified.is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "invalid bearer token").into_response());
+    }
+
+    let Some(config) = verified
+        .into_iter()
+        .find(|config| config.allowed_route_name.as_str() == peer_name)
+    else {
+        return Err((StatusCode::FORBIDDEN, "peer token is not valid for route").into_response());
+    };
+
+    let node_id = required_header(headers, crate::tunnel::PEER_NODE_ID_HEADER)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message).into_response())?;
+    if let Some(expected) = &config.expected_node_id
+        && expected.as_str() != node_id
+    {
+        return Err((StatusCode::FORBIDDEN, "peer node id mismatch").into_response());
+    }
+
+    let requested_capabilities = required_header(headers, crate::tunnel::PEER_CAPABILITIES_HEADER)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message).into_response())
+        .and_then(|raw| {
+            PeerCapabilities::parse_list(raw)
+                .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())
+        })?;
+    let negotiated_capabilities = requested_capabilities.intersection(config.allowed_capabilities);
+    if negotiated_capabilities.is_empty() {
+        return Err((StatusCode::FORBIDDEN, "peer capabilities are not allowed").into_response());
+    }
+
+    let display_name =
+        optional_header(headers, crate::tunnel::PEER_NODE_NAME_HEADER).map(ToOwned::to_owned);
+    Ok(AdmittedPeerConnection::token_bound(
+        peer_name,
+        token_id,
+        connection_id,
+        node_id,
+        display_name,
+        config.allowed_capabilities,
+        negotiated_capabilities,
+    ))
+}
+
+fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("missing {name}"))
+}
+
+fn optional_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())?;
+    raw.strip_prefix("Bearer ")
+        .filter(|token| !token.trim().is_empty())
 }
 
 /// Reuse `crate::tunnel::build_upgrade_response`.
@@ -1604,6 +1716,7 @@ mod tests {
             peer_init: PeerInitState::default(),
             peer_senders: Some(peer_senders),
             peer_streams: super::super::peer_streams::PeerStreamHub::new(),
+            peer_admission: Arc::new(Vec::new()),
             resource_registrar: None,
         }
     }

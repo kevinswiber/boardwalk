@@ -16,7 +16,7 @@ use crate::http::{
     AppState, Core, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
     ResourceRegistrationError, router_with,
 };
-use crate::peer::{PeerAcceptors, PeerClient};
+use crate::peer::{PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig};
 use crate::registry::{Registry, ResourceRecord};
 use crate::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, Resource, ResourceCtx,
@@ -26,7 +26,10 @@ use crate::runtime::{
 
 pub struct Boardwalk {
     name: String,
+    node_id: Option<String>,
     peers: Vec<Url>,
+    peer_links: Vec<PeerLinkConfig>,
+    accepted_peer_tokens: Vec<PeerAdmissionConfig>,
     actors: Vec<PendingActor>,
     actor_factories: HashMap<String, ActorFactory>,
     persist_path: Option<PathBuf>,
@@ -123,7 +126,10 @@ impl Boardwalk {
     pub fn new() -> Self {
         Self {
             name: "boardwalk".to_string(),
+            node_id: None,
             peers: Vec::new(),
+            peer_links: Vec::new(),
+            accepted_peer_tokens: Vec::new(),
             actors: Vec::new(),
             actor_factories: HashMap::new(),
             persist_path: None,
@@ -132,6 +138,11 @@ impl Boardwalk {
 
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
+        self
+    }
+
+    pub fn node_id(mut self, id: impl Into<String>) -> Self {
+        self.node_id = Some(id.into());
         self
     }
 
@@ -169,6 +180,31 @@ impl Boardwalk {
             Ok(u) => self.peers.push(u),
             Err(e) => tracing::warn!(?e, url = url.as_ref(), "ignoring invalid peer url"),
         }
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn link_peer(mut self, config: PeerLinkConfig) -> Self {
+        self.peer_links.push(config);
+        self
+    }
+
+    pub fn accept_peer_token(
+        mut self,
+        route_name: impl Into<String>,
+        token_id: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        match PeerAdmissionConfig::shared_token(route_name, token_id, token) {
+            Ok(config) => self.accepted_peer_tokens.push(config),
+            Err(err) => tracing::warn!(?err, "ignoring invalid peer admission config"),
+        }
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn accept_peer_admission_config(mut self, config: PeerAdmissionConfig) -> Self {
+        self.accepted_peer_tokens.push(config);
         self
     }
 
@@ -240,7 +276,10 @@ impl Boardwalk {
             .transpose()?
             .map(Arc::new);
 
-        let mut node_builder = NodeBuilder::new(self.name.clone());
+        let node_id = self.node_id.unwrap_or_else(|| self.name.clone());
+        let local_display_name = self.name.clone();
+        let accepted_peer_tokens = self.accepted_peer_tokens.clone();
+        let mut node_builder = NodeBuilder::new(node_id.clone());
         for actor in self.actors {
             let PendingActor { spec, id, register } = actor;
             let id = match id {
@@ -265,12 +304,10 @@ impl Boardwalk {
 
         let handler: PeerHandler = {
             let acceptors = acceptors.clone();
-            Arc::new(move |peer_name, connection_id, upgraded| {
+            Arc::new(move |admitted, upgraded| {
                 let acceptors = acceptors.clone();
                 Box::pin(async move {
-                    acceptors
-                        .on_upgraded(peer_name, connection_id, upgraded)
-                        .await;
+                    acceptors.on_upgraded(admitted, upgraded).await;
                 })
             })
         };
@@ -287,6 +324,7 @@ impl Boardwalk {
             peer_init: peer_init.clone(),
             peer_senders: Some(peer_senders),
             peer_streams: peer_streams.clone(),
+            peer_admission: Arc::new(accepted_peer_tokens),
             resource_registrar,
         };
         let router = router_with(state);
@@ -295,6 +333,16 @@ impl Boardwalk {
         for url in self.peers {
             let local_name = self.name.clone();
             let pc = PeerClient::new(url, local_name, router.clone(), peer_init.clone());
+            peer_tasks.push(pc.spawn());
+        }
+        for mut link in self.peer_links {
+            if link.local_node_id.is_none() {
+                link = link.node_id(node_id.clone());
+            }
+            if link.local_node_name.is_none() {
+                link = link.node_name(local_display_name.clone());
+            }
+            let pc = PeerClient::from_link(link, router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
 
@@ -306,6 +354,7 @@ impl Boardwalk {
             acceptors,
             peer_streams,
             registry,
+            peer_admission: self.accepted_peer_tokens,
         })
     }
 }
@@ -443,4 +492,5 @@ pub(crate) struct Built {
     pub(crate) acceptors: PeerAcceptors,
     pub(crate) peer_streams: crate::http::PeerStreamHub,
     pub(crate) registry: Option<Arc<Registry>>,
+    pub(crate) peer_admission: Vec<PeerAdmissionConfig>,
 }

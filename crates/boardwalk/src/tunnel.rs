@@ -23,7 +23,11 @@ use tokio::net::TcpStream;
 #[allow(unused_imports)]
 use uuid::Uuid;
 
-pub const SUBPROTOCOL: &str = "boardwalk-peer/2";
+pub const SUBPROTOCOL: &str = "boardwalk-peer/3";
+pub(crate) const PEER_TOKEN_ID_HEADER: &str = "x-boardwalk-peer-token-id";
+pub(crate) const PEER_NODE_ID_HEADER: &str = "x-boardwalk-node-id";
+pub(crate) const PEER_NODE_NAME_HEADER: &str = "x-boardwalk-node-name";
+pub(crate) const PEER_CAPABILITIES_HEADER: &str = "x-boardwalk-peer-capabilities";
 
 /// RFC 6455 GUID used in Sec-WebSocket-Accept derivation.
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -68,6 +72,14 @@ pub struct InitiatorReady {
     pub remote_authority: String,
 }
 
+pub(crate) struct InitiatorAdmission<'a> {
+    pub token_id: &'a str,
+    pub token_secret: &'a str,
+    pub node_id: &'a str,
+    pub node_name: Option<&'a str>,
+    pub requested_capabilities: &'a str,
+}
+
 /// As the **initiator**: open a TCP connection to `remote_url` and send
 /// a WebSocket Upgrade request to `/peers/{local_name}?connectionId={uuid}`.
 /// On a 101 response, take the upgraded byte stream (no WS framing) and
@@ -76,6 +88,7 @@ pub async fn dial_initiator(
     remote_url: &str,
     local_name: &str,
     connection_id: Uuid,
+    admission: Option<InitiatorAdmission<'_>>,
 ) -> Result<InitiatorReady, TunnelError> {
     let url = url::Url::parse(remote_url).map_err(|e| TunnelError::Url(format!("{e}")))?;
     let scheme = url.scheme();
@@ -122,7 +135,7 @@ pub async fn dial_initiator(
         let _ = conn.await;
     });
 
-    let req = Request::builder()
+    let mut builder = Request::builder()
         .method("POST")
         .uri(&path)
         .header(hyper::header::HOST, authority.clone())
@@ -133,7 +146,22 @@ pub async fn dial_initiator(
         .header(
             HeaderName::from_static("sec-websocket-protocol"),
             HeaderValue::from_static(SUBPROTOCOL),
-        )
+        );
+    if let Some(admission) = admission {
+        builder = builder
+            .header(PEER_TOKEN_ID_HEADER, admission.token_id)
+            .header(
+                hyper::header::AUTHORIZATION,
+                format!("Bearer {}", admission.token_secret),
+            )
+            .header(PEER_NODE_ID_HEADER, admission.node_id)
+            .header(PEER_CAPABILITIES_HEADER, admission.requested_capabilities);
+        if let Some(node_name) = admission.node_name {
+            builder = builder.header(PEER_NODE_NAME_HEADER, node_name);
+        }
+    }
+
+    let req = builder
         .body(Empty::<Bytes>::new())
         .map_err(|e| TunnelError::Upgrade(format!("build request: {e}")))?;
 
@@ -168,7 +196,7 @@ pub async fn dial_initiator(
 
 /// Build a 101 Switching Protocols response for a peer WS upgrade
 /// request. Validates Sec-WebSocket-Key, Sec-WebSocket-Version, and
-/// requires the `boardwalk-peer/2` subprotocol token.
+/// requires the current Boardwalk peer subprotocol token.
 pub fn build_upgrade_response(
     headers: &http::HeaderMap,
 ) -> Result<http::Response<()>, TunnelError> {

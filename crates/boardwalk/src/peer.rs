@@ -46,6 +46,8 @@ pub(crate) enum PeerModelError {
     InvalidRouteName(String),
     #[error("unknown peer capability `{0}`")]
     UnknownCapability(String),
+    #[error("invalid peer url: {0}")]
+    InvalidUrl(String),
 }
 
 #[allow(dead_code)]
@@ -186,8 +188,25 @@ impl PeerCapabilities {
         Ok(caps)
     }
 
+    pub(crate) fn parse_names<I, S>(names: I) -> Result<Self, PeerModelError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut caps = Self::empty();
+        for name in names {
+            let one = Self::parse_list(name.as_ref())?;
+            caps.0 |= one.0;
+        }
+        Ok(caps)
+    }
+
     pub(crate) fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+
+    pub(crate) fn stream_subscribe(self) -> bool {
+        self.0 & Self::STREAM_SUBSCRIBE != 0
     }
 
     pub(crate) fn is_empty(self) -> bool {
@@ -252,6 +271,200 @@ impl Peer {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
+pub(crate) struct PeerTokenVerifier {
+    secret: String,
+}
+
+impl PeerTokenVerifier {
+    pub(crate) fn new(secret: impl Into<String>) -> Self {
+        Self {
+            secret: secret.into(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn verify(&self, candidate: &str) -> bool {
+        self.secret == candidate
+    }
+}
+
+impl fmt::Debug for PeerTokenVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PeerTokenVerifier(<redacted>)")
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct PeerAdmissionConfig {
+    pub allowed_route_name: RouteName,
+    pub token_id: String,
+    pub token_verifier: PeerTokenVerifier,
+    pub expected_node_id: Option<crate::events::NodeId>,
+    pub allowed_capabilities: PeerCapabilities,
+}
+
+#[allow(dead_code)]
+impl PeerAdmissionConfig {
+    pub(crate) fn shared_token(
+        route_name: impl Into<String>,
+        token_id: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Result<Self, PeerModelError> {
+        Ok(Self {
+            allowed_route_name: RouteName::new(route_name)?,
+            token_id: token_id.into(),
+            token_verifier: PeerTokenVerifier::new(secret),
+            expected_node_id: None,
+            allowed_capabilities: PeerCapabilities::resource_read(),
+        })
+    }
+
+    pub(crate) fn expected_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.expected_node_id = Some(crate::events::NodeId::new(node_id));
+        self
+    }
+
+    pub(crate) fn allow<I, S>(mut self, capabilities: I) -> Result<Self, PeerModelError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.allowed_capabilities = PeerCapabilities::parse_names(capabilities)?;
+        Ok(self)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct PeerLinkConfig {
+    pub gateway_url: Url,
+    pub route_name: RouteName,
+    pub token_id: Option<String>,
+    pub token_secret: Option<String>,
+    pub local_node_id: Option<crate::events::NodeId>,
+    pub local_node_name: Option<String>,
+    pub requested_capabilities: PeerCapabilities,
+}
+
+#[allow(dead_code)]
+impl PeerLinkConfig {
+    pub(crate) fn new(
+        gateway_url: impl AsRef<str>,
+        route_name: impl Into<String>,
+    ) -> Result<Self, PeerModelError> {
+        let gateway_url = Url::parse(gateway_url.as_ref())
+            .map_err(|err| PeerModelError::InvalidUrl(err.to_string()))?;
+        Ok(Self {
+            gateway_url,
+            route_name: RouteName::new(route_name)?,
+            token_id: None,
+            token_secret: None,
+            local_node_id: None,
+            local_node_name: None,
+            requested_capabilities: PeerCapabilities::resource_read(),
+        })
+    }
+
+    pub(crate) fn local_development(
+        gateway_url: Url,
+        route_name: impl Into<String>,
+    ) -> Result<Self, PeerModelError> {
+        Ok(Self {
+            gateway_url,
+            route_name: RouteName::new(route_name)?,
+            token_id: None,
+            token_secret: None,
+            local_node_id: None,
+            local_node_name: None,
+            requested_capabilities: PeerCapabilities::all(),
+        })
+    }
+
+    pub(crate) fn token(mut self, token_id: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.token_id = Some(token_id.into());
+        self.token_secret = Some(secret.into());
+        self
+    }
+
+    pub(crate) fn node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.local_node_id = Some(crate::events::NodeId::new(node_id));
+        self
+    }
+
+    pub(crate) fn node_name(mut self, node_name: impl Into<String>) -> Self {
+        self.local_node_name = Some(node_name.into());
+        self
+    }
+
+    pub(crate) fn request_capabilities<I, S>(
+        mut self,
+        capabilities: I,
+    ) -> Result<Self, PeerModelError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.requested_capabilities = PeerCapabilities::parse_names(capabilities)?;
+        Ok(self)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdmittedPeerConnection {
+    pub route_name: String,
+    pub peer_id: String,
+    pub token_id: Option<String>,
+    pub connection_id: Uuid,
+    pub node_id: Option<String>,
+    pub display_name: Option<String>,
+    pub allowed_capabilities: PeerCapabilities,
+    pub negotiated_capabilities: PeerCapabilities,
+}
+
+#[allow(dead_code)]
+impl AdmittedPeerConnection {
+    pub(crate) fn local_development(route_name: impl Into<String>, connection_id: Uuid) -> Self {
+        let route_name = route_name.into();
+        Self {
+            peer_id: format!("peer-{route_name}"),
+            route_name,
+            token_id: None,
+            connection_id,
+            node_id: None,
+            display_name: None,
+            allowed_capabilities: PeerCapabilities::all(),
+            negotiated_capabilities: PeerCapabilities::all(),
+        }
+    }
+
+    pub(crate) fn token_bound(
+        route_name: impl Into<String>,
+        token_id: impl Into<String>,
+        connection_id: Uuid,
+        node_id: impl Into<String>,
+        display_name: Option<String>,
+        allowed_capabilities: PeerCapabilities,
+        negotiated_capabilities: PeerCapabilities,
+    ) -> Self {
+        let route_name = route_name.into();
+        let token_id = token_id.into();
+        Self {
+            peer_id: format!("peer-{route_name}-{token_id}"),
+            route_name,
+            token_id: Some(token_id),
+            connection_id,
+            node_id: Some(node_id.into()),
+            display_name,
+            allowed_capabilities,
+            negotiated_capabilities,
+        }
+    }
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PeerConnectionStatus {
@@ -298,6 +511,7 @@ pub(crate) struct PeerClient {
     pub local_name: String,
     pub router: Router,
     pub peer_init: PeerInitState,
+    admission: Option<PeerLinkConfig>,
     pub shutdown: Arc<tokio::sync::Notify>,
 }
 
@@ -313,6 +527,22 @@ impl PeerClient {
             local_name,
             router,
             peer_init,
+            admission: None,
+            shutdown: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    pub(crate) fn from_link(
+        link: PeerLinkConfig,
+        router: Router,
+        peer_init: PeerInitState,
+    ) -> Self {
+        Self {
+            remote_url: link.gateway_url.clone(),
+            local_name: link.route_name.as_str().to_string(),
+            router,
+            peer_init,
+            admission: Some(link),
             shutdown: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -356,10 +586,33 @@ impl PeerClient {
 
     async fn attempt_once(&self, connection_id: Uuid) -> Result<(), PeerError> {
         self.peer_init.register(connection_id);
+        let result = self.attempt_registered(connection_id).await;
+        self.peer_init.consume(&connection_id);
+        result
+    }
+
+    async fn attempt_registered(&self, connection_id: Uuid) -> Result<(), PeerError> {
+        let requested_capabilities = self
+            .admission
+            .as_ref()
+            .map(|link| link.requested_capabilities.to_string());
+        let admission = self.admission.as_ref().and_then(|link| {
+            let token_id = link.token_id.as_deref()?;
+            let token_secret = link.token_secret.as_deref()?;
+            let node_id = link.local_node_id.as_ref()?;
+            Some(crate::tunnel::InitiatorAdmission {
+                token_id,
+                token_secret,
+                node_id: node_id.as_str(),
+                node_name: link.local_node_name.as_deref(),
+                requested_capabilities: requested_capabilities.as_deref().unwrap_or_default(),
+            })
+        });
         let ready = crate::tunnel::dial_initiator(
             self.remote_url.as_str(),
             &self.local_name,
             connection_id,
+            admission,
         )
         .await?;
         let service = self.router.clone().into_service::<hyper::body::Incoming>();
@@ -368,7 +621,6 @@ impl PeerClient {
             .serve_connection(ready.upgraded, svc)
             .await
             .map_err(|e| crate::tunnel::TunnelError::Upgrade(format!("h2 serve: {e}")));
-        self.peer_init.consume(&connection_id);
         result?;
         Ok(())
     }
@@ -381,6 +633,7 @@ impl PeerClient {
 pub struct PeerAcceptors {
     inner: Arc<tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     senders: Arc<tokio::sync::Mutex<HashMap<String, SendRequest<axum::body::Body>>>>,
+    contexts: Arc<tokio::sync::Mutex<HashMap<String, AdmittedPeerConnection>>>,
     confirmations: Arc<std::sync::atomic::AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
     registry: Arc<std::sync::Mutex<Option<Arc<Registry>>>>,
@@ -421,12 +674,14 @@ impl PeerAcceptors {
     /// an `Upgraded` stream.
     pub async fn on_upgraded(
         &self,
-        peer_name: String,
-        connection_id: Uuid,
+        admitted: AdmittedPeerConnection,
         upgraded: hyper::upgrade::Upgraded,
     ) {
         let acceptors = self.clone();
+        let peer_name = admitted.route_name.clone();
+        let connection_id = admitted.connection_id;
         let peer_name_for_task = peer_name.clone();
+        let admitted_for_task = admitted.clone();
         let task = tokio::spawn(async move {
             let registry_snapshot = acceptors.registry.lock().unwrap().clone();
             match drive_acceptor(
@@ -434,18 +689,19 @@ impl PeerAcceptors {
                 connection_id,
                 upgraded,
                 acceptors.senders.clone(),
+                acceptors.contexts.clone(),
             )
             .await
             {
                 Ok(()) => {
                     if let Some(reg) = &registry_snapshot {
-                        write_peer(
-                            reg,
-                            &peer_name_for_task,
-                            connection_id,
-                            PeerConnectionStatus::Connected,
-                        );
+                        write_peer(reg, &admitted_for_task, PeerConnectionStatus::Connected);
                     }
+                    acceptors
+                        .contexts
+                        .lock()
+                        .await
+                        .insert(peer_name_for_task.clone(), admitted_for_task.clone());
                     acceptors
                         .confirmations
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -453,12 +709,7 @@ impl PeerAcceptors {
                 }
                 Err(e) => {
                     if let Some(reg) = &registry_snapshot {
-                        write_peer(
-                            reg,
-                            &peer_name_for_task,
-                            connection_id,
-                            PeerConnectionStatus::Failed,
-                        );
+                        write_peer(reg, &admitted_for_task, PeerConnectionStatus::Failed);
                     }
                     tracing::warn!(peer = %peer_name_for_task, error = %e, "peer acceptor failed");
                 }
@@ -473,12 +724,7 @@ impl PeerAcceptors {
                 // status alone; otherwise mark disconnected.
                 let senders = acceptors.senders.lock().await;
                 if !senders.contains_key(&peer_name_for_task) {
-                    write_peer(
-                        reg,
-                        &peer_name_for_task,
-                        connection_id,
-                        PeerConnectionStatus::Disconnected,
-                    );
+                    write_peer(reg, &admitted_for_task, PeerConnectionStatus::Disconnected);
                 }
             }
         });
@@ -489,6 +735,11 @@ impl PeerAcceptors {
     #[allow(dead_code)]
     pub async fn active(&self) -> Vec<String> {
         self.inner.lock().await.keys().cloned().collect()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn peer_context(&self, route_name: &str) -> Option<AdmittedPeerConnection> {
+        self.contexts.lock().await.get(route_name).cloned()
     }
 }
 
@@ -520,6 +771,7 @@ async fn drive_acceptor(
     connection_id: Uuid,
     upgraded: hyper::upgrade::Upgraded,
     senders: Arc<tokio::sync::Mutex<HashMap<String, SendRequest<axum::body::Body>>>>,
+    contexts: Arc<tokio::sync::Mutex<HashMap<String, AdmittedPeerConnection>>>,
 ) -> Result<(), PeerError> {
     let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .handshake::<_, axum::body::Body>(upgraded)
@@ -532,6 +784,7 @@ async fn drive_acceptor(
         }
         let mut s = senders_for_cleanup.lock().await;
         s.remove(&peer_name_for_cleanup);
+        contexts.lock().await.remove(&peer_name_for_cleanup);
     });
 
     // Send confirmation.
@@ -564,30 +817,33 @@ async fn drive_acceptor(
     Ok(())
 }
 
-fn write_peer(registry: &Registry, name: &str, connection_id: Uuid, status: PeerConnectionStatus) {
+fn write_peer(
+    registry: &Registry,
+    admitted: &AdmittedPeerConnection,
+    status: PeerConnectionStatus,
+) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let peer_id = format!("peer-{name}");
     let peer = PeerRecord {
-        peer_id: peer_id.clone(),
-        route_name: name.to_string(),
-        node_id: None,
-        display_name: None,
-        allowed_capabilities: PeerCapabilities::all(),
+        peer_id: admitted.peer_id.clone(),
+        route_name: admitted.route_name.clone(),
+        node_id: admitted.node_id.clone(),
+        display_name: admitted.display_name.clone(),
+        allowed_capabilities: admitted.allowed_capabilities,
         updated_ms: now_ms,
     };
     if let Err(e) = registry.put_peer(&peer) {
         tracing::warn!(error = %e, "failed to persist peer record");
     }
     let connection = PeerConnectionRecord {
-        connection_id,
-        peer_id,
-        route_name: name.to_string(),
+        connection_id: admitted.connection_id,
+        peer_id: admitted.peer_id.clone(),
+        route_name: admitted.route_name.clone(),
         direction: PeerConnectionDirection::Acceptor,
         status,
-        negotiated_capabilities: PeerCapabilities::all(),
+        negotiated_capabilities: admitted.negotiated_capabilities,
         updated_ms: now_ms,
     };
     if let Err(e) = registry.put_peer_connection(&connection) {
@@ -661,5 +917,36 @@ mod peer_model_tests {
         let conn = PeerConnection::opening(peer.peer_id.clone(), "hub", Uuid::new_v4()).unwrap();
 
         assert_ne!(peer.peer_id.to_string(), conn.connection_id.to_string());
+    }
+
+    #[test]
+    fn peer_admission_config_link_carries_route_token_and_requested_capabilities() {
+        let link = PeerLinkConfig::new("wss://cloud.example.com", "hub")
+            .unwrap()
+            .token("kid-1", "secret")
+            .node_id("node-hub-1")
+            .node_name("Kitchen Hub")
+            .request_capabilities(["resource.read", "stream.subscribe"])
+            .unwrap();
+
+        assert_eq!(link.route_name.as_str(), "hub");
+        assert_eq!(link.token_id.as_deref(), Some("kid-1"));
+        assert!(link.requested_capabilities.stream_subscribe());
+    }
+
+    #[test]
+    fn peer_admission_config_accepted_token_binds_route_name_and_optional_node_id() {
+        let policy = PeerAdmissionConfig::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .expected_node_id("node-hub-1")
+            .allow(["resource.read"])
+            .unwrap();
+
+        assert_eq!(policy.allowed_route_name.as_str(), "hub");
+        assert_eq!(
+            policy.expected_node_id.as_ref().map(|node| node.as_str()),
+            Some("node-hub-1")
+        );
+        assert_eq!(policy.token_id, "kid-1");
     }
 }

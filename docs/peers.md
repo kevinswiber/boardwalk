@@ -7,9 +7,14 @@ same outbound socket the hub opened.
 
 ## How the link is established
 
-1. The hub does `Boardwalk::new().link("https://cloud.example.com")`.
+1. For local development, the hub can do
+   `Boardwalk::new().link("https://cloud.example.com")`.
 2. The hub opens a WebSocket to `wss://cloud.example.com/peers/<hub-name>`
-   with the `boardwalk-peer/1` subprotocol token.
+   with the `boardwalk-peer/3` subprotocol token.
+   Token-bound peer links also send `Authorization: Bearer <token>`,
+   `X-Boardwalk-Peer-Token-Id`, `X-Boardwalk-Node-Id`,
+   `X-Boardwalk-Node-Name`, and `X-Boardwalk-Peer-Capabilities`
+   before the cloud returns `101 Switching Protocols`.
 3. Once the upgrade succeeds, both sides drop WebSocket framing and
    speak HTTP/2 prior-knowledge over the raw stream — **with reversed
    roles**: the cloud is the HTTP/2 client, the hub is the HTTP/2
@@ -49,8 +54,10 @@ Boardwalk::new()
     .await?
 ```
 
-The cloud doesn't need to know in advance that a hub will link to it —
-it just accepts whatever peers connect.
+The unauthenticated `.link(...)` convenience is intended for local
+development. A cloud exposed beyond a trusted development environment
+should configure accepted peer tokens and reject unknown peers before
+the WebSocket upgrade completes.
 
 ## Reaching a hub through the cloud
 

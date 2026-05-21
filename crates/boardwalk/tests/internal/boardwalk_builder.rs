@@ -94,6 +94,30 @@ impl Actor for BuilderLed {
 }
 
 #[tokio::test]
+async fn peer_admission_config_boardwalk_builder_accepts_local_node_identity() {
+    let built = Boardwalk::new()
+        .name("cloud")
+        .node_id("node-cloud-1")
+        .build()
+        .unwrap();
+
+    assert_eq!(built.node.id(), "node-cloud-1");
+}
+
+#[tokio::test]
+async fn peer_admission_config_boardwalk_builder_stores_accepted_peer_token() {
+    let built = Boardwalk::new()
+        .name("cloud")
+        .accept_peer_token("hub", "kid-1", "secret")
+        .build()
+        .unwrap();
+
+    assert_eq!(built.peer_admission.len(), 1);
+    assert_eq!(built.peer_admission[0].allowed_route_name.as_str(), "hub");
+    assert_eq!(built.peer_admission[0].token_id, "kid-1");
+}
+
+#[tokio::test]
 async fn boardwalk_build_serves_registered_actor_resources_and_transitions() {
     let built = Boardwalk::new()
         .name("hub")
