@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::events::EventEnvelope;
 use crate::peer::{PeerCapabilities, PeerConnectionStatus};
 use crate::registry::PeerConnectionDirection;
 use crate::runtime::ResourceSnapshot;
@@ -116,6 +117,13 @@ pub(crate) struct PeerConnectionStatusRecord {
     pub(crate) updated_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EventHistoryRecord {
+    pub(crate) event_id: String,
+    pub(crate) envelope: EventEnvelope,
+    pub(crate) recorded_ms: i64,
+}
+
 pub(crate) trait ResourceIdentityRepository {
     fn get(&self, id: &str) -> Result<Option<ResourceIdentityRecord>, StorageError>;
     fn put(&self, record: ResourceIdentityRecord) -> Result<(), StorageError>;
@@ -149,7 +157,13 @@ pub(crate) trait PeerConnectionStatusRepository {
     ) -> Result<Option<PeerConnectionStatusRecord>, StorageError>;
 }
 
-pub(crate) trait EventHistoryRepository {}
+// Event history is only a reserved append-only boundary. Latest
+// snapshots remain the read/restart projection until a concrete
+// durable history consumer exists.
+pub(crate) trait EventHistoryRepository {
+    fn append(&self, event: EventHistoryRecord) -> Result<(), StorageError>;
+    fn get(&self, event_id: &str) -> Result<Option<EventHistoryRecord>, StorageError>;
+}
 
 pub(crate) trait Repositories {
     fn resource_identities(&self) -> &dyn ResourceIdentityRepository;
@@ -434,4 +448,16 @@ fn lock_state(
     state
         .lock()
         .map_err(|_| StorageError::Internal("repository lock poisoned".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_history_repository_is_optional_and_not_runtime_source_of_truth() {
+        let repos = MemoryRepositories::default();
+
+        assert!(repos.event_history().is_none());
+    }
 }

@@ -248,6 +248,41 @@ fn peer_connection_status_writes_use_repository_boundary() {
     );
 }
 
+#[test]
+fn event_history_repository_boundary_is_optional_append_only() {
+    let persistence = read("crates/boardwalk/src/persistence/mod.rs");
+
+    assert!(
+        persistence.contains("struct EventHistoryRecord"),
+        "persistence should name the reserved event history record type"
+    );
+    assert!(
+        persistence.contains("trait EventHistoryRepository"),
+        "persistence should reserve an event history repository boundary"
+    );
+    assert!(
+        persistence
+            .contains("fn append(&self, event: EventHistoryRecord) -> Result<(), StorageError>;"),
+        "event history should only reserve append writes"
+    );
+    assert!(
+        persistence.contains(
+            "fn get(&self, event_id: &str) -> Result<Option<EventHistoryRecord>, StorageError>;"
+        ),
+        "event history should only reserve lookup by event id"
+    );
+    assert!(
+        persistence.contains("fn event_history(&self) -> Option<&dyn EventHistoryRepository>"),
+        "event history should remain optional in the repository facade"
+    );
+    for forbidden in ["fn replay", "fn retention", "fn catch_up", "fn rebuild"] {
+        assert!(
+            !persistence.contains(forbidden),
+            "event history boundary should not introduce runtime replay behavior: {forbidden}"
+        );
+    }
+}
+
 #[derive(Default)]
 struct FacadeLed;
 

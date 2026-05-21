@@ -120,6 +120,24 @@ fn docs_reference_resource_routes_only() {
 }
 
 #[test]
+fn persistence_docs_do_not_claim_event_sourcing() {
+    let s = public_docs(&["docs/resources.md", "docs/peers.md", "docs/events.md"]);
+
+    for forbidden in [
+        "event sourced",
+        "event-sourced",
+        "event sourcing",
+        "event-sourcing",
+        "event-sourced source of truth",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public docs should not claim event sourcing: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn crate_docs_show_resource_actor_imports() {
     let s = read("crates/boardwalk/src/lib.rs");
     for required in [
