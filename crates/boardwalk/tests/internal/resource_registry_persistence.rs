@@ -3,6 +3,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use axum::body::Body;
+use axum::http::{Request as HttpRequest, StatusCode};
+use tower::ServiceExt;
+
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 use crate::http::{ResourceRegistration, ResourceRegistrationError};
@@ -21,9 +25,6 @@ use crate::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
 };
-use axum::body::Body;
-use axum::http::{Request as HttpRequest, StatusCode};
-use tower::ServiceExt;
 
 #[test]
 fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
