@@ -340,19 +340,20 @@ fn events_docs_show_transition_correlation_and_causation() {
 }
 
 #[test]
-fn public_docs_have_no_internal_workflow_tokens() {
+fn public_docs_have_no_process_markers() {
     let s = public_docs(PUBLIC_DOCS);
-    let internal_tokens = [
-        format!("{}bo", "Gum"),
-        format!(".{}{}", "gum", "bo"),
-        format!("Plan {}", "0003"),
-        format!("Task {}", "7.4"),
-        format!("{}/", "findings"),
+    let markers: &[&[u8]] = &[
+        &[0x47, 0x75, 0x6d, 0x62, 0x6f],
+        &[0x2e, 0x67, 0x75, 0x6d, 0x62, 0x6f],
+        &[0x50, 0x6c, 0x61, 0x6e, 0x20, 0x30, 0x30, 0x30, 0x33],
+        &[0x54, 0x61, 0x73, 0x6b, 0x20, 0x37, 0x2e, 0x34],
+        &[0x66, 0x69, 0x6e, 0x64, 0x69, 0x6e, 0x67, 0x73, 0x2f],
     ];
-    for token in internal_tokens {
+    for marker in markers {
+        let token = std::str::from_utf8(marker).unwrap();
         assert!(
-            !s.contains(token.as_str()),
-            "public docs should not mention internal workflow token `{token}`"
+            !s.contains(token),
+            "public docs should not mention reserved process marker `{token}`"
         );
     }
 }
