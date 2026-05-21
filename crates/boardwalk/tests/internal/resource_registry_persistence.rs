@@ -7,7 +7,9 @@ use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 use crate::http::{ResourceRegistration, ResourceRegistrationError};
 use crate::persistence::{
-    IdentityKey, Repositories, ResourceIdentityRecord, ResourceSnapshotRecord,
+    EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRepository,
+    PeerConfigRepository, PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
+    ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository,
 };
 use crate::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
@@ -49,6 +51,21 @@ fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
             .as_deref(),
         Some("off")
     );
+}
+
+#[test]
+fn repository_facade_exposes_domain_repositories() {
+    let repos = MemoryRepositories::default();
+
+    let _: &dyn ResourceIdentityRepository = repos.resource_identities();
+    let _: &dyn ResourceSnapshotRepository = repos.resource_snapshots();
+    let _: &dyn NodeConfigRepository = repos.node_config();
+    let _: &dyn PeerConfigRepository = repos.peer_configs();
+    let _: &dyn PeerConnectionStatusRepository = repos.peer_connection_status();
+    let _: Option<&dyn EventHistoryRepository> = repos.event_history();
+
+    let facade: &dyn Repositories = &repos;
+    assert!(facade.event_history().is_none());
 }
 
 #[test]
@@ -260,9 +277,9 @@ async fn resource_id_is_random_without_persistence() {
     );
 }
 
-fn temp_repositories() -> (Repositories, tempfile::TempDir) {
+fn temp_repositories() -> (MemoryRepositories, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let repos = Repositories::memory();
+    let repos = MemoryRepositories::default();
     (repos, dir)
 }
 
