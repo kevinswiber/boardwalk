@@ -243,6 +243,23 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         first_record.peer_id, "peer-hub-kid-1",
         "durable token-bound peer identity should include route name and token id"
     );
+    let first_config = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_configs()
+        .get_by_route("hub")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_config.peer_id, first_record.peer_id);
+    assert_eq!(first_config.route_name, "hub");
+    assert_eq!(first_config.node_id.as_deref(), Some("node-hub-1"));
+    assert_eq!(first_config.display_name.as_deref(), Some("Kitchen Hub"));
+    assert!(
+        first_config
+            .allowed_capabilities
+            .contains(PeerCapabilities::resource_read())
+    );
 
     let first_connection = registry
         .latest_peer_connection("hub")
@@ -269,6 +286,14 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
     )
     .await;
     let second_record = wait_for_peer_record(registry, "hub").await;
+    let second_config = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_configs()
+        .get_by_route("hub")
+        .unwrap()
+        .unwrap();
     let second_connection = registry
         .latest_peer_connection("hub")
         .unwrap()
@@ -277,6 +302,11 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
     assert_eq!(
         second_record.peer_id, first_record.peer_id,
         "durable peer identity should remain stable across reconnects"
+    );
+    assert_eq!(second_config.peer_id, first_config.peer_id);
+    assert_ne!(
+        second_config.peer_id,
+        second_connection.connection_id.to_string()
     );
     assert_eq!(second_connection.connection_id, second_connection_id);
     assert_ne!(

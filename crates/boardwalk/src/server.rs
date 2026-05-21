@@ -339,6 +339,9 @@ impl Boardwalk {
         if let Some(reg) = registry.as_ref() {
             acceptors.with_registry(reg.clone());
         }
+        if let Some(repositories) = repositories.as_ref() {
+            acceptors.with_repositories(repositories.clone());
+        }
 
         let handler: PeerHandler = {
             let acceptors = acceptors.clone();

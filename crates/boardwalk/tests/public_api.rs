@@ -228,6 +228,16 @@ fn repository_callers_do_not_name_storage_backend_errors() {
     );
 }
 
+#[test]
+fn peer_config_writes_use_repository_boundary() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+
+    assert!(
+        !contains_call(&peer, "put_peer"),
+        "peer durable config writes should use the repository boundary"
+    );
+}
+
 #[derive(Default)]
 struct FacadeLed;
 
