@@ -1,9 +1,11 @@
 //! Resource registry persistence contract tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
+use crate::http::{ResourceRegistration, ResourceRegistrationError};
 use crate::persistence::{
     IdentityKey, Repositories, ResourceIdentityRecord, ResourceSnapshotRecord,
 };
@@ -160,6 +162,30 @@ async fn live_snapshot_wins_over_persisted_latest_snapshot() {
 }
 
 #[tokio::test]
+async fn factory_registration_uses_same_identity_repository_as_static_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first_id = register_factory_resource(&db_path, "job", "build-1", None).await;
+    let second_id = register_factory_resource(&db_path, "job", "build-1", None).await;
+
+    assert_eq!(first_id, second_id);
+}
+
+#[tokio::test]
+async fn explicit_factory_id_conflict_is_reported_before_actor_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    register_factory_resource(&db_path, "job", "build-1", Some(uuid::Uuid::nil())).await;
+    let err = try_register_factory_resource(&db_path, "job", "build-2", Some(uuid::Uuid::nil()))
+        .await
+        .unwrap_err();
+
+    assert_conflict(err);
+}
+
+#[tokio::test]
 async fn resource_id_is_random_without_persistence() {
     let first = Boardwalk::new()
         .name("hub")
@@ -223,6 +249,103 @@ fn led_snapshot(state: &str) -> ResourceSnapshot {
         streams: Vec::new(),
         revision: Some("rev-1".into()),
         metadata: serde_json::Map::new(),
+    }
+}
+
+async fn register_factory_resource(
+    db_path: &Path,
+    kind: &str,
+    name: &str,
+    explicit_id: Option<uuid::Uuid>,
+) -> String {
+    try_register_factory_resource(db_path, kind, name, explicit_id)
+        .await
+        .unwrap()
+}
+
+async fn try_register_factory_resource(
+    db_path: &Path,
+    kind: &str,
+    name: &str,
+    explicit_id: Option<uuid::Uuid>,
+) -> Result<String, ResourceRegistrationError> {
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(db_path)
+        .register_actor_factory(kind, |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "off",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.unwrap();
+    registrar(ResourceRegistration {
+        kind: kind.into(),
+        name: Some(name.into()),
+        id: explicit_id,
+        fields: HashMap::new(),
+    })
+    .await
+}
+
+fn assert_conflict(err: ResourceRegistrationError) {
+    match err {
+        ResourceRegistrationError::Conflict(_) => {}
+        other => panic!("expected conflict, got {other:?}"),
+    }
+}
+
+struct FactorySnapshotActor {
+    kind: String,
+    name: Option<String>,
+    state: String,
+}
+
+impl FactorySnapshotActor {
+    fn new(kind: impl Into<String>, name: Option<String>, state: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            name,
+            state: state.into(),
+        }
+    }
+}
+
+impl Resource for FactorySnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: self.kind.clone(),
+            name: self.name.clone(),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move {
+            let mut snapshot = led_snapshot(&self.state);
+            snapshot.kind.clone_from(&self.kind);
+            snapshot.name.clone_from(&self.name);
+            Ok(snapshot)
+        })
+    }
+}
+
+impl Actor for FactorySnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
     }
 }
 

@@ -329,7 +329,7 @@ impl Boardwalk {
             peer_senders: Some(peer_senders),
             peer_streams: peer_streams.clone(),
             peer_admission: Arc::new(accepted_peer_tokens),
-            resource_registrar,
+            resource_registrar: resource_registrar.clone(),
         };
         let router = router_with(state);
 
@@ -359,6 +359,7 @@ impl Boardwalk {
             peer_streams,
             registry,
             peer_admission: self.accepted_peer_tokens,
+            resource_registrar,
         })
     }
 }
@@ -392,11 +393,11 @@ fn build_resource_registrar(
                     })?;
                     let actor = factory(registration)?;
                     let spec = actor.spec();
-                    let id = resolve_registration_id(&registry, &spec, explicit_id)?;
+                    let id = resolve_or_create_resource_identity(&registry, &spec, explicit_id)
+                        .map_err(registration_identity_error)?;
                     node.register_with_id(id.to_string(), actor)
                         .await
                         .map_err(registration_resource_error)?;
-                    persist_registered_resource(&registry, &spec, id)?;
                     Ok(id.to_string())
                 })
             },
@@ -410,67 +411,102 @@ fn resolve_resource_id(
     registry: &Option<Arc<Registry>>,
     spec: &ResourceSpec,
 ) -> anyhow::Result<String> {
-    let Some(reg) = registry.as_ref() else {
-        return Ok(Uuid::new_v4().to_string());
-    };
-    let type_ = spec.kind.clone();
-    let name = spec.name.clone();
-    if let Some(existing) = reg
-        .find_resource_by_identity(&type_, name.as_deref())
-        .context("registry find")?
-    {
-        return Ok(existing.id.to_string());
-    }
-    let id = Uuid::new_v4();
-    reg.put_resource(&ResourceRecord {
-        id,
-        type_,
-        name,
-        properties: serde_json::Map::new(),
-    })
-    .context("registry put")?;
-    Ok(id.to_string())
+    resolve_or_create_resource_identity(registry, spec, None)
+        .map(|id| id.to_string())
+        .map_err(resource_identity_anyhow)
 }
 
-fn resolve_registration_id(
+#[derive(Debug)]
+enum ResourceIdentityError {
+    Registry(crate::registry::RegistryError),
+    Conflict(String),
+}
+
+fn resolve_or_create_resource_identity(
     registry: &Option<Arc<Registry>>,
     spec: &ResourceSpec,
     explicit: Option<Uuid>,
-) -> Result<Uuid, ResourceRegistrationError> {
+) -> Result<Uuid, ResourceIdentityError> {
+    let Some(reg) = registry.as_ref() else {
+        return Ok(explicit.unwrap_or_else(Uuid::new_v4));
+    };
+
     if let Some(id) = explicit {
+        if let Some(existing) = reg
+            .get_resource(&id)
+            .map_err(ResourceIdentityError::Registry)?
+        {
+            if resource_record_matches(&existing, spec) {
+                return Ok(id);
+            }
+            return Err(ResourceIdentityError::Conflict(format!(
+                "resource id `{id}` is already registered"
+            )));
+        }
+        if let Some(existing) = reg
+            .find_resource_by_identity(&spec.kind, spec.name.as_deref())
+            .map_err(ResourceIdentityError::Registry)?
+            && existing.id != id
+        {
+            return Err(ResourceIdentityError::Conflict(format!(
+                "resource identity `{}` is already registered",
+                resource_identity_label(spec)
+            )));
+        }
+        put_resource_identity(reg, spec, id).map_err(ResourceIdentityError::Registry)?;
         return Ok(id);
     }
-    let Some(reg) = registry.as_ref() else {
-        return Ok(Uuid::new_v4());
-    };
+
     if let Some(existing) = reg
         .find_resource_by_identity(&spec.kind, spec.name.as_deref())
-        .map_err(registration_registry_error)?
+        .map_err(ResourceIdentityError::Registry)?
     {
         return Ok(existing.id);
     }
-    Ok(Uuid::new_v4())
+
+    let id = Uuid::new_v4();
+    put_resource_identity(reg, spec, id).map_err(ResourceIdentityError::Registry)?;
+    Ok(id)
 }
 
-fn persist_registered_resource(
-    registry: &Option<Arc<Registry>>,
+fn put_resource_identity(
+    registry: &Registry,
     spec: &ResourceSpec,
     id: Uuid,
-) -> Result<(), ResourceRegistrationError> {
-    let Some(reg) = registry.as_ref() else {
-        return Ok(());
-    };
-    reg.put_resource(&ResourceRecord {
+) -> Result<(), crate::registry::RegistryError> {
+    registry.put_resource(&ResourceRecord {
         id,
         type_: spec.kind.clone(),
         name: spec.name.clone(),
         properties: serde_json::Map::new(),
     })
-    .map_err(registration_registry_error)
 }
 
-fn registration_registry_error(err: crate::registry::RegistryError) -> ResourceRegistrationError {
-    ResourceRegistrationError::Internal(format!("registry: {err}"))
+fn resource_record_matches(record: &ResourceRecord, spec: &ResourceSpec) -> bool {
+    record.type_ == spec.kind && record.name == spec.name
+}
+
+fn resource_identity_label(spec: &ResourceSpec) -> String {
+    match &spec.name {
+        Some(name) => format!("{}:{name}", spec.kind),
+        None => spec.kind.clone(),
+    }
+}
+
+fn resource_identity_anyhow(err: ResourceIdentityError) -> anyhow::Error {
+    match err {
+        ResourceIdentityError::Registry(err) => anyhow::anyhow!("registry: {err}"),
+        ResourceIdentityError::Conflict(msg) => anyhow::anyhow!(msg),
+    }
+}
+
+fn registration_identity_error(err: ResourceIdentityError) -> ResourceRegistrationError {
+    match err {
+        ResourceIdentityError::Registry(err) => {
+            ResourceRegistrationError::Internal(format!("registry: {err}"))
+        }
+        ResourceIdentityError::Conflict(msg) => ResourceRegistrationError::Conflict(msg),
+    }
 }
 
 fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {
@@ -497,4 +533,5 @@ pub(crate) struct Built {
     pub(crate) peer_streams: crate::http::PeerStreamHub,
     pub(crate) registry: Option<Arc<Registry>>,
     pub(crate) peer_admission: Vec<PeerAdmissionConfig>,
+    pub(crate) resource_registrar: Option<ResourceRegistrar>,
 }
