@@ -7,6 +7,16 @@ pub struct Query {
     pub predicate: Predicate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QueryScope {
+    Local,
+    Peer(String),
+    Federation {
+        peers: Vec<String>,
+        include_local: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum Projection {
     #[default]
@@ -144,6 +154,21 @@ mod tests {
         let q = Query::default();
         assert!(matches!(q.projection, Projection::All));
         assert!(matches!(q.predicate, Predicate::True));
+    }
+
+    #[test]
+    fn query_scope_has_local_peer_and_federation_shapes() {
+        let local = QueryScope::Local;
+        assert!(matches!(local, QueryScope::Local));
+
+        let peer = QueryScope::Peer("peer-hub".into());
+        assert!(matches!(peer, QueryScope::Peer(_)));
+
+        let federation = QueryScope::Federation {
+            peers: vec!["peer-hub".into()],
+            include_local: true,
+        };
+        assert!(matches!(federation, QueryScope::Federation { .. }));
     }
 
     #[test]

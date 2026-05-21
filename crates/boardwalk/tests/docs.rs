@@ -384,3 +384,12 @@ fn docs_events_documents_envelope_fields_and_stream_gap() {
     assert!(s.contains("slowConsumerPolicy"));
     assert!(s.contains("coalesceKey"));
 }
+
+#[test]
+fn public_docs_do_not_advertise_wildcard_query_scope() {
+    let s = public_docs(PUBLIC_DOCS);
+    assert!(
+        !s.contains("server=*"),
+        "public docs should not advertise wildcard peer query scope before policy and limits exist"
+    );
+}

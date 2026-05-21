@@ -4,5 +4,7 @@
 mod ast;
 mod eval;
 
-pub use ast::{ComparisonOp, FieldPath, Literal, Predicate, Projection, Query, QueryError};
+pub use ast::{
+    ComparisonOp, FieldPath, Literal, Predicate, Projection, Query, QueryError, QueryScope,
+};
 pub use eval::{matches, project};

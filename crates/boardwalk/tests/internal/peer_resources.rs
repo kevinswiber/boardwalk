@@ -183,6 +183,52 @@ async fn remote_resource_suppresses_stream_links_without_subscribe_capability() 
 }
 
 #[tokio::test]
+async fn directed_peer_query_requires_resource_query_capability() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+
+    let response = reqwest::get(format!(
+        "http://{}/servers/hub?ql=where%20kind%20%3D%20%22led%22",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn directed_peer_query_forwards_to_one_peer_when_allowed() {
+    let p = boot_pair_with_capabilities(Some(["resource.read", "resource.query"])).await;
+
+    let body: Json = reqwest::get(format!(
+        "http://{}/servers/hub?ql=where%20kind%20%3D%20%22led%22",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    assert_eq!(body["properties"]["ql"], "where kind = \"led\"");
+    assert!(body["entities"].as_array().unwrap().len() >= 1);
+}
+
+#[tokio::test]
+async fn wildcard_federation_query_requires_explicit_policy_and_limit() {
+    let p = boot_pair().await;
+
+    let response = reqwest::get(format!(
+        "http://{}/?server=*&ql=where%20kind%20%3D%20%22led%22",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn peer_ndjson_stream_requires_stream_subscribe_capability() {
     let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
     let id = resource_id_via(p.cloud_addr).await;

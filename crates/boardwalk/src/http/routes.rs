@@ -16,7 +16,7 @@ use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
 use crate::peer::{AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities};
-use crate::query::FieldPath;
+use crate::query::{FieldPath, QueryScope};
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
@@ -528,18 +528,80 @@ async fn root(
     let core = state.core.clone();
     let h = build_hrefs(&headers, &uri, &core.name);
     let policy = render_policy_from_headers(&headers);
+    let scope = query_scope_from_server(params.server.as_deref());
     if let Some(ql) = params.ql {
-        return match core.query_resources(&ql).await {
-            Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps, policy)),
-            Err(e) => query_error_response(&ql, &e),
+        return match scope {
+            QueryScope::Local => match core.query_resources(&ql).await {
+                Ok(snaps) => siren_response(render::render_search_results(&h, &ql, &snaps, policy)),
+                Err(e) => query_error_response(&ql, &e),
+            },
+            QueryScope::Peer(peer) => {
+                let peer_uri = peer_server_query_uri(&peer, Some(&ql));
+                if let Some(response) =
+                    maybe_forward_get_or_404(&state, &peer, &peer_uri, &headers).await
+                {
+                    response
+                } else {
+                    let h = build_hrefs(&headers, &peer_uri, &core.name);
+                    match core.query_resources(&ql).await {
+                        Ok(snaps) => {
+                            siren_response(render::render_search_results(&h, &ql, &snaps, policy))
+                        }
+                        Err(e) => query_error_response(&ql, &e),
+                    }
+                }
+            }
+            QueryScope::Federation { .. } => unsupported_federation_query_response(),
         };
     }
-    let _ = params.server;
+    match scope {
+        QueryScope::Local => {}
+        QueryScope::Peer(peer) => {
+            let peer_uri = peer_server_query_uri(&peer, None);
+            if let Some(response) =
+                maybe_forward_get_or_404(&state, &peer, &peer_uri, &headers).await
+            {
+                return response;
+            }
+        }
+        QueryScope::Federation { .. } => return unsupported_federation_query_response(),
+    }
     let peers = match &state.peer_senders {
         Some(p) => peer_render_policies(p).await,
         None => Vec::new(),
     };
     siren_response(render::render_root(&core, &h, &peers, policy))
+}
+
+fn query_scope_from_server(server: Option<&str>) -> QueryScope {
+    match server.map(str::trim).filter(|server| !server.is_empty()) {
+        None => QueryScope::Local,
+        Some("*") => QueryScope::Federation {
+            peers: Vec::new(),
+            include_local: true,
+        },
+        Some(peer) => QueryScope::Peer(peer.to_string()),
+    }
+}
+
+fn peer_server_query_uri(peer: &str, ql: Option<&str>) -> Uri {
+    let mut path = format!("/servers/{}", urlencoding::encode(peer));
+    if let Some(ql) = ql {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("ql", ql);
+        path.push('?');
+        path.push_str(&query.finish());
+    }
+    path.parse().expect("peer server query URI")
+}
+
+fn unsupported_federation_query_response() -> Response {
+    problem_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported-federation-query",
+        "federated query requires explicit policy and limits",
+        Some("server"),
+    )
 }
 
 async fn peer_render_policies(senders: &Arc<dyn PeerSenders>) -> Vec<render::PeerRenderPolicy> {
