@@ -260,6 +260,7 @@ impl Registry {
         Ok(removed)
     }
 
+    #[allow(dead_code)]
     pub fn put_peer_connection(&self, rec: &PeerConnectionRecord) -> Result<(), RegistryError> {
         let bytes = serde_json::to_vec(rec)?;
         let txn = self.db.begin_write()?;

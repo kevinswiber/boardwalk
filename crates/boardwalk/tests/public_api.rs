@@ -238,6 +238,16 @@ fn peer_config_writes_use_repository_boundary() {
     );
 }
 
+#[test]
+fn peer_connection_status_writes_use_repository_boundary() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+
+    assert!(
+        !contains_call(&peer, "put_peer_connection"),
+        "peer connection status writes should use the repository boundary"
+    );
+}
+
 #[derive(Default)]
 struct FacadeLed;
 

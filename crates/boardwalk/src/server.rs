@@ -336,9 +336,6 @@ impl Boardwalk {
 
         let peer_init = PeerInitState::default();
         let acceptors = PeerAcceptors::new();
-        if let Some(reg) = registry.as_ref() {
-            acceptors.with_registry(reg.clone());
-        }
         if let Some(repositories) = repositories.as_ref() {
             acceptors.with_repositories(repositories.clone());
         }

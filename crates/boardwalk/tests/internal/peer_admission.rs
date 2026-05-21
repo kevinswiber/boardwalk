@@ -265,7 +265,17 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         .latest_peer_connection("hub")
         .unwrap()
         .expect("first peer connection");
+    let first_status = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_connection_status()
+        .latest_by_route("hub")
+        .unwrap()
+        .unwrap();
     assert_eq!(first_connection.connection_id, first_connection_id);
+    assert_eq!(first_status.connection_id, first_connection_id.to_string());
+    assert_eq!(first_status.peer_id, first_config.peer_id);
     assert_ne!(
         first_record.peer_id,
         first_connection_id.to_string(),
@@ -298,6 +308,14 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         .latest_peer_connection("hub")
         .unwrap()
         .expect("second peer connection");
+    let second_status = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_connection_status()
+        .latest_by_route("hub")
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         second_record.peer_id, first_record.peer_id,
@@ -309,6 +327,11 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         second_connection.connection_id.to_string()
     );
     assert_eq!(second_connection.connection_id, second_connection_id);
+    assert_eq!(
+        second_status.connection_id,
+        second_connection_id.to_string()
+    );
+    assert_eq!(second_status.peer_id, second_config.peer_id);
     assert_ne!(
         second_connection.connection_id, first_connection.connection_id,
         "reconnect must create a new connection without replacing peer identity"

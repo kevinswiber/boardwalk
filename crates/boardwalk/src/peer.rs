@@ -18,8 +18,10 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::http::{PeerInitState, PeerSenders};
-use crate::persistence::{DefaultRepositories, PeerConfigRecord, Repositories};
-use crate::registry::{PeerConnectionDirection, PeerConnectionRecord, Registry};
+use crate::persistence::{
+    DefaultRepositories, PeerConfigRecord, PeerConnectionStatusRecord, Repositories,
+};
+use crate::registry::PeerConnectionDirection;
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -662,19 +664,12 @@ pub struct PeerAcceptors {
     contexts: Arc<tokio::sync::Mutex<HashMap<String, AdmittedPeerConnection>>>,
     confirmations: Arc<std::sync::atomic::AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
-    registry: Arc<std::sync::Mutex<Option<Arc<Registry>>>>,
     repositories: Arc<std::sync::Mutex<Option<Arc<DefaultRepositories>>>>,
 }
 
 impl PeerAcceptors {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Install a registry. Subsequent `on_upgraded` calls will persist
-    /// PeerRecords on confirmation and update status on disconnect.
-    pub fn with_registry(&self, registry: Arc<Registry>) {
-        *self.registry.lock().unwrap() = Some(registry);
     }
 
     pub(crate) fn with_repositories(&self, repositories: Arc<DefaultRepositories>) {
@@ -714,7 +709,6 @@ impl PeerAcceptors {
         let peer_name_for_task = peer_name.clone();
         let admitted_for_task = admitted.clone();
         let task = tokio::spawn(async move {
-            let registry_snapshot = acceptors.registry.lock().unwrap().clone();
             let repositories_snapshot = acceptors.repositories.lock().unwrap().clone();
             acceptors
                 .contexts
@@ -733,7 +727,6 @@ impl PeerAcceptors {
                 Ok(()) => {
                     write_peer(
                         repository_ref(repositories_snapshot.as_deref()),
-                        registry_snapshot.as_deref(),
                         &admitted_for_task,
                         PeerConnectionStatus::Connected,
                     );
@@ -747,7 +740,6 @@ impl PeerAcceptors {
                     acceptors.contexts.lock().await.remove(&peer_name_for_task);
                     write_peer(
                         repository_ref(repositories_snapshot.as_deref()),
-                        registry_snapshot.as_deref(),
                         &admitted_for_task,
                         PeerConnectionStatus::Failed,
                     );
@@ -767,7 +759,6 @@ impl PeerAcceptors {
             ) {
                 write_peer(
                     repository_ref(repositories_snapshot.as_deref()),
-                    registry_snapshot.as_deref(),
                     &admitted_for_task,
                     PeerConnectionStatus::Disconnected,
                 );
@@ -876,7 +867,6 @@ fn repository_ref(repositories: Option<&DefaultRepositories>) -> Option<&dyn Rep
 
 fn write_peer(
     repositories: Option<&dyn Repositories>,
-    registry: Option<&Registry>,
     admitted: &AdmittedPeerConnection,
     status: PeerConnectionStatus,
 ) {
@@ -884,32 +874,32 @@ fn write_peer(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    if let Some(repositories) = repositories
-        && let Err(e) = repositories.peer_configs().put(PeerConfigRecord {
+    let Some(repositories) = repositories else {
+        return;
+    };
+    if let Err(e) = repositories.peer_configs().put(PeerConfigRecord {
+        peer_id: admitted.peer_id.clone(),
+        route_name: admitted.route_name.clone(),
+        node_id: admitted.node_id.clone(),
+        display_name: admitted.display_name.clone(),
+        allowed_capabilities: admitted.allowed_capabilities,
+        updated_ms: now_ms,
+    }) {
+        tracing::warn!(error = %e, "failed to persist peer config");
+    }
+    if let Err(e) = repositories
+        .peer_connection_status()
+        .put_latest(PeerConnectionStatusRecord {
+            connection_id: admitted.connection_id.to_string(),
             peer_id: admitted.peer_id.clone(),
             route_name: admitted.route_name.clone(),
-            node_id: admitted.node_id.clone(),
-            display_name: admitted.display_name.clone(),
-            allowed_capabilities: admitted.allowed_capabilities,
+            direction: PeerConnectionDirection::Acceptor,
+            status,
+            negotiated_capabilities: admitted.negotiated_capabilities,
             updated_ms: now_ms,
         })
     {
-        tracing::warn!(error = %e, "failed to persist peer config");
-    }
-    let Some(registry) = registry else {
-        return;
-    };
-    let connection = PeerConnectionRecord {
-        connection_id: admitted.connection_id,
-        peer_id: admitted.peer_id.clone(),
-        route_name: admitted.route_name.clone(),
-        direction: PeerConnectionDirection::Acceptor,
-        status,
-        negotiated_capabilities: admitted.negotiated_capabilities,
-        updated_ms: now_ms,
-    };
-    if let Err(e) = registry.put_peer_connection(&connection) {
-        tracing::warn!(error = %e, "failed to persist peer connection record");
+        tracing::warn!(error = %e, "failed to persist peer connection status");
     }
 }
 
