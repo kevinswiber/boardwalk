@@ -418,7 +418,7 @@ fn resolve_resource_id(
 
 #[derive(Debug)]
 enum ResourceIdentityError {
-    Registry(Box<crate::registry::RegistryError>),
+    Storage(String),
     Conflict(String),
 }
 
@@ -497,22 +497,20 @@ fn resource_identity_label(spec: &ResourceSpec) -> String {
 
 fn resource_identity_anyhow(err: ResourceIdentityError) -> anyhow::Error {
     match err {
-        ResourceIdentityError::Registry(err) => anyhow::anyhow!("registry: {err}"),
+        ResourceIdentityError::Storage(err) => anyhow::anyhow!("storage: {err}"),
         ResourceIdentityError::Conflict(msg) => anyhow::anyhow!(msg),
     }
 }
 
 fn registration_identity_error(err: ResourceIdentityError) -> ResourceRegistrationError {
     match err {
-        ResourceIdentityError::Registry(err) => {
-            ResourceRegistrationError::Internal(format!("registry: {err}"))
-        }
+        ResourceIdentityError::Storage(err) => ResourceRegistrationError::Internal(err),
         ResourceIdentityError::Conflict(msg) => ResourceRegistrationError::Conflict(msg),
     }
 }
 
-fn resource_identity_registry_error(err: crate::registry::RegistryError) -> ResourceIdentityError {
-    ResourceIdentityError::Registry(Box::new(err))
+fn resource_identity_registry_error(err: impl std::fmt::Display) -> ResourceIdentityError {
+    ResourceIdentityError::Storage(err.to_string())
 }
 
 fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {

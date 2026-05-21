@@ -119,7 +119,7 @@ impl ResourceIdentityRepository for RedbResourceIdentityRepository {
                 continue;
             }
             if identity_keys_overlap(&existing.identity_keys, &record.identity_keys) {
-                return Err(StorageError::IdentityConflict(format!(
+                return Err(StorageError::Conflict(format!(
                     "identity key is already assigned to `{}`",
                     existing.id
                 )));
@@ -128,7 +128,7 @@ impl ResourceIdentityRepository for RedbResourceIdentityRepository {
         if let Some(existing) = legacy_resource_by_identity_key(&self.db, &record.identity_keys)?
             && existing.id != record.id
         {
-            return Err(StorageError::IdentityConflict(format!(
+            return Err(StorageError::Conflict(format!(
                 "identity key is already assigned to `{}`",
                 existing.id
             )));
@@ -283,7 +283,7 @@ fn get_json<T: DeserializeOwned>(
     let table = txn.open_table(table).map_err(storage_error)?;
     match table.get(key).map_err(storage_error)? {
         Some(value) => Ok(Some(
-            serde_json::from_slice(value.value()).map_err(storage_error)?,
+            serde_json::from_slice(value.value()).map_err(storage_corrupt)?,
         )),
         None => Ok(None),
     }
@@ -298,7 +298,7 @@ fn list_json<T: DeserializeOwned>(
     let mut out = Vec::new();
     for item in table.iter().map_err(storage_error)? {
         let (_, value) = item.map_err(storage_error)?;
-        out.push(serde_json::from_slice(value.value()).map_err(storage_error)?);
+        out.push(serde_json::from_slice(value.value()).map_err(storage_corrupt)?);
     }
     Ok(out)
 }
@@ -349,5 +349,9 @@ fn identity_keys_overlap(left: &[IdentityKey], right: &[IdentityKey]) -> bool {
 }
 
 fn storage_error(err: impl std::fmt::Display) -> StorageError {
-    StorageError::Backend(err.to_string())
+    StorageError::Unavailable(err.to_string())
+}
+
+fn storage_corrupt(err: impl std::fmt::Display) -> StorageError {
+    StorageError::Corrupt(err.to_string())
 }

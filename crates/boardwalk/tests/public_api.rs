@@ -214,6 +214,20 @@ fn source_surface_does_not_describe_transitional_runtime_adapters() {
     );
 }
 
+#[test]
+fn repository_callers_do_not_name_storage_backend_errors() {
+    let server = read("crates/boardwalk/src/server.rs");
+
+    assert!(
+        !server.contains("redb::"),
+        "server-side repository callers must not name redb types"
+    );
+    assert!(
+        !server.contains("RegistryError"),
+        "server-side repository callers must not expose registry errors"
+    );
+}
+
 #[derive(Default)]
 struct FacadeLed;
 

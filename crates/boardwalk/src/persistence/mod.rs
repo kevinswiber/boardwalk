@@ -16,12 +16,14 @@ pub(crate) mod redb;
 
 #[derive(Debug, Error)]
 pub(crate) enum StorageError {
-    #[error("repository lock poisoned")]
-    LockPoisoned,
-    #[error("identity conflict: {0}")]
-    IdentityConflict(String),
-    #[error("storage backend: {0}")]
-    Backend(String),
+    #[error("storage unavailable: {0}")]
+    Unavailable(String),
+    #[error("storage conflict: {0}")]
+    Conflict(String),
+    #[error("storage corrupt: {0}")]
+    Corrupt(String),
+    #[error("storage internal: {0}")]
+    Internal(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -245,7 +247,7 @@ impl ResourceIdentityRepository for ResourceIdentityStore {
             if let Some(existing_id) = state.identity_keys.get(key)
                 && existing_id != &record.id
             {
-                return Err(StorageError::IdentityConflict(format!(
+                return Err(StorageError::Conflict(format!(
                     "identity key is already assigned to `{existing_id}`"
                 )));
             }
@@ -395,5 +397,7 @@ impl ResourceSnapshotRepository for ResourceSnapshotStore {
 fn lock_state(
     state: &Arc<Mutex<RepositoryState>>,
 ) -> Result<MutexGuard<'_, RepositoryState>, StorageError> {
-    state.lock().map_err(|_| StorageError::LockPoisoned)
+    state
+        .lock()
+        .map_err(|_| StorageError::Internal("repository lock poisoned".into()))
 }

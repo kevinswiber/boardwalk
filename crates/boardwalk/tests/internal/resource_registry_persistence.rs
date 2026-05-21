@@ -12,7 +12,7 @@ use crate::persistence::{
     EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRecord,
     NodeConfigRepository, PeerConfigRecord, PeerConfigRepository, PeerConnectionStatusRecord,
     PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
-    ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository,
+    ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository, StorageError,
 };
 use crate::registry::{Registry, ResourceRecord};
 use crate::runtime::{
@@ -143,6 +143,42 @@ fn redb_repositories_adapt_existing_resource_rows() {
 }
 
 #[test]
+fn redb_open_failure_maps_to_storage_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_directory = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_directory, b"file").unwrap();
+    let db_path = not_a_directory.join("boardwalk.redb");
+
+    let err = match RedbRepositories::open(&db_path) {
+        Ok(_) => panic!("opening under a file should fail"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, StorageError::Unavailable(_)));
+}
+
+#[test]
+fn redb_decode_failure_maps_to_storage_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let db = redb::Database::create(&db_path).unwrap();
+    let legacy_resources: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resources");
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(legacy_resources).unwrap();
+        table.insert("bad", b"not-json".as_slice()).unwrap();
+    }
+    txn.commit().unwrap();
+    drop(db);
+
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    let err = repos.resource_identities().get("bad").unwrap_err();
+
+    assert!(matches!(err, StorageError::Corrupt(_)));
+}
+
+#[test]
 fn resource_identity_repository_rejects_key_reassignment() {
     let (repos, _dir) = temp_repositories();
     let first_id = uuid::Uuid::new_v4().to_string();
@@ -158,7 +194,7 @@ fn resource_identity_repository_rejects_key_reassignment() {
         .unwrap_err();
 
     assert!(
-        err.to_string().contains("identity conflict"),
+        err.to_string().contains("storage conflict"),
         "unexpected error: {err}"
     );
 }
