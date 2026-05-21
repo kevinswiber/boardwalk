@@ -212,9 +212,9 @@ impl Boardwalk {
         self
     }
 
-    /// Enable on-disk persistence of resource + peer registries at the
-    /// supplied path (single redb file). Without this call, the runtime
-    /// is purely in-memory.
+    /// Enable on-disk persistence of resource, node, and peer records
+    /// at the supplied path (single redb file). Without this call, the
+    /// runtime is purely in-memory.
     pub fn persist(mut self, path: impl Into<PathBuf>) -> Self {
         self.persist_path = Some(path.into());
         self
@@ -271,8 +271,8 @@ impl Boardwalk {
     /// Build the runtime + router + spawn peer clients without binding.
     /// Useful for crate-local integration tests.
     pub(crate) fn build(self) -> anyhow::Result<Built> {
-        // Open the registry if persistence was requested. Resource
-        // IDs are then stable across restarts (keyed by kind + name).
+        // Open the redb file if persistence was requested. Repository
+        // records keep resource IDs stable across restarts.
         let registry = self
             .persist_path
             .as_ref()

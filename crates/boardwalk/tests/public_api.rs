@@ -379,12 +379,53 @@ fn public_facade_exports_only_intended_api() {
 
     let lib = read("crates/boardwalk/src/lib.rs");
     for module in [
-        "core", "http", "peer", "registry", "server", "siren", "tunnel",
+        "core",
+        "http",
+        "peer",
+        "persistence",
+        "registry",
+        "server",
+        "siren",
+        "tunnel",
     ] {
         let declaration = format!("pub mod {module};");
         assert!(
             !lib.contains(&declaration),
             "crate root must not expose broad internal module `{module}`"
+        );
+    }
+}
+
+#[test]
+fn persistence_repository_traits_are_not_public_api() {
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+
+    assert!(
+        !lib.contains("pub mod persistence"),
+        "repository internals must stay out of the public module surface"
+    );
+    assert!(
+        !lib.contains("pub use persistence"),
+        "repository internals must stay out of crate-root re-exports"
+    );
+    for ident in [
+        "Repositories",
+        "ResourceIdentityRepository",
+        "ResourceSnapshotRepository",
+        "NodeConfigRepository",
+        "PeerConfigRepository",
+        "PeerConnectionStatusRepository",
+        "EventHistoryRepository",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|block| contains_ident(block, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export persistence internal `{ident}`; found {offenders:#?}"
         );
     }
 }

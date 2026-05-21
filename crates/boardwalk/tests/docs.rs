@@ -138,6 +138,38 @@ fn persistence_docs_do_not_claim_event_sourcing() {
 }
 
 #[test]
+fn public_docs_keep_snapshot_and_event_history_contract_honest() {
+    let s = public_docs(&["docs/resources.md", "docs/peers.md", "docs/events.md"]);
+
+    for required in [
+        "latest snapshot",
+        "read/restart projection",
+        "internal repository boundaries",
+        "redb",
+        "optional append-only event history",
+        "peer config",
+        "latest connection status",
+    ] {
+        assert!(
+            s.contains(required),
+            "public persistence docs should state `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "full event sourcing",
+        "source-of-truth event log",
+        "remote shadow reconstruction",
+        "third-party stores",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public persistence docs should not overclaim `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn crate_docs_show_resource_actor_imports() {
     let s = read("crates/boardwalk/src/lib.rs");
     for required in [

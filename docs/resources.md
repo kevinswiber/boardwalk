@@ -68,6 +68,14 @@ JSON objects, so useful query paths are scalar/object paths such as
 present in the snapshot, but the query engine does not yet traverse
 arrays of objects.
 
+When `Boardwalk::persist(...)` is enabled, redb is the embedded default
+behind internal repository boundaries. Boardwalk persists the latest snapshot
+for a resource as the read/restart projection used when a live actor is
+unavailable. Event streams remain live runtime output today;
+the reserved event-history boundary is optional append-only event history
+for future durable consumers, not a required replay or state reconstruction
+path.
+
 ## Authoring model
 
 Implement `Resource` when something is read-only or when transition
