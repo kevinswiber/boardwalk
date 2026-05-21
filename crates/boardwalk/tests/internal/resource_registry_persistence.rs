@@ -757,6 +757,84 @@ async fn live_snapshot_wins_over_persisted_latest_snapshot() {
 }
 
 #[tokio::test]
+async fn list_uses_latest_persisted_snapshot_when_live_actor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let resources = built.core.list_resources().await;
+
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].id, "front-panel");
+    assert_eq!(resources[0].state.as_deref(), Some("off"));
+    assert_eq!(
+        resources[0].properties.get("room"),
+        Some(&serde_json::json!("kitchen"))
+    );
+}
+
+#[tokio::test]
+async fn query_uses_latest_persisted_snapshot_when_live_actor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let matches = built
+        .core
+        .query_resources("where properties.room = \"kitchen\"")
+        .await
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].id, "front-panel");
+    assert_eq!(matches[0].state.as_deref(), Some("off"));
+}
+
+#[tokio::test]
+async fn query_prefers_live_snapshot_over_persisted_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::with_room("on", "pantry"))
+        .build()
+        .unwrap();
+
+    let stale_matches = built
+        .core
+        .query_resources("where properties.room = \"kitchen\"")
+        .await
+        .unwrap();
+    let live_matches = built
+        .core
+        .query_resources("where properties.room = \"pantry\"")
+        .await
+        .unwrap();
+
+    assert!(stale_matches.is_empty());
+    assert_eq!(live_matches.len(), 1);
+    assert_eq!(live_matches[0].id, "front-panel");
+    assert_eq!(live_matches[0].state.as_deref(), Some("on"));
+}
+
+#[tokio::test]
 async fn factory_registration_uses_same_identity_repository_as_static_resources() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
@@ -827,14 +905,39 @@ fn identity_record(resource_id: &str) -> ResourceIdentityRecord {
 }
 
 fn latest_snapshot_record(resource_id: &str, state: &str) -> ResourceSnapshotRecord {
+    latest_snapshot_record_with_properties(resource_id, state, serde_json::Map::new())
+}
+
+fn latest_snapshot_record_with_properties(
+    resource_id: &str,
+    state: &str,
+    properties: serde_json::Map<String, serde_json::Value>,
+) -> ResourceSnapshotRecord {
+    let mut snapshot = led_snapshot(state);
+    snapshot.id = resource_id.into();
+    snapshot.properties = properties;
     ResourceSnapshotRecord {
         resource_id: resource_id.into(),
         node_id: "hub".into(),
-        snapshot: led_snapshot(state),
+        snapshot,
         revision: Some("rev-1".into()),
         updated_ms: 2,
         source_event_id: None,
     }
+}
+
+fn seed_latest_snapshot_with_room(db_path: &Path, resource_id: &str, state: &str, room: &str) {
+    let repos = RedbRepositories::open(db_path).unwrap();
+    let mut properties = serde_json::Map::new();
+    properties.insert("room".into(), serde_json::json!(room));
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record_with_properties(
+            resource_id,
+            state,
+            properties,
+        ))
+        .unwrap();
 }
 
 fn node_config(node_id: &str) -> NodeConfigRecord {
@@ -1054,12 +1157,23 @@ impl Actor for FactorySnapshotActor {
 
 struct SnapshotActor {
     state: String,
+    properties: serde_json::Map<String, serde_json::Value>,
 }
 
 impl SnapshotActor {
     fn new(state: impl Into<String>) -> Self {
         Self {
             state: state.into(),
+            properties: serde_json::Map::new(),
+        }
+    }
+
+    fn with_room(state: impl Into<String>, room: impl Into<String>) -> Self {
+        let mut properties = serde_json::Map::new();
+        properties.insert("room".into(), serde_json::json!(room.into()));
+        Self {
+            state: state.into(),
+            properties,
         }
     }
 }
@@ -1079,7 +1193,11 @@ impl Resource for SnapshotActor {
         &'a self,
         _ctx: ResourceCtx,
     ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
-        Box::pin(async move { Ok(led_snapshot(&self.state)) })
+        Box::pin(async move {
+            let mut snapshot = led_snapshot(&self.state);
+            snapshot.properties.clone_from(&self.properties);
+            Ok(snapshot)
+        })
     }
 }
 

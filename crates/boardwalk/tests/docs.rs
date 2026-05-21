@@ -290,19 +290,19 @@ fn events_docs_show_transition_correlation_and_causation() {
 }
 
 #[test]
-fn public_docs_have_no_private_planning_terms() {
+fn public_docs_have_no_internal_workflow_tokens() {
     let s = public_docs(PUBLIC_DOCS);
-    let private_terms = [
+    let internal_tokens = [
         format!("{}bo", "Gum"),
         format!(".{}{}", "gum", "bo"),
         format!("Plan {}", "0003"),
         format!("Task {}", "7.4"),
         format!("{}/", "findings"),
     ];
-    for private in private_terms {
+    for token in internal_tokens {
         assert!(
-            !s.contains(private.as_str()),
-            "public docs should not mention private planning term `{private}`"
+            !s.contains(token.as_str()),
+            "public docs should not mention internal workflow token `{token}`"
         );
     }
 }
