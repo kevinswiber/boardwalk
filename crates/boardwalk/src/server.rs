@@ -294,7 +294,7 @@ impl Boardwalk {
                 .try_build()
                 .map_err(|err| anyhow::anyhow!("build node: {err:?}"))?,
         );
-        let core: Arc<Core> = Core::from_node(node.clone());
+        let core: Arc<Core> = Core::from_node_with_name(self.name.clone(), node.clone());
 
         let peer_init = PeerInitState::default();
         let acceptors = PeerAcceptors::new();

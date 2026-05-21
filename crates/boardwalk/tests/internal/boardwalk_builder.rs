@@ -105,6 +105,17 @@ async fn peer_admission_config_boardwalk_builder_accepts_local_node_identity() {
 }
 
 #[tokio::test]
+async fn peer_admission_config_local_node_identity_does_not_replace_route_name() {
+    let built = Boardwalk::new()
+        .name("cloud")
+        .node_id("node-cloud-1")
+        .build()
+        .unwrap();
+
+    assert_eq!(built.core.name, "cloud");
+}
+
+#[tokio::test]
 async fn peer_admission_config_boardwalk_builder_stores_accepted_peer_token() {
     let built = Boardwalk::new()
         .name("cloud")

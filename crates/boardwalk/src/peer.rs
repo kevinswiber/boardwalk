@@ -168,6 +168,26 @@ impl PeerCapabilities {
         Self(Self::RESOURCE_READ)
     }
 
+    pub(crate) fn resource_query() -> Self {
+        Self(Self::RESOURCE_QUERY)
+    }
+
+    pub(crate) fn stream_subscribe_capability() -> Self {
+        Self(Self::STREAM_SUBSCRIBE)
+    }
+
+    pub(crate) fn transition_invoke() -> Self {
+        Self(Self::TRANSITION_INVOKE)
+    }
+
+    pub(crate) fn resource_register() -> Self {
+        Self(Self::RESOURCE_REGISTER)
+    }
+
+    pub(crate) fn peer_admin() -> Self {
+        Self(Self::PEER_ADMIN)
+    }
+
     pub(crate) fn parse_list(input: &str) -> Result<Self, PeerModelError> {
         let mut caps = Self::empty();
         for raw in input.split(',') {
@@ -203,6 +223,10 @@ impl PeerCapabilities {
 
     pub(crate) fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+
+    pub(crate) fn contains(self, required: Self) -> bool {
+        self.0 & required.0 == required.0
     }
 
     pub(crate) fn stream_subscribe(self) -> bool {
@@ -684,6 +708,11 @@ impl PeerAcceptors {
         let admitted_for_task = admitted.clone();
         let task = tokio::spawn(async move {
             let registry_snapshot = acceptors.registry.lock().unwrap().clone();
+            acceptors
+                .contexts
+                .lock()
+                .await
+                .insert(peer_name_for_task.clone(), admitted_for_task.clone());
             match drive_acceptor(
                 peer_name_for_task.clone(),
                 connection_id,
@@ -698,16 +727,12 @@ impl PeerAcceptors {
                         write_peer(reg, &admitted_for_task, PeerConnectionStatus::Connected);
                     }
                     acceptors
-                        .contexts
-                        .lock()
-                        .await
-                        .insert(peer_name_for_task.clone(), admitted_for_task.clone());
-                    acceptors
                         .confirmations
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     acceptors.notify.notify_waiters();
                 }
                 Err(e) => {
+                    acceptors.contexts.lock().await.remove(&peer_name_for_task);
                     if let Some(reg) = &registry_snapshot {
                         write_peer(reg, &admitted_for_task, PeerConnectionStatus::Failed);
                     }
@@ -756,6 +781,10 @@ impl PeerSenders for PeerAcceptors {
     async fn names(&self) -> Vec<String> {
         let map = self.senders.lock().await;
         map.keys().cloned().collect()
+    }
+
+    async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
+        self.contexts.lock().await.get(name).cloned()
     }
 
     async fn has_active_peer(&self, name: &str) -> bool {

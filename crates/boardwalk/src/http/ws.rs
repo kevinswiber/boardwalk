@@ -13,6 +13,7 @@ use crate::events::{
     EventEnvelope, EventId, InboundMessage, NodeId, OutboundMessage, StreamId, SubscribeOpts,
     SubscriptionId, SubscriptionRef, TopicPattern,
 };
+use crate::peer::PeerCapabilities;
 
 /// Default capacity of the WS connection's outbound channel.
 pub(crate) const WS_OUTBOUND_CAPACITY: usize = 64;
@@ -183,6 +184,27 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                                 continue;
                             }
                         };
+
+                        if is_peer_topic
+                            && let Some(senders) = state.peer_senders.as_ref()
+                            && let Some(context) = senders.peer_context(&first).await
+                            && !context
+                                .negotiated_capabilities
+                                .contains(PeerCapabilities::stream_subscribe_capability())
+                        {
+                            send_or_terminate(
+                                &out_tx,
+                                &terminal_tx,
+                                OutboundMessage::Error {
+                                    code: 403,
+                                    timestamp: now_ms(),
+                                    topic: Some(topic.clone()),
+                                    message: Some("peer capability denied".to_string()),
+                                    subscription_id: None,
+                                },
+                            );
+                            continue;
+                        }
 
                         let app_id = conn.next_app_id;
                         conn.next_app_id += 1;

@@ -39,6 +39,9 @@ pub trait PeerSenders: Send + Sync + 'static {
         name: &str,
     ) -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>>;
     async fn names(&self) -> Vec<String>;
+    async fn peer_context(&self, _name: &str) -> Option<AdmittedPeerConnection> {
+        None
+    }
     /// Check whether a peer is currently connected or mid-handshake.
     /// Default consults `names()`; impls (e.g. `PeerAcceptors`) can
     /// override to also see pending peers.
@@ -165,9 +168,21 @@ async fn maybe_forward_or_404(
     if target_name == state.core.name {
         return None;
     }
+    let Some(intent) = ProxyIntent::from_parts(method.clone(), uri.path(), uri.query()) else {
+        return Some(unknown_server_response());
+    };
     let Some(senders) = state.peer_senders.as_ref() else {
         return Some(unknown_server_response());
     };
+    let Some(context) = senders.peer_context(target_name).await else {
+        return Some(unknown_server_response());
+    };
+    if !context
+        .negotiated_capabilities
+        .contains(intent.required_capability())
+    {
+        return Some((StatusCode::FORBIDDEN, "peer capability denied").into_response());
+    }
     let Some(mut sender) = senders.sender(target_name).await else {
         return Some(unknown_server_response());
     };
@@ -216,8 +231,87 @@ async fn maybe_forward_or_404(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProxyIntent {
+    Read,
+    List,
+    Query,
+    Subscribe,
+    Invoke,
+    Register,
+    Metadata,
+    Admin,
+}
+
+impl ProxyIntent {
+    pub(crate) fn from_parts(method: Method, path: &str, query: Option<&str>) -> Option<Self> {
+        let segments = path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        let ["servers", peer, rest @ ..] = segments.as_slice() else {
+            return None;
+        };
+        if peer.is_empty() {
+            return None;
+        }
+
+        match (method, rest) {
+            (Method::GET, []) => Some(Self::read_or_query(query)),
+            (Method::GET, ["resources"]) => Some(Self::list_or_query(query)),
+            (Method::POST, ["resources"]) => Some(Self::Register),
+            (Method::GET, ["resources", resource_id]) if !resource_id.is_empty() => {
+                Some(Self::Read)
+            }
+            (Method::POST, ["resources", resource_id, "transitions", transition])
+                if !resource_id.is_empty() && !transition.is_empty() =>
+            {
+                Some(Self::Invoke)
+            }
+            (Method::GET, ["meta"]) | (Method::GET, ["meta", _]) => Some(Self::Metadata),
+            (Method::GET, ["events"]) if has_query_param(query, "topic") => Some(Self::Subscribe),
+            (Method::POST, ["events", "unsubscribe"]) => Some(Self::Subscribe),
+            (Method::GET, ["peer-management"]) => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    fn read_or_query(query: Option<&str>) -> Self {
+        if has_query_param(query, "ql") {
+            Self::Query
+        } else {
+            Self::Read
+        }
+    }
+
+    fn list_or_query(query: Option<&str>) -> Self {
+        if has_query_param(query, "ql") {
+            Self::Query
+        } else {
+            Self::List
+        }
+    }
+
+    fn required_capability(self) -> PeerCapabilities {
+        match self {
+            Self::Read | Self::List | Self::Metadata => PeerCapabilities::resource_read(),
+            Self::Query => PeerCapabilities::resource_query(),
+            Self::Subscribe => PeerCapabilities::stream_subscribe_capability(),
+            Self::Invoke => PeerCapabilities::transition_invoke(),
+            Self::Register => PeerCapabilities::resource_register(),
+            Self::Admin => PeerCapabilities::peer_admin(),
+        }
+    }
+}
+
+fn has_query_param(query: Option<&str>, key: &str) -> bool {
+    query.is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).any(|(name, _)| name == key)
+    })
+}
+
 fn build_peer_forward_request(
-    _gateway_name: &str,
+    gateway_name: &str,
     target_name: &str,
     method: Method,
     uri: &Uri,
@@ -234,10 +328,8 @@ fn build_peer_forward_request(
         path_and_query
     );
     let mut builder = http::Request::builder().method(method).uri(target_uri);
-    for (name, value) in headers.iter() {
-        if name == http::header::HOST {
-            continue;
-        }
+    let connection_headers = connection_header_tokens(headers);
+    for (name, value) in sanitize_forward_headers(headers, &connection_headers) {
         builder = builder.header(name.clone(), value.clone());
     }
     let bases = forwarded_external_bases(headers, uri, target_name);
@@ -245,8 +337,65 @@ fn build_peer_forward_request(
         .header("x-forwarded-host", bases.host)
         .header("x-forwarded-proto", bases.scheme)
         .header("x-boardwalk-external-base", bases.http)
-        .header("x-boardwalk-external-ws-base", bases.ws);
+        .header("x-boardwalk-external-ws-base", bases.ws)
+        .header("x-boardwalk-forwarded-by", gateway_name)
+        .header("x-boardwalk-correlation-id", Uuid::new_v4().to_string());
     builder.body(body)
+}
+
+fn sanitize_forward_headers<'a>(
+    headers: &'a HeaderMap,
+    connection_headers: &'a HashSet<String>,
+) -> impl Iterator<Item = (&'a http::HeaderName, &'a HeaderValue)> {
+    headers
+        .iter()
+        .filter(move |(name, _)| should_forward_header(name, connection_headers))
+}
+
+fn should_forward_header(name: &http::HeaderName, connection_headers: &HashSet<String>) -> bool {
+    if name == http::header::HOST {
+        return false;
+    }
+    let name = name.as_str().to_ascii_lowercase();
+    if connection_headers.contains(&name) {
+        return false;
+    }
+    if matches!(
+        name.as_str(),
+        "authorization"
+            | "cookie"
+            | "connection"
+            | "forwarded"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    ) {
+        return false;
+    }
+    if name.starts_with("proxy-")
+        || name.starts_with("x-forwarded-")
+        || name.starts_with("x-boardwalk-")
+        || name.starts_with("sec-websocket-")
+    {
+        return false;
+    }
+    true
+}
+
+fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
+    headers
+        .get_all(http::header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
 }
 
 /// As above but without a request body — used for routes whose handler
@@ -321,12 +470,7 @@ fn forwarded_external_bases(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost")
         .to_string();
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| uri.scheme_str())
-        .unwrap_or("http")
-        .to_string();
+    let scheme = uri.scheme_str().unwrap_or("http").to_string();
     let ws_scheme = if scheme == "https" { "wss" } else { "ws" };
     let peer = urlencoding::encode(target_name);
     ForwardedExternalBases {
@@ -1558,13 +1702,21 @@ mod tests {
             "sec-websocket-key",
             "forwarded",
             "x-forwarded-for",
-            "x-boardwalk-external-base",
         ] {
             assert!(
                 !headers.contains_key(denied),
                 "gateway forwarded denied header {denied}: {headers:?}"
             );
         }
+        assert_eq!(
+            headers.get("x-boardwalk-external-base"),
+            Some(&"http://external.example/servers/hub/".to_string())
+        );
+        assert_eq!(
+            headers.get("x-forwarded-proto"),
+            Some(&"http".to_string()),
+            "gateway should not trust inbound x-forwarded-proto spoofing"
+        );
         assert_eq!(
             headers.get("x-boardwalk-forwarded-by"),
             Some(&"cloud".to_string())
@@ -1597,7 +1749,6 @@ mod tests {
             "sec-websocket-key",
             "forwarded",
             "x-forwarded-for",
-            "x-boardwalk-external-base",
         ] {
             assert!(
                 !headers.contains_key(denied),
@@ -1606,13 +1757,33 @@ mod tests {
         }
         assert_eq!(
             headers
+                .get("x-boardwalk-external-base")
+                .and_then(|value| value.to_str().ok()),
+            Some("http://external.example/servers/hub/")
+        );
+        assert_eq!(
+            headers
+                .get("x-forwarded-proto")
+                .and_then(|value| value.to_str().ok()),
+            Some("http")
+        );
+        assert_eq!(
+            headers
                 .get("x-boardwalk-forwarded-by")
                 .and_then(|value| value.to_str().ok()),
             Some("cloud")
         );
+        assert_eq!(
+            headers.get_all("x-boardwalk-forwarded-by").iter().count(),
+            1
+        );
         assert!(
             headers.contains_key("x-boardwalk-correlation-id"),
             "gateway should add a fresh correlation id: {headers:?}"
+        );
+        assert_eq!(
+            headers.get_all("x-boardwalk-correlation-id").iter().count(),
+            1
         );
     }
 
@@ -1639,6 +1810,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proxy_intent_classifies_known_boardwalk_routes() {
+        assert_eq!(
+            ProxyIntent::from_parts(
+                Method::GET,
+                "/servers/hub/resources",
+                Some("ql=kind%3D%22led%22"),
+            ),
+            Some(ProxyIntent::Query)
+        );
+        assert_eq!(
+            ProxyIntent::from_parts(
+                Method::POST,
+                "/servers/hub/resources/abc/transitions/turn-on",
+                None,
+            ),
+            Some(ProxyIntent::Invoke)
+        );
+        assert_eq!(
+            ProxyIntent::from_parts(
+                Method::GET,
+                "/servers/hub/events",
+                Some("topic=hub/led/abc/state"),
+            ),
+            Some(ProxyIntent::Subscribe)
+        );
+    }
+
+    #[test]
+    fn proxy_intent_rejects_unknown_routes() {
+        assert_eq!(
+            ProxyIntent::from_parts(Method::GET, "/servers/hub/raw/admin", None),
+            None
+        );
+    }
+
     #[derive(Debug, Clone)]
     struct RecordedForward {
         headers: std::collections::BTreeMap<String, String>,
@@ -1660,6 +1867,10 @@ mod tests {
 
         async fn names(&self) -> Vec<String> {
             vec!["hub".to_string()]
+        }
+
+        async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
+            (name == "hub").then(|| AdmittedPeerConnection::local_development("hub", Uuid::nil()))
         }
     }
 
@@ -1760,8 +1971,20 @@ mod tests {
             HeaderValue::from_static("198.51.100.10"),
         );
         headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
             HeaderName::from_static("x-boardwalk-external-base"),
             HeaderValue::from_static("https://spoofed.example/servers/hub/"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-boardwalk-forwarded-by"),
+            HeaderValue::from_static("attacker"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-boardwalk-correlation-id"),
+            HeaderValue::from_static("attacker-correlation"),
         );
         headers
     }

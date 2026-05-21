@@ -34,9 +34,14 @@ pub(crate) enum ResourceTransitionError {
 }
 
 impl Core {
+    #[allow(dead_code)]
     pub fn from_node(node: Arc<Node>) -> Arc<Self> {
+        Self::from_node_with_name(node.id().to_string(), node)
+    }
+
+    pub(crate) fn from_node_with_name(name: impl Into<String>, node: Arc<Node>) -> Arc<Self> {
         Arc::new(Self {
-            name: node.id().to_string(),
+            name: name.into(),
             bus: node.events().clone(),
             node,
         })

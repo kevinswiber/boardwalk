@@ -8,12 +8,14 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use http::StatusCode;
 use serde_json::{Value as Json, json};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 use crate::http::PeerStreamHub;
+use crate::peer::{PeerAdmissionConfig, PeerLinkConfig};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -27,7 +29,32 @@ struct Pair {
 /// Boots cloud + hub (with one LED) and waits until cloud has confirmed
 /// the peer link.
 async fn boot_pair() -> Pair {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    boot_pair_with_capabilities(None::<[&str; 0]>).await
+}
+
+async fn boot_pair_with_capabilities<I, S>(capabilities: Option<I>) -> Pair
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<str>,
+{
+    let capability_names = capabilities.map(|names| {
+        names
+            .into_iter()
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>()
+    });
+    let cloud = Boardwalk::new().name("cloud");
+    let cloud = if let Some(capabilities) = capability_names.as_ref() {
+        let admission = PeerAdmissionConfig::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .allow(capabilities)
+            .unwrap();
+        cloud.accept_peer_admission_config(admission)
+    } else {
+        cloud
+    }
+    .build()
+    .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
@@ -36,12 +63,21 @@ async fn boot_pair() -> Pair {
         axum::serve(cloud_listener, cloud.router).await.unwrap();
     });
 
-    let hub = Boardwalk::new()
-        .name("hub")
-        .use_actor(ActorLed::default())
-        .link(format!("http://{cloud_addr}"))
-        .build()
-        .unwrap();
+    let hub = Boardwalk::new().name("hub").use_actor(ActorLed::default());
+    let hub = if let Some(capabilities) = capability_names.as_ref() {
+        hub.link_peer(
+            PeerLinkConfig::new(format!("http://{cloud_addr}"), "hub")
+                .unwrap()
+                .token("kid-1", "secret")
+                .node_name("Kitchen Hub")
+                .request_capabilities(capabilities)
+                .unwrap(),
+        )
+    } else {
+        hub.link(format!("http://{cloud_addr}"))
+    }
+    .build()
+    .unwrap();
     let hub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let hub_addr = hub_listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -58,6 +94,75 @@ async fn boot_pair() -> Pair {
         hub_addr,
         cloud_streams,
     }
+}
+
+#[tokio::test]
+async fn peer_read_without_resource_read_is_403() {
+    let p = boot_pair_with_capabilities(Some(["stream.subscribe"])).await;
+
+    let response = reqwest::get(format!("http://{}/servers/hub/resources", p.cloud_addr))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn transition_forward_requires_transition_invoke() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/{id}/transitions/turn-on",
+            p.cloud_addr
+        ))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let direct: Json = reqwest::get(format!("http://{}/resources/{id}", p.hub_addr))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(direct["properties"]["state"], "off");
+}
+
+#[tokio::test]
+async fn peer_ndjson_stream_requires_stream_subscribe_capability() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let topic = format!("hub/led/{id}/state");
+
+    let response = reqwest::get(format!(
+        "http://{}/servers/hub/events?topic={topic}",
+        p.cloud_addr
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(p.cloud_streams.active_streams().await, 0);
+}
+
+#[tokio::test]
+async fn ws_peer_topic_requires_stream_subscribe_capability() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let topic = format!("hub/led/{id}/state");
+    let mut ws = open_ws(p.cloud_addr).await;
+
+    send_json(&mut ws, json!({"type": "subscribe", "topic": topic})).await;
+    let denial = recv_json(&mut ws, Duration::from_secs(2)).await;
+
+    assert_eq!(denial["type"], "error");
+    assert_eq!(denial["code"], 403);
+    assert_eq!(p.cloud_streams.active_streams().await, 0);
 }
 
 async fn resource_id_via(addr: SocketAddr) -> String {
