@@ -863,6 +863,54 @@ async fn query_prefers_live_snapshot_over_persisted_latest_snapshot() {
 }
 
 #[tokio::test]
+async fn persisted_node_config_survives_display_name_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-1")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+    assert_eq!(first.node.id(), "node-hub-1");
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("Kitchen Hub")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+
+    assert_eq!(second.node.id(), "node-hub-1");
+    let node = second
+        .repositories()
+        .unwrap()
+        .node_config()
+        .get("node-hub-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.node_id, "node-hub-1");
+    assert_eq!(node.display_name, "Kitchen Hub");
+    assert_eq!(node.route_name, "Kitchen Hub");
+}
+
+#[tokio::test]
+async fn non_persistent_node_config_remains_ephemeral() {
+    let first = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-1")
+        .build()
+        .unwrap();
+    let second = Boardwalk::new().name("Kitchen Hub").build().unwrap();
+
+    assert_eq!(first.node.id(), "node-hub-1");
+    assert_eq!(second.node.id(), "Kitchen Hub");
+    assert!(first.repositories().is_none());
+    assert!(second.repositories().is_none());
+}
+
+#[tokio::test]
 async fn factory_registration_uses_same_identity_repository_as_static_resources() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");

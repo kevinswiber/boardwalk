@@ -18,8 +18,8 @@ use crate::http::{
 };
 use crate::peer::{PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig};
 use crate::persistence::{
-    DefaultRepositories, IdentityKey, Repositories, ResourceIdentityRecord, ResourceSnapshotRecord,
-    StorageError,
+    DefaultRepositories, IdentityKey, NodeConfigRecord, NodeConfigRepository, Repositories,
+    ResourceIdentityRecord, ResourceSnapshotRecord, StorageError,
 };
 use crate::registry::Registry;
 use crate::runtime::{
@@ -285,8 +285,32 @@ impl Boardwalk {
             .transpose()?
             .map(Arc::new);
 
-        let node_id = self.node_id.unwrap_or_else(|| self.name.clone());
+        let persisted_node_config = repositories
+            .as_ref()
+            .map(|repositories| {
+                repositories
+                    .node_config()
+                    .get_local()
+                    .map_err(storage_unavailable_error)
+            })
+            .transpose()?
+            .flatten();
+        let node_id = self
+            .node_id
+            .clone()
+            .or_else(|| {
+                persisted_node_config
+                    .as_ref()
+                    .map(|record| record.node_id.clone())
+            })
+            .unwrap_or_else(|| self.name.clone());
         let local_display_name = self.name.clone();
+        persist_local_node_config(
+            repository_ref(&repositories),
+            &node_id,
+            &local_display_name,
+            &self.name,
+        )?;
         let accepted_peer_tokens = self.accepted_peer_tokens.clone();
         let mut node_builder = NodeBuilder::new(node_id.clone());
         for actor in self.actors {
@@ -574,6 +598,26 @@ fn repository_ref(repositories: &Option<Arc<DefaultRepositories>>) -> Option<&dy
     repositories
         .as_deref()
         .map(|repositories| repositories as &dyn Repositories)
+}
+
+fn persist_local_node_config(
+    repositories: Option<&dyn Repositories>,
+    node_id: &str,
+    display_name: &str,
+    route_name: &str,
+) -> anyhow::Result<()> {
+    let Some(repositories) = repositories else {
+        return Ok(());
+    };
+    repositories
+        .node_config()
+        .put(NodeConfigRecord {
+            node_id: node_id.into(),
+            display_name: display_name.into(),
+            route_name: route_name.into(),
+            updated_ms: now_ms(),
+        })
+        .map_err(storage_unavailable_error)
 }
 
 fn persist_latest_resource_snapshot(

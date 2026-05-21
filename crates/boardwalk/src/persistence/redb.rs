@@ -213,6 +213,12 @@ impl NodeConfigRepository for RedbNodeConfigRepository {
     fn get(&self, node_id: &str) -> Result<Option<NodeConfigRecord>, StorageError> {
         get_json(&self.db, NODE_CONFIGS, node_id)
     }
+
+    fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError> {
+        Ok(list_json::<NodeConfigRecord>(&self.db, NODE_CONFIGS)?
+            .into_iter()
+            .max_by_key(|record| record.updated_ms))
+    }
 }
 
 #[derive(Clone)]

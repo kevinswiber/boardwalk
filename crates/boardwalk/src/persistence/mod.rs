@@ -133,6 +133,7 @@ pub(crate) trait ResourceSnapshotRepository {
 pub(crate) trait NodeConfigRepository {
     fn put(&self, record: NodeConfigRecord) -> Result<(), StorageError>;
     fn get(&self, node_id: &str) -> Result<Option<NodeConfigRecord>, StorageError>;
+    fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError>;
 }
 
 pub(crate) trait PeerConfigRepository {
@@ -325,6 +326,15 @@ impl NodeConfigRepository for NodeConfigStore {
     fn get(&self, node_id: &str) -> Result<Option<NodeConfigRecord>, StorageError> {
         let state = lock_state(&self.state)?;
         Ok(state.node_configs.get(node_id).cloned())
+    }
+
+    fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError> {
+        let state = lock_state(&self.state)?;
+        Ok(state
+            .node_configs
+            .values()
+            .cloned()
+            .max_by_key(|record| record.updated_ms))
     }
 }
 
