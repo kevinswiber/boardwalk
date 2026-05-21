@@ -166,7 +166,7 @@ impl Core {
         match self.latest_resource_snapshot(id) {
             Ok(Some(snapshot)) => Ok(Some(snapshot)),
             Ok(None) => Err(ResourceReadError::Unavailable(message)),
-            Err(err) => Err(ResourceReadError::Internal(err.to_string())),
+            Err(err) => Err(ResourceReadError::Internal(err)),
         }
     }
 
@@ -187,7 +187,10 @@ impl Core {
         };
         registry
             .latest_resource_snapshot(resource_id)
-            .map_err(|err| err.to_string())
+            .map_err(|err| {
+                tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
+                "storage unavailable".to_string()
+            })
     }
 }
 

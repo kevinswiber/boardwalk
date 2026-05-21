@@ -21,6 +21,9 @@ use crate::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
 };
+use axum::body::Body;
+use axum::http::{Request as HttpRequest, StatusCode};
+use tower::ServiceExt;
 
 #[test]
 fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
@@ -345,6 +348,36 @@ async fn factory_registration_storage_error_is_generic() {
         }
         other => panic!("expected internal storage error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn resource_fallback_storage_error_response_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_latest_snapshot_row(&db_path, "front-panel");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let response = built
+        .router
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/resources/front-panel")
+                .body(Body::empty())
+                .expect("resource request builds"),
+        )
+        .await
+        .expect("resource request completes");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response_text(response).await;
+
+    assert_eq!(body, "storage unavailable");
+    assert_no_backend_error_details(&body);
 }
 
 #[test]
@@ -675,6 +708,18 @@ fn write_bad_resource_row(db_path: &Path) {
     txn.commit().unwrap();
 }
 
+fn write_bad_latest_snapshot_row(db_path: &Path, resource_id: &str) {
+    let db = redb::Database::create(db_path).unwrap();
+    let latest_snapshots: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resource_latest_snapshots_v1");
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(latest_snapshots).unwrap();
+        table.insert(resource_id, b"not-json".as_slice()).unwrap();
+    }
+    txn.commit().unwrap();
+}
+
 fn assert_no_backend_error_details(message: &str) {
     for snippet in [
         "redb",
@@ -689,6 +734,13 @@ fn assert_no_backend_error_details(message: &str) {
             "public storage error must not expose backend detail `{snippet}`: {message}"
         );
     }
+}
+
+async fn response_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 async fn register_factory_resource(
