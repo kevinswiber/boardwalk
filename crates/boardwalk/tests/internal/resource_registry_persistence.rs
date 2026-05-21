@@ -466,6 +466,34 @@ async fn resource_id_is_stable_across_builds() {
 }
 
 #[tokio::test]
+async fn legacy_unnamed_resource_identity_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let resource_id = uuid::Uuid::new_v4();
+    let registry = Registry::open(&db_path).unwrap();
+    registry
+        .put_resource(&ResourceRecord {
+            id: resource_id,
+            type_: "led".into(),
+            name: None,
+            properties: serde_json::Map::new(),
+        })
+        .unwrap();
+    drop(registry);
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor(UnnamedSnapshotActor)
+        .build()
+        .unwrap();
+
+    let resources = built.core.list_resources().await;
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].id, resource_id.to_string());
+}
+
+#[tokio::test]
 async fn persistent_static_resource_identity_records_kind_name_and_identity_key() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
@@ -1202,6 +1230,42 @@ impl Resource for SnapshotActor {
 }
 
 impl Actor for SnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
+    }
+}
+
+struct UnnamedSnapshotActor;
+
+impl Resource for UnnamedSnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: None,
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async {
+            let mut snapshot = led_snapshot("off");
+            snapshot.name = None;
+            Ok(snapshot)
+        })
+    }
+}
+
+impl Actor for UnnamedSnapshotActor {
     fn transition<'a>(
         &'a mut self,
         _ctx: TransitionCtx,

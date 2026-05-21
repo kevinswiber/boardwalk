@@ -361,11 +361,10 @@ fn legacy_resource_by_identity_key(
 }
 
 fn resource_identity_from_legacy(record: ResourceRecord) -> ResourceIdentityRecord {
-    let identity_keys = record
-        .name
-        .as_ref()
-        .map(|name| vec![IdentityKey::static_name(record.type_.clone(), name.clone())])
-        .unwrap_or_default();
+    let identity_keys = match record.name.as_ref() {
+        Some(name) => vec![IdentityKey::static_name(record.type_.clone(), name.clone())],
+        None => vec![IdentityKey::static_unnamed(record.type_.clone())],
+    };
     ResourceIdentityRecord {
         id: record.id.to_string(),
         kind: record.type_,
