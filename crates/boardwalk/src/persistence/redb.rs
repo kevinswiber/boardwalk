@@ -11,17 +11,22 @@ use super::{
     ResourceIdentityRecord, ResourceIdentityRepository, ResourceSnapshotRecord,
     ResourceSnapshotRepository, StorageError,
 };
-use crate::registry::ResourceRecord;
+use crate::registry::{PeerConnectionRecord, ResourceRecord};
+use crate::runtime::ResourceSnapshot;
 
 const RESOURCE_IDENTITIES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("resource_identities_v1");
 const LEGACY_RESOURCES: TableDefinition<&str, &[u8]> = TableDefinition::new("resources");
 const RESOURCE_SNAPSHOTS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("resource_snapshot_records_v1");
+const LEGACY_RESOURCE_LATEST_SNAPSHOTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("resource_latest_snapshots_v1");
 const NODE_CONFIGS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_configs_v1");
-const PEER_CONFIGS: TableDefinition<&str, &[u8]> = TableDefinition::new("peer_configs_v1");
+const PEER_CONFIGS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers_v2");
 const PEER_CONNECTION_STATUS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("peer_connection_status_v1");
+const LEGACY_PEER_CONNECTIONS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("peer_connections_v1");
 
 #[derive(Clone)]
 pub(crate) struct RedbRepositories {
@@ -166,11 +171,22 @@ impl RedbResourceSnapshotRepository {
 
 impl ResourceSnapshotRepository for RedbResourceSnapshotRepository {
     fn upsert_latest(&self, record: ResourceSnapshotRecord) -> Result<(), StorageError> {
-        put_json(&self.db, RESOURCE_SNAPSHOTS, &record.resource_id, &record)
+        let mut legacy_snapshot = record.snapshot.clone();
+        legacy_snapshot.id.clone_from(&record.resource_id);
+        put_json(&self.db, RESOURCE_SNAPSHOTS, &record.resource_id, &record)?;
+        put_json(
+            &self.db,
+            LEGACY_RESOURCE_LATEST_SNAPSHOTS,
+            &record.resource_id,
+            &legacy_snapshot,
+        )
     }
 
     fn latest(&self, resource_id: &str) -> Result<Option<ResourceSnapshotRecord>, StorageError> {
-        get_json(&self.db, RESOURCE_SNAPSHOTS, resource_id)
+        if let Some(record) = get_json(&self.db, RESOURCE_SNAPSHOTS, resource_id)? {
+            return Ok(Some(record));
+        }
+        legacy_latest_snapshot_by_id(&self.db, resource_id)
     }
 }
 
@@ -229,11 +245,18 @@ impl RedbPeerConnectionStatusRepository {
 
 impl PeerConnectionStatusRepository for RedbPeerConnectionStatusRepository {
     fn put_latest(&self, record: PeerConnectionStatusRecord) -> Result<(), StorageError> {
+        let legacy_record = peer_connection_record_from_status(&record)?;
         put_json(
             &self.db,
             PEER_CONNECTION_STATUS,
             &record.route_name,
             &record,
+        )?;
+        put_json(
+            &self.db,
+            LEGACY_PEER_CONNECTIONS,
+            &record.route_name,
+            &legacy_record,
         )
     }
 
@@ -241,7 +264,10 @@ impl PeerConnectionStatusRepository for RedbPeerConnectionStatusRepository {
         &self,
         route_name: &str,
     ) -> Result<Option<PeerConnectionStatusRecord>, StorageError> {
-        get_json(&self.db, PEER_CONNECTION_STATUS, route_name)
+        if let Some(record) = get_json(&self.db, PEER_CONNECTION_STATUS, route_name)? {
+            return Ok(Some(record));
+        }
+        legacy_peer_connection_by_route(&self.db, route_name)
     }
 }
 
@@ -250,9 +276,13 @@ fn materialize_tables(db: &Database) -> Result<(), StorageError> {
     txn.open_table(RESOURCE_IDENTITIES).map_err(storage_error)?;
     txn.open_table(LEGACY_RESOURCES).map_err(storage_error)?;
     txn.open_table(RESOURCE_SNAPSHOTS).map_err(storage_error)?;
+    txn.open_table(LEGACY_RESOURCE_LATEST_SNAPSHOTS)
+        .map_err(storage_error)?;
     txn.open_table(NODE_CONFIGS).map_err(storage_error)?;
     txn.open_table(PEER_CONFIGS).map_err(storage_error)?;
     txn.open_table(PEER_CONNECTION_STATUS)
+        .map_err(storage_error)?;
+    txn.open_table(LEGACY_PEER_CONNECTIONS)
         .map_err(storage_error)?;
     txn.commit().map_err(storage_error)?;
     Ok(())
@@ -341,6 +371,66 @@ fn resource_identity_from_legacy(record: ResourceRecord) -> ResourceIdentityReco
         created_ms: 0,
         updated_ms: 0,
     }
+}
+
+fn legacy_latest_snapshot_by_id(
+    db: &Database,
+    resource_id: &str,
+) -> Result<Option<ResourceSnapshotRecord>, StorageError> {
+    let Some(snapshot) =
+        get_json::<ResourceSnapshot>(db, LEGACY_RESOURCE_LATEST_SNAPSHOTS, resource_id)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(resource_snapshot_from_legacy(snapshot)))
+}
+
+fn resource_snapshot_from_legacy(snapshot: ResourceSnapshot) -> ResourceSnapshotRecord {
+    ResourceSnapshotRecord {
+        resource_id: snapshot.id.clone(),
+        node_id: snapshot.node.clone(),
+        revision: snapshot.revision.clone(),
+        snapshot,
+        updated_ms: 0,
+        source_event_id: None,
+    }
+}
+
+fn legacy_peer_connection_by_route(
+    db: &Database,
+    route_name: &str,
+) -> Result<Option<PeerConnectionStatusRecord>, StorageError> {
+    let Some(record) = get_json::<PeerConnectionRecord>(db, LEGACY_PEER_CONNECTIONS, route_name)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(peer_connection_status_from_legacy(record)))
+}
+
+fn peer_connection_status_from_legacy(record: PeerConnectionRecord) -> PeerConnectionStatusRecord {
+    PeerConnectionStatusRecord {
+        connection_id: record.connection_id.to_string(),
+        peer_id: record.peer_id,
+        route_name: record.route_name,
+        direction: record.direction,
+        status: record.status,
+        negotiated_capabilities: record.negotiated_capabilities,
+        updated_ms: record.updated_ms,
+    }
+}
+
+fn peer_connection_record_from_status(
+    record: &PeerConnectionStatusRecord,
+) -> Result<PeerConnectionRecord, StorageError> {
+    Ok(PeerConnectionRecord {
+        connection_id: uuid::Uuid::parse_str(&record.connection_id).map_err(storage_corrupt)?,
+        peer_id: record.peer_id.clone(),
+        route_name: record.route_name.clone(),
+        direction: record.direction,
+        status: record.status,
+        negotiated_capabilities: record.negotiated_capabilities,
+        updated_ms: record.updated_ms,
+    })
 }
 
 fn identity_keys_overlap(left: &[IdentityKey], right: &[IdentityKey]) -> bool {

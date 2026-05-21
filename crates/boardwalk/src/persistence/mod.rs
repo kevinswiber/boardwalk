@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::peer::{PeerCapabilities, PeerConnectionStatus};
+use crate::registry::PeerConnectionDirection;
 use crate::runtime::ResourceSnapshot;
 
 pub(crate) mod redb;
@@ -87,6 +88,7 @@ pub(crate) struct PeerConnectionStatusRecord {
     pub(crate) connection_id: String,
     pub(crate) peer_id: String,
     pub(crate) route_name: String,
+    pub(crate) direction: PeerConnectionDirection,
     pub(crate) status: PeerConnectionStatus,
     pub(crate) negotiated_capabilities: PeerCapabilities,
     pub(crate) updated_ms: i64,

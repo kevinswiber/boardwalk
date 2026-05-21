@@ -272,7 +272,7 @@ impl Boardwalk {
         let registry = self
             .persist_path
             .as_ref()
-            .map(|p| Registry::open(p).context("opening registry"))
+            .map(|p| Registry::open(p).map_err(storage_unavailable_error))
             .transpose()?
             .map(Arc::new);
 
@@ -418,7 +418,7 @@ fn resolve_resource_id(
 
 #[derive(Debug)]
 enum ResourceIdentityError {
-    Storage(String),
+    Storage,
     Conflict(String),
 }
 
@@ -497,20 +497,26 @@ fn resource_identity_label(spec: &ResourceSpec) -> String {
 
 fn resource_identity_anyhow(err: ResourceIdentityError) -> anyhow::Error {
     match err {
-        ResourceIdentityError::Storage(err) => anyhow::anyhow!("storage: {err}"),
+        ResourceIdentityError::Storage => anyhow::anyhow!("storage unavailable"),
         ResourceIdentityError::Conflict(msg) => anyhow::anyhow!(msg),
     }
 }
 
 fn registration_identity_error(err: ResourceIdentityError) -> ResourceRegistrationError {
     match err {
-        ResourceIdentityError::Storage(err) => ResourceRegistrationError::Internal(err),
+        ResourceIdentityError::Storage => {
+            ResourceRegistrationError::Internal("storage unavailable".into())
+        }
         ResourceIdentityError::Conflict(msg) => ResourceRegistrationError::Conflict(msg),
     }
 }
 
-fn resource_identity_registry_error(err: impl std::fmt::Display) -> ResourceIdentityError {
-    ResourceIdentityError::Storage(err.to_string())
+fn resource_identity_registry_error(_err: impl std::fmt::Display) -> ResourceIdentityError {
+    ResourceIdentityError::Storage
+}
+
+fn storage_unavailable_error(_err: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("storage unavailable")
 }
 
 fn registration_resource_error(err: ResourceError) -> ResourceRegistrationError {

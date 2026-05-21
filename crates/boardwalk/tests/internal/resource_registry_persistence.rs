@@ -14,7 +14,9 @@ use crate::persistence::{
     PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
     ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository, StorageError,
 };
-use crate::registry::{Registry, ResourceRecord};
+use crate::registry::{
+    PeerConnectionDirection, PeerConnectionRecord, PeerRecord, Registry, ResourceRecord,
+};
 use crate::runtime::{
     Actor, DynFuture, Resource, ResourceCtx, ResourceError, ResourceSnapshot, ResourceSpec,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
@@ -143,6 +145,98 @@ fn redb_repositories_adapt_existing_resource_rows() {
 }
 
 #[test]
+fn redb_repositories_adapt_existing_latest_snapshot_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let registry = Registry::open(&db_path).unwrap();
+    let mut snapshot = led_snapshot("off");
+    snapshot.id = "front-panel".into();
+    registry.put_latest_resource_snapshot(&snapshot).unwrap();
+    drop(registry);
+
+    let repos = RedbRepositories::open(&db_path).unwrap();
+
+    let latest = repos
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.resource_id, "front-panel");
+    assert_eq!(latest.node_id, "hub");
+    assert_eq!(latest.revision.as_deref(), Some("rev-1"));
+    assert_eq!(latest.snapshot.state.as_deref(), Some("off"));
+
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record("front-panel", "on"))
+        .unwrap();
+    drop(repos);
+    let registry = Registry::open(&db_path).unwrap();
+    assert_eq!(
+        registry
+            .latest_resource_snapshot("front-panel")
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("on")
+    );
+}
+
+#[test]
+fn redb_repositories_adapt_existing_peer_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let registry = Registry::open(&db_path).unwrap();
+    registry.put_peer(&peer_record("hub-peer")).unwrap();
+    let connection = peer_connection_record("hub-peer");
+    registry.put_peer_connection(&connection).unwrap();
+    drop(registry);
+
+    let repos = RedbRepositories::open(&db_path).unwrap();
+
+    assert_eq!(
+        repos
+            .peer_configs()
+            .get_by_route("hub")
+            .unwrap()
+            .unwrap()
+            .peer_id,
+        "hub-peer"
+    );
+    let latest = repos
+        .peer_connection_status()
+        .latest_by_route("hub")
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.connection_id, connection.connection_id.to_string());
+    assert_eq!(latest.status, PeerConnectionStatus::Connected);
+
+    repos
+        .peer_configs()
+        .put(peer_config("new-hub-peer"))
+        .unwrap();
+    repos
+        .peer_connection_status()
+        .put_latest(connection_status("new-hub-peer"))
+        .unwrap();
+    drop(repos);
+    let registry = Registry::open(&db_path).unwrap();
+    assert_eq!(
+        registry.get_peer_by_route("hub").unwrap().unwrap().peer_id,
+        "new-hub-peer"
+    );
+    assert_eq!(
+        registry
+            .latest_peer_connection("hub")
+            .unwrap()
+            .unwrap()
+            .peer_id,
+        "new-hub-peer"
+    );
+}
+
+#[test]
 fn redb_open_failure_maps_to_storage_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let not_a_directory = dir.path().join("not-a-directory");
@@ -155,6 +249,23 @@ fn redb_open_failure_maps_to_storage_unavailable() {
     };
 
     assert!(matches!(err, StorageError::Unavailable(_)));
+}
+
+#[test]
+fn builder_persistence_open_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_directory = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_directory, b"file").unwrap();
+    let db_path = not_a_directory.join("boardwalk.redb");
+
+    let err = match Boardwalk::new().name("hub").persist(db_path).build() {
+        Ok(_) => panic!("opening persistence under a file should fail"),
+        Err(err) => err,
+    };
+    let message = format!("{err:#}");
+
+    assert_eq!(err.to_string(), "storage unavailable");
+    assert_no_backend_error_details(&message);
 }
 
 #[test]
@@ -176,6 +287,64 @@ fn redb_decode_failure_maps_to_storage_corrupt() {
     let err = repos.resource_identities().get("bad").unwrap_err();
 
     assert!(matches!(err, StorageError::Corrupt(_)));
+}
+
+#[test]
+fn resource_identity_storage_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_resource_row(&db_path);
+
+    let err = match Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor(ActorLed::default())
+        .build()
+    {
+        Ok(_) => panic!("corrupt persisted resource row should fail resource identity lookup"),
+        Err(err) => err,
+    };
+    let message = format!("{err:#}");
+
+    assert_eq!(err.to_string(), "storage unavailable");
+    assert_no_backend_error_details(&message);
+}
+
+#[tokio::test]
+async fn factory_registration_storage_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_resource_row(&db_path);
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("led", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "off",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.unwrap();
+    let err = registrar(ResourceRegistration {
+        kind: "led".into(),
+        name: Some("front".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap_err();
+
+    match err {
+        ResourceRegistrationError::Internal(message) => {
+            assert_eq!(message, "storage unavailable");
+            assert_no_backend_error_details(&message);
+        }
+        other => panic!("expected internal storage error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -443,11 +612,35 @@ fn peer_config(peer_id: &str) -> PeerConfigRecord {
     }
 }
 
+fn peer_record(peer_id: &str) -> PeerRecord {
+    PeerRecord {
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        node_id: Some("node-hub-1".into()),
+        display_name: Some("Hub".into()),
+        allowed_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 1,
+    }
+}
+
 fn connection_status(peer_id: &str) -> PeerConnectionStatusRecord {
     PeerConnectionStatusRecord {
         connection_id: uuid::Uuid::new_v4().to_string(),
         peer_id: peer_id.into(),
         route_name: "hub".into(),
+        direction: PeerConnectionDirection::Acceptor,
+        status: PeerConnectionStatus::Connected,
+        negotiated_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 2,
+    }
+}
+
+fn peer_connection_record(peer_id: &str) -> PeerConnectionRecord {
+    PeerConnectionRecord {
+        connection_id: uuid::Uuid::new_v4(),
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        direction: PeerConnectionDirection::Acceptor,
         status: PeerConnectionStatus::Connected,
         negotiated_capabilities: PeerCapabilities::resource_read(),
         updated_ms: 2,
@@ -467,6 +660,34 @@ fn led_snapshot(state: &str) -> ResourceSnapshot {
         streams: Vec::new(),
         revision: Some("rev-1".into()),
         metadata: serde_json::Map::new(),
+    }
+}
+
+fn write_bad_resource_row(db_path: &Path) {
+    let db = redb::Database::create(db_path).unwrap();
+    let legacy_resources: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resources");
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(legacy_resources).unwrap();
+        table.insert("bad", b"not-json".as_slice()).unwrap();
+    }
+    txn.commit().unwrap();
+}
+
+fn assert_no_backend_error_details(message: &str) {
+    for snippet in [
+        "redb",
+        "io:",
+        "encode:",
+        "decode",
+        "registry",
+        "not-a-directory",
+    ] {
+        assert!(
+            !message.contains(snippet),
+            "public storage error must not expose backend detail `{snippet}`: {message}"
+        );
     }
 }
 
