@@ -305,12 +305,6 @@ impl Boardwalk {
             })
             .unwrap_or_else(|| self.name.clone());
         let local_display_name = self.name.clone();
-        persist_local_node_config(
-            repository_ref(&repositories),
-            &node_id,
-            &local_display_name,
-            &self.name,
-        )?;
         let accepted_peer_tokens = self.accepted_peer_tokens.clone();
         let mut node_builder = NodeBuilder::new(node_id.clone());
         for actor in self.actors {
@@ -327,6 +321,12 @@ impl Boardwalk {
                 .try_build()
                 .map_err(|err| anyhow::anyhow!("build node: {err:?}"))?,
         );
+        persist_local_node_config(
+            repository_ref(&repositories),
+            &node_id,
+            &local_display_name,
+            &self.name,
+        )?;
         let core: Arc<Core> = Core::from_node_with_name_and_persistence(
             self.name.clone(),
             node.clone(),

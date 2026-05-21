@@ -896,6 +896,44 @@ async fn persisted_node_config_survives_display_name_changes() {
 }
 
 #[tokio::test]
+async fn failed_persistent_build_does_not_store_local_node_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let result = Boardwalk::new()
+        .name("failed")
+        .node_id("failed-node")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build();
+    let Err(err) = result else {
+        panic!("expected duplicate id build error");
+    };
+    assert!(
+        err.to_string().contains("duplicate resource id"),
+        "expected duplicate id build error, got {err:?}"
+    );
+
+    let built = Boardwalk::new()
+        .name("clean")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+
+    assert_eq!(built.node.id(), "clean");
+    assert!(
+        built
+            .repositories()
+            .unwrap()
+            .node_config()
+            .get("failed-node")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn non_persistent_node_config_remains_ephemeral() {
     let first = Boardwalk::new()
         .name("hub")
