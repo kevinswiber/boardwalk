@@ -245,7 +245,7 @@ async fn directed_peer_query_forwards_to_one_peer_when_allowed() {
     .unwrap();
 
     assert_eq!(body["properties"]["ql"], "where kind = \"led\"");
-    assert!(body["entities"].as_array().unwrap().len() >= 1);
+    assert!(!body["entities"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

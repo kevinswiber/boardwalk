@@ -321,6 +321,30 @@ fn public_facade_exports_only_intended_api() {
 }
 
 #[test]
+fn peer_policy_internals_are_not_crate_root_exports() {
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+
+    for ident in [
+        "PeerAdmissionConfig",
+        "PeerCapabilities",
+        "PeerConnection",
+        "PeerLinkConfig",
+        "PeerTokenVerifier",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|block| contains_ident(block, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export peer policy internal `{ident}`; found {offenders:#?}"
+        );
+    }
+}
+
+#[test]
 fn runtime_owns_final_resource_and_transition_contracts() {
     use boardwalk::runtime::{
         ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSnapshot,

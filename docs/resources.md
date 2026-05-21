@@ -130,8 +130,8 @@ job handle when transition work continues through another resource.
 the event bus, the shared stream registry, and per-actor command queues.
 `Boardwalk::new().use_actor(...)` is the server builder on top of that
 runtime: it registers actors into a `Node`, wraps the node with the
-reusable route stack, and starts peer tasks when `.link(...)` is
-configured.
+reusable route stack, and starts local-development peer tasks when
+`.link(...)` is configured.
 
 ```rust,ignore
 use std::sync::Arc;

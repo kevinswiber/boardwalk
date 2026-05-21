@@ -386,10 +386,69 @@ fn docs_events_documents_envelope_fields_and_stream_gap() {
 }
 
 #[test]
-fn public_docs_do_not_advertise_wildcard_query_scope() {
+fn public_docs_do_not_advertise_supported_wildcard_query_scope() {
     let s = public_docs(PUBLIC_DOCS);
     assert!(
-        !s.contains("server=*"),
+        !s.contains("server=* by default"),
         "public docs should not advertise wildcard peer query scope before policy and limits exist"
     );
+}
+
+#[test]
+fn peers_doc_matches_current_peer_subprotocol() {
+    let s = read("docs/peers.md");
+    assert!(
+        s.contains("boardwalk-peer/3"),
+        "peers.md should document the current peer tunnel subprotocol"
+    );
+    for stale in ["boardwalk-peer/1", "boardwalk-peer/2"] {
+        assert!(
+            !s.contains(stale),
+            "peers.md must not document stale peer subprotocol `{stale}`"
+        );
+    }
+}
+
+#[test]
+fn peers_doc_describes_admission_capabilities_and_limits() {
+    let s = read("docs/peers.md");
+    for required in [
+        "accept_peer_token",
+        "route name",
+        "expected node id",
+        "resource.read",
+        "resource.query",
+        "stream.subscribe",
+        "transition.invoke",
+        "resource.register",
+        "peer.admin",
+        "server=*",
+        "unsupported-federation-query",
+        "/peer-management",
+        "404",
+    ] {
+        assert!(
+            s.contains(required),
+            "peers.md should document peer boundary detail `{required}`"
+        );
+    }
+}
+
+#[test]
+fn public_docs_do_not_overclaim_federation_or_enterprise_auth() {
+    let s = public_docs(PUBLIC_DOCS);
+    for forbidden in [
+        "OAuth support",
+        "mTLS support",
+        "RBAC support",
+        "recursive federation",
+        "event history storage",
+        "server=* by default",
+        "Worker resource",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public docs should not claim unsupported `{forbidden}`"
+        );
+    }
 }

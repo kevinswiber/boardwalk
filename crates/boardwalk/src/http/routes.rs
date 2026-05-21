@@ -1522,7 +1522,7 @@ async fn peers_upgrade(
         &state.peer_admission,
     ) {
         Ok(admitted) => admitted,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     // Reject duplicate peer names. Two hubs with the same name landing
@@ -1559,7 +1559,7 @@ fn admit_peer_connection(
     connection_id: Uuid,
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
-) -> Result<AdmittedPeerConnection, Response> {
+) -> Result<AdmittedPeerConnection, Box<Response>> {
     if admissions.is_empty() {
         return Ok(AdmittedPeerConnection::local_development(
             peer_name.to_string(),
@@ -1568,16 +1568,19 @@ fn admit_peer_connection(
     }
 
     let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "missing peer token id").into_response())?;
+        .map_err(|_| admission_error(StatusCode::UNAUTHORIZED, "missing peer token id"))?;
     let bearer = bearer_token(headers)
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token").into_response())?;
+        .ok_or_else(|| admission_error(StatusCode::UNAUTHORIZED, "missing bearer token"))?;
 
     let token_matches = admissions
         .iter()
         .filter(|config| config.token_id == token_id)
         .collect::<Vec<_>>();
     if token_matches.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "unknown peer token id").into_response());
+        return Err(admission_error(
+            StatusCode::UNAUTHORIZED,
+            "unknown peer token id",
+        ));
     }
 
     let verified = token_matches
@@ -1585,33 +1588,45 @@ fn admit_peer_connection(
         .filter(|config| config.token_verifier.verify(bearer))
         .collect::<Vec<_>>();
     if verified.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "invalid bearer token").into_response());
+        return Err(admission_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid bearer token",
+        ));
     }
 
     let Some(config) = verified
         .into_iter()
         .find(|config| config.allowed_route_name.as_str() == peer_name)
     else {
-        return Err((StatusCode::FORBIDDEN, "peer token is not valid for route").into_response());
+        return Err(admission_error(
+            StatusCode::FORBIDDEN,
+            "peer token is not valid for route",
+        ));
     };
 
     let node_id = required_header(headers, crate::tunnel::PEER_NODE_ID_HEADER)
-        .map_err(|message| (StatusCode::BAD_REQUEST, message).into_response())?;
+        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))?;
     if let Some(expected) = &config.expected_node_id
         && expected.as_str() != node_id
     {
-        return Err((StatusCode::FORBIDDEN, "peer node id mismatch").into_response());
+        return Err(admission_error(
+            StatusCode::FORBIDDEN,
+            "peer node id mismatch",
+        ));
     }
 
     let requested_capabilities = required_header(headers, crate::tunnel::PEER_CAPABILITIES_HEADER)
-        .map_err(|message| (StatusCode::BAD_REQUEST, message).into_response())
+        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))
         .and_then(|raw| {
             PeerCapabilities::parse_list(raw)
-                .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())
+                .map_err(|err| admission_error(StatusCode::BAD_REQUEST, err.to_string()))
         })?;
     let negotiated_capabilities = requested_capabilities.intersection(config.allowed_capabilities);
     if negotiated_capabilities.is_empty() {
-        return Err((StatusCode::FORBIDDEN, "peer capabilities are not allowed").into_response());
+        return Err(admission_error(
+            StatusCode::FORBIDDEN,
+            "peer capabilities are not allowed",
+        ));
     }
 
     let display_name =
@@ -1625,6 +1640,10 @@ fn admit_peer_connection(
         config.allowed_capabilities,
         negotiated_capabilities,
     ))
+}
+
+fn admission_error(status: StatusCode, message: impl Into<String>) -> Box<Response> {
+    Box::new((status, message.into()).into_response())
 }
 
 fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, String> {
