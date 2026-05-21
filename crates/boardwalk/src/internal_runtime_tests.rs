@@ -10,6 +10,8 @@ mod event_stream_contracts;
 mod explicit_stream_emission;
 #[path = "../tests/internal/peer.rs"]
 mod peer;
+#[path = "../tests/internal/peer_admission.rs"]
+mod peer_admission;
 #[path = "../tests/internal/peer_broadcast_lag_emits_stream_gap.rs"]
 mod peer_broadcast_lag_emits_stream_gap;
 #[path = "../tests/internal/peer_event_wire_shape.rs"]

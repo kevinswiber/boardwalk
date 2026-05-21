@@ -165,44 +165,24 @@ async fn maybe_forward_or_404(
     let Some(mut sender) = senders.sender(target_name).await else {
         return Some(unknown_server_response());
     };
-    let path_and_query = uri
-        .path_and_query()
-        .map(|p| p.as_str())
-        .unwrap_or(uri.path());
-    let target_uri = format!(
-        "http://{}.peer.boardwalk.invalid{}",
-        urlencoding::encode(target_name),
-        path_and_query
-    );
-    let mut builder = http::Request::builder().method(method).uri(target_uri);
-    for (name, value) in headers.iter() {
-        if name == http::header::HOST {
-            continue;
-        }
-        builder = builder.header(name.clone(), value.clone());
-    }
-    let bases = forwarded_external_bases(headers, uri, target_name);
-    builder = builder
-        .header("x-forwarded-host", bases.host)
-        .header("x-forwarded-proto", bases.scheme)
-        .header("x-boardwalk-external-base", bases.http)
-        .header("x-boardwalk-external-ws-base", bases.ws);
-    let req = match builder.body(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return Some(
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("forward build: {e}"),
-                )
-                    .into_response(),
-            );
-        }
-    };
+    let req =
+        match build_peer_forward_request(&state.core.name, target_name, method, uri, headers, body)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Some(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("forward build: {e}"),
+                    )
+                        .into_response(),
+                );
+            }
+        };
     tracing::debug!(
         peer = %target_name,
         method = %req.method(),
-        path = %path_and_query,
+        uri = %req.uri(),
         "forwarding request to peer"
     );
     let resp = match sender.send_request(req).await {
@@ -228,6 +208,39 @@ async fn maybe_forward_or_404(
         Ok(r) => Some(r),
         Err(e) => Some((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response()),
     }
+}
+
+fn build_peer_forward_request(
+    _gateway_name: &str,
+    target_name: &str,
+    method: Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<http::Request<Body>, http::Error> {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or(uri.path());
+    let target_uri = format!(
+        "http://{}.peer.boardwalk.invalid{}",
+        urlencoding::encode(target_name),
+        path_and_query
+    );
+    let mut builder = http::Request::builder().method(method).uri(target_uri);
+    for (name, value) in headers.iter() {
+        if name == http::header::HOST {
+            continue;
+        }
+        builder = builder.header(name.clone(), value.clone());
+    }
+    let bases = forwarded_external_bases(headers, uri, target_name);
+    builder = builder
+        .header("x-forwarded-host", bases.host)
+        .header("x-forwarded-proto", bases.scheme)
+        .header("x-boardwalk-external-base", bases.http)
+        .header("x-boardwalk-external-ws-base", bases.ws);
+    builder.body(body)
 }
 
 /// As above but without a request body — used for routes whose handler
@@ -1328,10 +1341,18 @@ fn query_error_response(ql: &str, e: &crate::query::QueryError) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+    use http::HeaderName;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
     use serde_json::Value as JsonValue;
+    use tokio::sync::Mutex;
 
     use super::*;
-    use crate::runtime::JobHandle;
+    use crate::runtime::{JobHandle, NodeBuilder};
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {
@@ -1394,6 +1415,242 @@ mod tests {
         let body = response_json(resp).await;
         assert_eq!(body["error"], "invalid-job-location");
         assert_eq!(body["field"], "job.location");
+    }
+
+    #[tokio::test]
+    async fn peer_gateway_policy_strips_sensitive_and_hop_by_hop_headers() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state(senders);
+        let headers = sensitive_gateway_headers();
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources/resource-1".parse().unwrap(),
+            &headers,
+            Body::empty(),
+        )
+        .await
+        .expect("remote peer response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        for denied in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "proxy-connection",
+            "connection",
+            "sec-websocket-key",
+            "forwarded",
+            "x-forwarded-for",
+            "x-boardwalk-external-base",
+        ] {
+            assert!(
+                !headers.contains_key(denied),
+                "gateway forwarded denied header {denied}: {headers:?}"
+            );
+        }
+        assert_eq!(
+            headers.get("x-boardwalk-forwarded-by"),
+            Some(&"cloud".to_string())
+        );
+        assert!(
+            headers.contains_key("x-boardwalk-correlation-id"),
+            "gateway should add a fresh correlation id: {headers:?}"
+        );
+    }
+
+    #[test]
+    fn peer_gateway_policy_strips_hop_by_hop_headers_before_h2_send() {
+        let req = build_peer_forward_request(
+            "cloud",
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources/resource-1".parse().unwrap(),
+            &sensitive_gateway_headers(),
+            Body::empty(),
+        )
+        .expect("forward request");
+        let headers = req.headers();
+
+        for denied in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "proxy-connection",
+            "connection",
+            "sec-websocket-key",
+            "forwarded",
+            "x-forwarded-for",
+            "x-boardwalk-external-base",
+        ] {
+            assert!(
+                !headers.contains_key(denied),
+                "forward request contains denied header {denied}: {headers:?}"
+            );
+        }
+        assert_eq!(
+            headers
+                .get("x-boardwalk-forwarded-by")
+                .and_then(|value| value.to_str().ok()),
+            Some("cloud")
+        );
+        assert!(
+            headers.contains_key("x-boardwalk-correlation-id"),
+            "gateway should add a fresh correlation id: {headers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_gateway_policy_rejects_unknown_peer_routes_before_forwarding() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state(senders);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/admin/raw".parse().unwrap(),
+            &HeaderMap::new(),
+            Body::empty(),
+        )
+        .await
+        .expect("gateway denial response");
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(
+            seen.lock().await.is_empty(),
+            "unknown peer route should not be forwarded"
+        );
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordedForward {
+        headers: std::collections::BTreeMap<String, String>,
+    }
+
+    #[derive(Clone)]
+    struct RecordingPeerSenders {
+        sender: hyper::client::conn::http2::SendRequest<Body>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerSenders for RecordingPeerSenders {
+        async fn sender(
+            &self,
+            name: &str,
+        ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
+            (name == "hub").then(|| self.sender.clone())
+        }
+
+        async fn names(&self) -> Vec<String> {
+            vec!["hub".to_string()]
+        }
+    }
+
+    async fn recording_peer_senders() -> (
+        Arc<dyn PeerSenders>,
+        Arc<Mutex<Vec<RecordedForward>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (sender, client_conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, Body>(TokioIo::new(client_io))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_conn.await;
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_service = seen.clone();
+        let service = service_fn(move |req: http::Request<hyper::body::Incoming>| {
+            let seen_for_request = seen_for_service.clone();
+            async move {
+                let headers = req
+                    .headers()
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .to_str()
+                            .ok()
+                            .map(|value| (name.as_str().to_string(), value.to_string()))
+                    })
+                    .collect();
+                seen_for_request
+                    .lock()
+                    .await
+                    .push(RecordedForward { headers });
+                Ok::<_, Infallible>(http::Response::new(Full::new(Bytes::from_static(b"ok"))))
+            }
+        });
+        let server = tokio::spawn(async move {
+            let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(server_io), service)
+                .await;
+        });
+
+        (Arc::new(RecordingPeerSenders { sender }), seen, server)
+    }
+
+    fn test_state(peer_senders: Arc<dyn PeerSenders>) -> AppState {
+        let node = Arc::new(NodeBuilder::new("cloud").try_build().unwrap());
+        AppState {
+            core: Core::from_node(node),
+            peer_handler: None,
+            peer_init: PeerInitState::default(),
+            peer_senders: Some(peer_senders),
+            peer_streams: super::super::peer_streams::PeerStreamHub::new(),
+            resource_registrar: None,
+        }
+    }
+
+    fn sensitive_gateway_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::HOST,
+            HeaderValue::from_static("external.example"),
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer public-client-token"),
+        );
+        headers.insert(
+            http::header::COOKIE,
+            HeaderValue::from_static("session=private"),
+        );
+        headers.insert(
+            HeaderName::from_static("proxy-authorization"),
+            HeaderValue::from_static("Basic secret"),
+        );
+        headers.insert(
+            HeaderName::from_static("proxy-connection"),
+            HeaderValue::from_static("keep-alive"),
+        );
+        headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("upgrade"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-websocket-key"),
+            HeaderValue::from_static("not-for-h2-forward"),
+        );
+        headers.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=198.51.100.10"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.10"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-boardwalk-external-base"),
+            HeaderValue::from_static("https://spoofed.example/servers/hub/"),
+        );
+        headers
     }
 
     async fn response_json(resp: Response) -> JsonValue {
