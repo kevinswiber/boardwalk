@@ -55,9 +55,6 @@ impl Hrefs {
     pub fn events_url(&self) -> Url {
         self.ws.join("events").unwrap()
     }
-    pub fn peer_management_url(&self) -> Url {
-        self.http.join("peer-management").unwrap()
-    }
     pub fn stream_url(&self, ty: &str, id: &str, stream: &str) -> Url {
         let topic = format!("{}/{}/{}/{}", self.server, ty, id, stream);
         let mut u = self.ws.join("events").unwrap();
@@ -94,10 +91,6 @@ impl RenderPolicy {
 
     fn can_invoke_transition(self) -> bool {
         self.allows(PeerCapabilities::transition_invoke())
-    }
-
-    fn can_admin_peers(self) -> bool {
-        self.allows(PeerCapabilities::peer_admin())
     }
 }
 
@@ -136,9 +129,6 @@ pub(crate) fn render_root(
         e = e.with_link(
             Link::rels([rels::PEER, rels::SERVER], url).with_title(peer.route_name.clone()),
         );
-    }
-    if policy.can_admin_peers() {
-        e = e.with_link(Link::new(rels::PEER_MANAGEMENT, h.peer_management_url()));
     }
     if policy.can_stream() {
         e = e.with_link(Link::new(rels::EVENTS, h.events_url()));

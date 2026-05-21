@@ -32,6 +32,16 @@ async fn boot_pair() -> Pair {
     boot_pair_with_capabilities(None::<[&str; 0]>).await
 }
 
+async fn boot_cloud() -> SocketAddr {
+    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, cloud.router).await.unwrap();
+    });
+    addr
+}
+
 async fn boot_pair_with_capabilities<I, S>(capabilities: Option<I>) -> Pair
 where
     I: IntoIterator<Item = S> + Clone,
@@ -105,6 +115,30 @@ async fn peer_read_without_resource_read_is_403() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn peer_management_is_hidden_without_peer_admin() {
+    let addr = boot_cloud().await;
+
+    let response = reqwest::get(format!("http://{addr}/peer-management"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn root_does_not_link_peer_management_without_peer_admin() {
+    let addr = boot_cloud().await;
+    let root: Json = reqwest::get(format!("http://{addr}/"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(!links(&root).any(link_has_peer_management_rel));
 }
 
 #[tokio::test]
@@ -420,6 +454,10 @@ fn link_has_peer_server_rel(link: &Json) -> bool {
 fn link_has_monitor_rel(link: &Json) -> bool {
     link_rels(link).contains(&"monitor")
         || link_rels(link).contains(&"https://rels.boardwalk.to/object-stream")
+}
+
+fn link_has_peer_management_rel(link: &Json) -> bool {
+    link_rels(link).contains(&"https://rels.boardwalk.to/peer-management")
 }
 
 fn link_rels(link: &Json) -> Vec<&str> {

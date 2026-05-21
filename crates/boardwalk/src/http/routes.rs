@@ -144,7 +144,6 @@ pub(crate) fn router_with(state: AppState) -> Router {
             "/servers/{name}/events/unsubscribe",
             axum::routing::post(events_unsubscribe),
         )
-        .route("/peer-management", get(peer_management_get))
         .route("/events", get(events_ws))
         .route("/peers/{name}", any(peers_upgrade))
         .route("/_initiate_peer/{id}", get(initiate_peer))
@@ -1480,16 +1479,6 @@ async fn meta_type_response(
         return (StatusCode::NOT_FOUND, "unknown type").into_response();
     };
     siren_response(render::render_meta_type(&h, &spec))
-}
-
-async fn peer_management_get() -> Response {
-    Json(serde_json::json!({
-        "class": ["peer-management"],
-        "actions": [],
-        "entities": [],
-        "links": [],
-    }))
-    .into_response()
 }
 
 /// Wire-level subprotocol token for the multiplex event WS.
