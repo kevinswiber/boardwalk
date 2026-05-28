@@ -105,6 +105,11 @@ specific peer's `resource.read`; query actions require `resource.query`;
 transition actions require `transition.invoke`; and stream links require
 `stream.subscribe`.
 
+Persistent peer records keep peer config separate from latest connection
+status. The peer config is the durable route identity and admission
+metadata; latest connection status tracks the current or most recent
+tunnel connection without changing that peer identity.
+
 ## Queries
 
 Use the same CaQL syntax for local and directed peer queries:

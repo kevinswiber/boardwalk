@@ -14,6 +14,15 @@ use super::resource::{ResourceCtx, ResourceError, ResourceSnapshot};
 use super::transition::{ActorSpec, ResourceSpec};
 use crate::events::{EventBus, StreamRegistry};
 
+pub(crate) enum ResourceSnapshotRead {
+    Available(ResourceSnapshot),
+    Unavailable {
+        resource_id: String,
+        placeholder: ResourceSnapshot,
+    },
+    Failed,
+}
+
 /// Builder for a node runtime. Constructs the event bus, the shared
 /// `StreamRegistry`, and the directory using the same single-registry
 /// construction pattern the event-envelope work established.
@@ -208,6 +217,18 @@ impl Node {
     /// order. Each snapshot's `id`/`kind`/`node` are sourced from the
     /// directory entry rather than the actor's own report.
     pub async fn resources(&self) -> Vec<ResourceSnapshot> {
+        self.resource_snapshot_reads()
+            .await
+            .into_iter()
+            .filter_map(|read| match read {
+                ResourceSnapshotRead::Available(snapshot) => Some(snapshot),
+                ResourceSnapshotRead::Unavailable { placeholder, .. } => Some(placeholder),
+                ResourceSnapshotRead::Failed => None,
+            })
+            .collect()
+    }
+
+    pub(crate) async fn resource_snapshot_reads(&self) -> Vec<ResourceSnapshotRead> {
         let entries = {
             let dir = self.directory.read().await;
             dir.entries().to_vec()
@@ -215,15 +236,31 @@ impl Node {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let ctx = ResourceCtx::new_test();
-            match entry.snapshot(ctx, &self.id).await {
-                Ok(snap) => out.push(snap),
-                Err(ResourceError::Unavailable(_)) => {
-                    out.push(entry.unavailable_snapshot(&self.id))
-                }
-                Err(_) => {}
-            }
+            out.push(match entry.snapshot(ctx, &self.id).await {
+                Ok(snapshot) => ResourceSnapshotRead::Available(snapshot),
+                Err(ResourceError::Unavailable(_)) => ResourceSnapshotRead::Unavailable {
+                    resource_id: entry.id.clone(),
+                    placeholder: entry.unavailable_snapshot(&self.id),
+                },
+                Err(_) => ResourceSnapshotRead::Failed,
+            });
         }
         out
+    }
+
+    pub(crate) async fn resource_snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<ResourceSnapshot>, ResourceError> {
+        let entry = {
+            let dir = self.directory.read().await;
+            dir.get_by_id(id)
+        };
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let ctx = ResourceCtx::new_test();
+        entry.snapshot(ctx, &self.id).await.map(Some)
     }
 
     pub(crate) async fn actor_specs(&self) -> Vec<ActorSpec> {

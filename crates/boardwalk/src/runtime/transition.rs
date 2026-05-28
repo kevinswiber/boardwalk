@@ -53,7 +53,7 @@ pub struct StreamSpec {
 }
 
 /// Field descriptor for a transition input (becomes a Siren field).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSpec {
     pub name: String,
     pub type_: String,
@@ -65,7 +65,7 @@ pub struct FieldSpec {
 /// the updated `ResourceSnapshot` directly; `AsyncJob` transitions
 /// hand back a typed `JobHandle` that the caller follows on a job
 /// resource.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionResultKind {
     #[default]
     Sync,
@@ -73,7 +73,7 @@ pub enum TransitionResultKind {
 }
 
 /// Re-invocation contract for a transition.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Idempotency {
     #[default]
     None,
@@ -86,7 +86,7 @@ pub enum Idempotency {
 /// `UnsafeIdempotent` mutates but repeats cleanly (PUT/DELETE-like), and
 /// `Unsafe` makes no idempotency claim (POST-like). For Idempotency-Key
 /// participation, see [`Idempotency`].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Effect {
     Safe,
     UnsafeIdempotent,
@@ -94,7 +94,7 @@ pub enum Effect {
     Unsafe,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TransitionSpec {
     pub name: TransitionName,
     pub title: Option<String>,

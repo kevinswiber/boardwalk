@@ -18,7 +18,10 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::http::{PeerInitState, PeerSenders};
-use crate::registry::{PeerConnectionDirection, PeerConnectionRecord, PeerRecord, Registry};
+use crate::persistence::{
+    DefaultRepositories, PeerConfigRecord, PeerConnectionDirection, PeerConnectionStatusRecord,
+    Repositories,
+};
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -661,7 +664,7 @@ pub struct PeerAcceptors {
     contexts: Arc<tokio::sync::Mutex<HashMap<String, AdmittedPeerConnection>>>,
     confirmations: Arc<std::sync::atomic::AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
-    registry: Arc<std::sync::Mutex<Option<Arc<Registry>>>>,
+    repositories: Arc<std::sync::Mutex<Option<Arc<DefaultRepositories>>>>,
 }
 
 impl PeerAcceptors {
@@ -669,10 +672,8 @@ impl PeerAcceptors {
         Self::default()
     }
 
-    /// Install a registry. Subsequent `on_upgraded` calls will persist
-    /// PeerRecords on confirmation and update status on disconnect.
-    pub fn with_registry(&self, registry: Arc<Registry>) {
-        *self.registry.lock().unwrap() = Some(registry);
+    pub(crate) fn with_repositories(&self, repositories: Arc<DefaultRepositories>) {
+        *self.repositories.lock().unwrap() = Some(repositories);
     }
 
     #[allow(dead_code)]
@@ -708,7 +709,7 @@ impl PeerAcceptors {
         let peer_name_for_task = peer_name.clone();
         let admitted_for_task = admitted.clone();
         let task = tokio::spawn(async move {
-            let registry_snapshot = acceptors.registry.lock().unwrap().clone();
+            let repositories_snapshot = acceptors.repositories.lock().unwrap().clone();
             acceptors
                 .contexts
                 .lock()
@@ -724,9 +725,11 @@ impl PeerAcceptors {
             .await
             {
                 Ok(()) => {
-                    if let Some(reg) = &registry_snapshot {
-                        write_peer(reg, &admitted_for_task, PeerConnectionStatus::Connected);
-                    }
+                    write_peer(
+                        repository_ref(repositories_snapshot.as_deref()),
+                        &admitted_for_task,
+                        PeerConnectionStatus::Connected,
+                    );
                     acceptors
                         .confirmations
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -735,9 +738,11 @@ impl PeerAcceptors {
                 }
                 Err(e) => {
                     acceptors.contexts.lock().await.remove(&peer_name_for_task);
-                    if let Some(reg) = &registry_snapshot {
-                        write_peer(reg, &admitted_for_task, PeerConnectionStatus::Failed);
-                    }
+                    write_peer(
+                        repository_ref(repositories_snapshot.as_deref()),
+                        &admitted_for_task,
+                        PeerConnectionStatus::Failed,
+                    );
                     tracing::warn!(peer = %peer_name_for_task, error = %e, "peer acceptor failed");
                     false
                 }
@@ -747,16 +752,16 @@ impl PeerAcceptors {
             // The senders entry is cleaned up by the conn-cleanup task
             // inside drive_acceptor; once that fires, transition to
             // disconnected.
-            if let Some(reg) = &registry_snapshot {
-                // Best-effort: if the sender is still there, leave the
-                // status alone; otherwise mark disconnected.
-                let senders = acceptors.senders.lock().await;
-                if should_record_disconnected(
-                    drive_succeeded,
-                    senders.contains_key(&peer_name_for_task),
-                ) {
-                    write_peer(reg, &admitted_for_task, PeerConnectionStatus::Disconnected);
-                }
+            let senders = acceptors.senders.lock().await;
+            if should_record_disconnected(
+                drive_succeeded,
+                senders.contains_key(&peer_name_for_task),
+            ) {
+                write_peer(
+                    repository_ref(repositories_snapshot.as_deref()),
+                    &admitted_for_task,
+                    PeerConnectionStatus::Disconnected,
+                );
             }
         });
         let mut inner = self.inner.lock().await;
@@ -856,8 +861,12 @@ fn should_record_disconnected(drive_succeeded: bool, sender_active: bool) -> boo
     drive_succeeded && !sender_active
 }
 
+fn repository_ref(repositories: Option<&DefaultRepositories>) -> Option<&dyn Repositories> {
+    repositories.map(|repositories| repositories as &dyn Repositories)
+}
+
 fn write_peer(
-    registry: &Registry,
+    repositories: Option<&dyn Repositories>,
     admitted: &AdmittedPeerConnection,
     status: PeerConnectionStatus,
 ) {
@@ -865,28 +874,32 @@ fn write_peer(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let peer = PeerRecord {
+    let Some(repositories) = repositories else {
+        return;
+    };
+    if let Err(e) = repositories.peer_configs().put(PeerConfigRecord {
         peer_id: admitted.peer_id.clone(),
         route_name: admitted.route_name.clone(),
         node_id: admitted.node_id.clone(),
         display_name: admitted.display_name.clone(),
         allowed_capabilities: admitted.allowed_capabilities,
         updated_ms: now_ms,
-    };
-    if let Err(e) = registry.put_peer(&peer) {
-        tracing::warn!(error = %e, "failed to persist peer record");
+    }) {
+        tracing::warn!(error = %e, "failed to persist peer config");
     }
-    let connection = PeerConnectionRecord {
-        connection_id: admitted.connection_id,
-        peer_id: admitted.peer_id.clone(),
-        route_name: admitted.route_name.clone(),
-        direction: PeerConnectionDirection::Acceptor,
-        status,
-        negotiated_capabilities: admitted.negotiated_capabilities,
-        updated_ms: now_ms,
-    };
-    if let Err(e) = registry.put_peer_connection(&connection) {
-        tracing::warn!(error = %e, "failed to persist peer connection record");
+    if let Err(e) = repositories
+        .peer_connection_status()
+        .put_latest(PeerConnectionStatusRecord {
+            connection_id: admitted.connection_id.to_string(),
+            peer_id: admitted.peer_id.clone(),
+            route_name: admitted.route_name.clone(),
+            direction: PeerConnectionDirection::Acceptor,
+            status,
+            negotiated_capabilities: admitted.negotiated_capabilities,
+            updated_ms: now_ms,
+        })
+    {
+        tracing::warn!(error = %e, "failed to persist peer connection status");
     }
 }
 

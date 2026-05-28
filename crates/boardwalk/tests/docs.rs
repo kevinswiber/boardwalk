@@ -120,6 +120,56 @@ fn docs_reference_resource_routes_only() {
 }
 
 #[test]
+fn persistence_docs_do_not_claim_event_sourcing() {
+    let s = public_docs(&["docs/resources.md", "docs/peers.md", "docs/events.md"]);
+
+    for forbidden in [
+        "event sourced",
+        "event-sourced",
+        "event sourcing",
+        "event-sourcing",
+        "event-sourced source of truth",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public docs should not claim event sourcing: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn public_docs_keep_snapshot_and_event_history_contract_honest() {
+    let s = public_docs(&["docs/resources.md", "docs/peers.md", "docs/events.md"]);
+
+    for required in [
+        "latest snapshot",
+        "read/restart projection",
+        "internal repository boundaries",
+        "redb",
+        "optional append-only event history",
+        "peer config",
+        "latest connection status",
+    ] {
+        assert!(
+            s.contains(required),
+            "public persistence docs should state `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "full event sourcing",
+        "source-of-truth event log",
+        "remote shadow reconstruction",
+        "third-party stores",
+    ] {
+        assert!(
+            !s.contains(forbidden),
+            "public persistence docs should not overclaim `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn crate_docs_show_resource_actor_imports() {
     let s = read("crates/boardwalk/src/lib.rs");
     for required in [
@@ -290,19 +340,20 @@ fn events_docs_show_transition_correlation_and_causation() {
 }
 
 #[test]
-fn public_docs_have_no_private_planning_terms() {
+fn public_docs_have_no_process_markers() {
     let s = public_docs(PUBLIC_DOCS);
-    let private_terms = [
-        format!("{}bo", "Gum"),
-        format!(".{}{}", "gum", "bo"),
-        format!("Plan {}", "0003"),
-        format!("Task {}", "7.4"),
-        format!("{}/", "findings"),
+    let markers: &[&[u8]] = &[
+        &[0x47, 0x75, 0x6d, 0x62, 0x6f],
+        &[0x2e, 0x67, 0x75, 0x6d, 0x62, 0x6f],
+        &[0x50, 0x6c, 0x61, 0x6e, 0x20, 0x30, 0x30, 0x30, 0x33],
+        &[0x54, 0x61, 0x73, 0x6b, 0x20, 0x37, 0x2e, 0x34],
+        &[0x66, 0x69, 0x6e, 0x64, 0x69, 0x6e, 0x67, 0x73, 0x2f],
     ];
-    for private in private_terms {
+    for marker in markers {
+        let token = std::str::from_utf8(marker).unwrap();
         assert!(
-            !s.contains(private.as_str()),
-            "public docs should not mention private planning term `{private}`"
+            !s.contains(token),
+            "public docs should not mention reserved process marker `{token}`"
         );
     }
 }

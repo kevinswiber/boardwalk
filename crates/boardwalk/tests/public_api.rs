@@ -214,6 +214,75 @@ fn source_surface_does_not_describe_transitional_runtime_adapters() {
     );
 }
 
+#[test]
+fn repository_callers_do_not_name_storage_backend_errors() {
+    let server = read("crates/boardwalk/src/server.rs");
+
+    assert!(
+        !server.contains("redb::"),
+        "server-side repository callers must not name redb types"
+    );
+    assert!(
+        !server.contains("RegistryError"),
+        "server-side repository callers must not expose registry errors"
+    );
+}
+
+#[test]
+fn peer_config_writes_use_repository_boundary() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+
+    assert!(
+        !contains_call(&peer, "put_peer"),
+        "peer durable config writes should use the repository boundary"
+    );
+}
+
+#[test]
+fn peer_connection_status_writes_use_repository_boundary() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+
+    assert!(
+        !contains_call(&peer, "put_peer_connection"),
+        "peer connection status writes should use the repository boundary"
+    );
+}
+
+#[test]
+fn event_history_repository_boundary_is_optional_append_only() {
+    let persistence = read("crates/boardwalk/src/persistence/mod.rs");
+
+    assert!(
+        persistence.contains("struct EventHistoryRecord"),
+        "persistence should name the reserved event history record type"
+    );
+    assert!(
+        persistence.contains("trait EventHistoryRepository"),
+        "persistence should reserve an event history repository boundary"
+    );
+    assert!(
+        persistence
+            .contains("fn append(&self, event: EventHistoryRecord) -> Result<(), StorageError>;"),
+        "event history should only reserve append writes"
+    );
+    assert!(
+        persistence.contains(
+            "fn get(&self, event_id: &str) -> Result<Option<EventHistoryRecord>, StorageError>;"
+        ),
+        "event history should only reserve lookup by event id"
+    );
+    assert!(
+        persistence.contains("fn event_history(&self) -> Option<&dyn EventHistoryRepository>"),
+        "event history should remain optional in the repository facade"
+    );
+    for forbidden in ["fn replay", "fn retention", "fn catch_up", "fn rebuild"] {
+        assert!(
+            !persistence.contains(forbidden),
+            "event history boundary should not introduce runtime replay behavior: {forbidden}"
+        );
+    }
+}
+
 #[derive(Default)]
 struct FacadeLed;
 
@@ -310,12 +379,53 @@ fn public_facade_exports_only_intended_api() {
 
     let lib = read("crates/boardwalk/src/lib.rs");
     for module in [
-        "core", "http", "peer", "registry", "server", "siren", "tunnel",
+        "core",
+        "http",
+        "peer",
+        "persistence",
+        "registry",
+        "server",
+        "siren",
+        "tunnel",
     ] {
         let declaration = format!("pub mod {module};");
         assert!(
             !lib.contains(&declaration),
             "crate root must not expose broad internal module `{module}`"
+        );
+    }
+}
+
+#[test]
+fn persistence_repository_traits_are_not_public_api() {
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+
+    assert!(
+        !lib.contains("pub mod persistence"),
+        "repository internals must stay out of the public module surface"
+    );
+    assert!(
+        !lib.contains("pub use persistence"),
+        "repository internals must stay out of crate-root re-exports"
+    );
+    for ident in [
+        "Repositories",
+        "ResourceIdentityRepository",
+        "ResourceSnapshotRepository",
+        "NodeConfigRepository",
+        "PeerConfigRepository",
+        "PeerConnectionStatusRepository",
+        "EventHistoryRepository",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|block| contains_ident(block, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export persistence internal `{ident}`; found {offenders:#?}"
         );
     }
 }
@@ -411,26 +521,6 @@ fn runtime_owns_final_resource_and_transition_contracts() {
         assert!(
             offenders.is_empty(),
             "runtime facade must not publicly re-export implementation helper `{snippet}`; found {offenders:#?}"
-        );
-    }
-}
-
-#[test]
-fn registry_uses_resources_table_without_old_table_fallback() {
-    let registry = read("crates/boardwalk/src/registry.rs");
-    assert!(
-        registry.contains("TableDefinition::new(\"resources\")"),
-        "resource registry should persist records in the `resources` table"
-    );
-    for snippet in [
-        "TableDefinition::new(\"devices\")",
-        "open_table(DEVICES",
-        "DEVICE_TABLE",
-        "devices table",
-    ] {
-        assert!(
-            !registry.contains(snippet),
-            "resource registry must not keep old persistence fallback `{snippet}`"
         );
     }
 }

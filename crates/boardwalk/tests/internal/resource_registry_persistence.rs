@@ -1,7 +1,301 @@
 //! Resource registry persistence contract tests.
 
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+use axum::body::Body;
+use axum::http::{Request as HttpRequest, StatusCode};
+use tower::ServiceExt;
+
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
+use crate::http::{ResourceRegistration, ResourceRegistrationError};
+use crate::peer::{PeerCapabilities, PeerConnectionStatus};
+use crate::persistence::redb::RedbRepositories;
+use crate::persistence::{
+    EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRecord,
+    NodeConfigRepository, PeerConfigRecord, PeerConfigRepository, PeerConnectionDirection,
+    PeerConnectionStatusRecord, PeerConnectionStatusRepository, Repositories,
+    ResourceIdentityRecord, ResourceIdentityRepository, ResourceSnapshotRecord,
+    ResourceSnapshotRepository, StorageError,
+};
+use crate::runtime::{
+    Actor, DynFuture, RequestCtx, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
+    ResourceSpec, TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
+};
+
+#[test]
+fn resource_identity_and_latest_snapshot_are_distinct_repository_records() {
+    let (repos, _dir) = temp_repositories();
+    let resource_id = uuid::Uuid::new_v4().to_string();
+
+    repos
+        .resource_identities()
+        .put(identity_record(&resource_id))
+        .unwrap();
+
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record(&resource_id, "off"))
+        .unwrap();
+
+    assert_eq!(
+        repos
+            .resource_identities()
+            .find_by_identity_key(&IdentityKey::static_name("led", "front"))
+            .unwrap()
+            .unwrap()
+            .id,
+        resource_id
+    );
+    assert_eq!(
+        repos
+            .resource_snapshots()
+            .latest(&resource_id)
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .state
+            .as_deref(),
+        Some("off")
+    );
+}
+
+#[test]
+fn repository_facade_exposes_domain_repositories() {
+    let repos = MemoryRepositories::default();
+
+    let _: &dyn ResourceIdentityRepository = repos.resource_identities();
+    let _: &dyn ResourceSnapshotRepository = repos.resource_snapshots();
+    let _: &dyn NodeConfigRepository = repos.node_config();
+    let _: &dyn PeerConfigRepository = repos.peer_configs();
+    let _: &dyn PeerConnectionStatusRepository = repos.peer_connection_status();
+    let _: Option<&dyn EventHistoryRepository> = repos.event_history();
+
+    let facade: &dyn Repositories = &repos;
+    assert!(facade.event_history().is_none());
+}
+
+#[test]
+fn redb_repositories_round_trip_domain_records() {
+    let (repos, _dir) = temp_redb_repositories();
+
+    repos
+        .resource_identities()
+        .put(identity_record("front"))
+        .unwrap();
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record("front", "off"))
+        .unwrap();
+    repos.node_config().put(node_config("hub")).unwrap();
+    repos.peer_configs().put(peer_config("hub-peer")).unwrap();
+    repos
+        .peer_connection_status()
+        .put_latest(connection_status("hub-peer"))
+        .unwrap();
+
+    assert!(
+        repos
+            .resource_snapshots()
+            .latest("front")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repos
+            .peer_connection_status()
+            .latest_by_route("hub")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn redb_open_failure_maps_to_storage_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_directory = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_directory, b"file").unwrap();
+    let db_path = not_a_directory.join("boardwalk.redb");
+
+    let err = match RedbRepositories::open(&db_path) {
+        Ok(_) => panic!("opening under a file should fail"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, StorageError::Unavailable(_)));
+}
+
+#[test]
+fn builder_persistence_open_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_directory = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_directory, b"file").unwrap();
+    let db_path = not_a_directory.join("boardwalk.redb");
+
+    let err = match Boardwalk::new().name("hub").persist(db_path).build() {
+        Ok(_) => panic!("opening persistence under a file should fail"),
+        Err(err) => err,
+    };
+    let message = format!("{err:#}");
+
+    assert_eq!(err.to_string(), "storage unavailable");
+    assert_no_backend_error_details(&message);
+}
+
+#[test]
+fn redb_decode_failure_maps_to_storage_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_resource_identity_row(&db_path, "bad");
+
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    let err = repos.resource_identities().get("bad").unwrap_err();
+
+    assert!(matches!(err, StorageError::Corrupt(_)));
+}
+
+#[test]
+fn resource_identity_storage_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_resource_identity_row(&db_path, "bad");
+
+    let err = match Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor(ActorLed::default())
+        .build()
+    {
+        Ok(_) => panic!("corrupt persisted resource row should fail resource identity lookup"),
+        Err(err) => err,
+    };
+    let message = format!("{err:#}");
+
+    assert_eq!(err.to_string(), "storage unavailable");
+    assert_no_backend_error_details(&message);
+}
+
+#[tokio::test]
+async fn factory_registration_storage_error_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_resource_identity_row(&db_path, "bad");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("led", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "off",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.unwrap();
+    let err = registrar(ResourceRegistration {
+        kind: "led".into(),
+        name: Some("front".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap_err();
+
+    match err {
+        ResourceRegistrationError::Internal(message) => {
+            assert_eq!(message, "storage unavailable");
+            assert_no_backend_error_details(&message);
+        }
+        other => panic!("expected internal storage error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn resource_fallback_storage_error_response_is_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    write_bad_latest_snapshot_row(&db_path, "front-panel");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let response = built
+        .router
+        .oneshot(
+            HttpRequest::builder()
+                .uri("/resources/front-panel")
+                .body(Body::empty())
+                .expect("resource request builds"),
+        )
+        .await
+        .expect("resource request completes");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response_text(response).await;
+
+    assert_eq!(body, "storage unavailable");
+    assert_no_backend_error_details(&body);
+}
+
+#[test]
+fn resource_identity_repository_rejects_key_reassignment() {
+    let (repos, _dir) = temp_repositories();
+    let first_id = uuid::Uuid::new_v4().to_string();
+    let second_id = uuid::Uuid::new_v4().to_string();
+
+    repos
+        .resource_identities()
+        .put(identity_record(&first_id))
+        .unwrap();
+    let err = repos
+        .resource_identities()
+        .put(identity_record(&second_id))
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("storage conflict"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn resource_identity_repository_replaces_stale_keys_for_same_record() {
+    let (repos, _dir) = temp_repositories();
+    let resource_id = uuid::Uuid::new_v4().to_string();
+    repos
+        .resource_identities()
+        .put(identity_record(&resource_id))
+        .unwrap();
+
+    let replacement = ResourceIdentityRecord {
+        identity_keys: vec![IdentityKey::static_name("led", "back")],
+        ..identity_record(&resource_id)
+    };
+    repos.resource_identities().put(replacement).unwrap();
+
+    assert!(
+        repos
+            .resource_identities()
+            .find_by_identity_key(&IdentityKey::static_name("led", "front"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repos
+            .resource_identities()
+            .find_by_identity_key(&IdentityKey::static_name("led", "back"))
+            .unwrap()
+            .unwrap()
+            .id,
+        resource_id
+    );
+}
 
 #[tokio::test]
 async fn resource_id_is_stable_across_builds() {
@@ -34,6 +328,520 @@ async fn resource_id_is_stable_across_builds() {
 }
 
 #[tokio::test]
+async fn persistent_static_resource_identity_records_kind_name_and_identity_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor(ActorLed::default())
+        .build()
+        .unwrap();
+
+    let id = built.core.list_resources().await[0].id.clone();
+    let record = built
+        .repositories()
+        .unwrap()
+        .resource_identities()
+        .get(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.kind, "led");
+    assert_eq!(record.name.as_deref(), Some("LED"));
+    assert!(
+        record
+            .identity_keys
+            .iter()
+            .any(|key| { key.namespace == "static" && key.kind == "led" && key.key == "LED" })
+    );
+}
+
+#[tokio::test]
+async fn persistent_factory_resource_identity_records_kind_name_and_identity_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("job", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "queued",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.as_ref().unwrap();
+
+    let id = registrar(ResourceRegistration {
+        kind: "job".into(),
+        name: Some("build-1".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap();
+
+    let record = built
+        .repositories()
+        .unwrap()
+        .resource_identities()
+        .get(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.kind, "job");
+    assert_eq!(record.name.as_deref(), Some("build-1"));
+    assert!(
+        record
+            .identity_keys
+            .iter()
+            .any(|key| { key.namespace == "static" && key.kind == "job" && key.key == "build-1" })
+    );
+}
+
+#[tokio::test]
+async fn factory_registration_persists_initial_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .register_actor_factory("job", |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "queued",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.as_ref().unwrap();
+
+    let id = registrar(ResourceRegistration {
+        kind: "job".into(),
+        name: Some("build-1".into()),
+        id: None,
+        fields: HashMap::new(),
+    })
+    .await
+    .unwrap();
+
+    let latest = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest(&id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(latest.resource_id, id);
+    assert_eq!(latest.node_id, "hub");
+    assert_eq!(latest.snapshot.kind, "job");
+    assert_eq!(latest.snapshot.name.as_deref(), Some("build-1"));
+    assert_eq!(latest.snapshot.state.as_deref(), Some("queued"));
+    assert!(latest.updated_ms > 0);
+}
+
+#[tokio::test]
+async fn successful_transition_updates_latest_persisted_snapshot_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build()
+        .unwrap();
+
+    built
+        .core
+        .run_resource_transition(
+            "front-panel",
+            "turn-on",
+            TransitionInput::default(),
+            RequestCtx::default(),
+        )
+        .await
+        .unwrap();
+
+    let latest = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(latest.snapshot.state.as_deref(), Some("on"));
+    assert!(latest.updated_ms > 0);
+}
+
+#[tokio::test]
+async fn resource_reads_do_not_rewrite_unchanged_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+
+    built
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    let first = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    built
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    let second = built
+        .repositories()
+        .unwrap()
+        .resource_snapshots()
+        .latest("front-panel")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(second.updated_ms, first.updated_ms);
+    assert_eq!(second.snapshot.state.as_deref(), Some("off"));
+}
+
+#[tokio::test]
+async fn persisted_latest_snapshot_is_used_when_actor_is_unavailable_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+    assert_eq!(
+        first
+            .core
+            .get_resource("front-panel")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("off")
+    );
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let snapshot = second
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.state.as_deref(), Some("off"));
+}
+
+#[tokio::test]
+async fn live_snapshot_wins_over_persisted_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("off"))
+        .build()
+        .unwrap();
+    assert_eq!(
+        first
+            .core
+            .get_resource("front-panel")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("off")
+    );
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::new("on"))
+        .build()
+        .unwrap();
+
+    let snapshot = second
+        .core
+        .get_resource("front-panel")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.state.as_deref(), Some("on"));
+}
+
+#[tokio::test]
+async fn list_uses_latest_persisted_snapshot_when_live_actor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let resources = built.core.list_resources().await;
+
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].id, "front-panel");
+    assert_eq!(resources[0].state.as_deref(), Some("off"));
+    assert_eq!(
+        resources[0].properties.get("room"),
+        Some(&serde_json::json!("kitchen"))
+    );
+}
+
+#[tokio::test]
+async fn query_uses_latest_persisted_snapshot_when_live_actor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", UnavailableSnapshotActor)
+        .build()
+        .unwrap();
+
+    let matches = built
+        .core
+        .query_resources("where properties.room = \"kitchen\"")
+        .await
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].id, "front-panel");
+    assert_eq!(matches[0].state.as_deref(), Some("off"));
+}
+
+#[tokio::test]
+async fn query_prefers_live_snapshot_over_persisted_latest_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    seed_latest_snapshot_with_room(&db_path, "front-panel", "off", "kitchen");
+
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", SnapshotActor::with_room("on", "pantry"))
+        .build()
+        .unwrap();
+
+    let stale_matches = built
+        .core
+        .query_resources("where properties.room = \"kitchen\"")
+        .await
+        .unwrap();
+    let live_matches = built
+        .core
+        .query_resources("where properties.room = \"pantry\"")
+        .await
+        .unwrap();
+
+    assert!(stale_matches.is_empty());
+    assert_eq!(live_matches.len(), 1);
+    assert_eq!(live_matches[0].id, "front-panel");
+    assert_eq!(live_matches[0].state.as_deref(), Some("on"));
+}
+
+#[tokio::test]
+async fn persisted_node_config_survives_display_name_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-1")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+    assert_eq!(first.node.id(), "node-hub-1");
+    drop(first);
+
+    let second = Boardwalk::new()
+        .name("Kitchen Hub")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+
+    assert_eq!(second.node.id(), "node-hub-1");
+    let node = second
+        .repositories()
+        .unwrap()
+        .node_config()
+        .get("node-hub-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.node_id, "node-hub-1");
+    assert_eq!(node.display_name, "Kitchen Hub");
+    assert_eq!(node.route_name, "Kitchen Hub");
+}
+
+#[tokio::test]
+async fn failed_persistent_build_does_not_store_local_node_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let result = Boardwalk::new()
+        .name("failed")
+        .node_id("failed-node")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build();
+    let Err(err) = result else {
+        panic!("expected duplicate id build error");
+    };
+    assert!(
+        err.to_string().contains("duplicate resource id"),
+        "expected duplicate id build error, got {err:?}"
+    );
+
+    let built = Boardwalk::new()
+        .name("clean")
+        .persist(&db_path)
+        .build()
+        .unwrap();
+
+    assert_eq!(built.node.id(), "clean");
+    assert!(
+        built
+            .repositories()
+            .unwrap()
+            .node_config()
+            .get("failed-node")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn non_persistent_node_config_remains_ephemeral() {
+    let first = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-1")
+        .build()
+        .unwrap();
+    let second = Boardwalk::new().name("Kitchen Hub").build().unwrap();
+
+    assert_eq!(first.node.id(), "node-hub-1");
+    assert_eq!(second.node.id(), "Kitchen Hub");
+    assert!(first.repositories().is_none());
+    assert!(second.repositories().is_none());
+}
+
+#[tokio::test]
+async fn factory_registration_uses_same_identity_repository_as_static_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    let first_id = register_factory_resource(&db_path, "job", "build-1", None).await;
+    let second_id = register_factory_resource(&db_path, "job", "build-1", None).await;
+
+    assert_eq!(first_id, second_id);
+}
+
+#[tokio::test]
+async fn explicit_factory_id_conflict_is_reported_before_actor_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    register_factory_resource(&db_path, "job", "build-1", Some(uuid::Uuid::nil())).await;
+    let err = try_register_factory_resource(&db_path, "job", "build-2", Some(uuid::Uuid::nil()))
+        .await
+        .unwrap_err();
+
+    assert_conflict(err);
+}
+
+#[tokio::test]
+async fn explicit_static_actor_id_conflict_is_reported_before_actor_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    repos
+        .resource_identities()
+        .put(identity_record("front-panel"))
+        .unwrap();
+    drop(repos);
+
+    let result = Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build();
+    let Err(err) = result else {
+        panic!("expected explicit actor id conflict");
+    };
+
+    assert!(
+        err.to_string().contains("already registered"),
+        "expected explicit actor id conflict, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn factory_registration_conflicts_with_static_actor_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+
+    Boardwalk::new()
+        .name("hub")
+        .persist(&db_path)
+        .use_actor_with_id("front-panel", ActorLed::default())
+        .build()
+        .unwrap();
+
+    let err = try_register_factory_resource(&db_path, "led", "LED", None)
+        .await
+        .unwrap_err();
+
+    assert_conflict(err);
+}
+
+#[tokio::test]
 async fn resource_id_is_random_without_persistence() {
     let first = Boardwalk::new()
         .name("hub")
@@ -52,4 +860,346 @@ async fn resource_id_is_random_without_persistence() {
         first_id, second_id,
         "without persistence, IDs should differ across builds"
     );
+}
+
+fn temp_repositories() -> (MemoryRepositories, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let repos = MemoryRepositories::default();
+    (repos, dir)
+}
+
+fn temp_redb_repositories() -> (RedbRepositories, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("boardwalk.redb");
+    let repos = RedbRepositories::open(&db_path).unwrap();
+    (repos, dir)
+}
+
+fn identity_record(resource_id: &str) -> ResourceIdentityRecord {
+    ResourceIdentityRecord {
+        id: resource_id.into(),
+        kind: "led".into(),
+        name: Some("front".into()),
+        identity_keys: vec![IdentityKey::static_name("led", "front")],
+        labels: BTreeMap::new(),
+        created_ms: 1,
+        updated_ms: 1,
+    }
+}
+
+fn latest_snapshot_record(resource_id: &str, state: &str) -> ResourceSnapshotRecord {
+    latest_snapshot_record_with_properties(resource_id, state, serde_json::Map::new())
+}
+
+fn latest_snapshot_record_with_properties(
+    resource_id: &str,
+    state: &str,
+    properties: serde_json::Map<String, serde_json::Value>,
+) -> ResourceSnapshotRecord {
+    let mut snapshot = led_snapshot(state);
+    snapshot.id = resource_id.into();
+    snapshot.properties = properties;
+    ResourceSnapshotRecord {
+        resource_id: resource_id.into(),
+        node_id: "hub".into(),
+        snapshot,
+        revision: Some("rev-1".into()),
+        updated_ms: 2,
+        source_event_id: None,
+    }
+}
+
+fn seed_latest_snapshot_with_room(db_path: &Path, resource_id: &str, state: &str, room: &str) {
+    let repos = RedbRepositories::open(db_path).unwrap();
+    let mut properties = serde_json::Map::new();
+    properties.insert("room".into(), serde_json::json!(room));
+    repos
+        .resource_snapshots()
+        .upsert_latest(latest_snapshot_record_with_properties(
+            resource_id,
+            state,
+            properties,
+        ))
+        .unwrap();
+}
+
+fn node_config(node_id: &str) -> NodeConfigRecord {
+    NodeConfigRecord {
+        node_id: node_id.into(),
+        display_name: "Hub".into(),
+        route_name: "hub".into(),
+        updated_ms: 1,
+    }
+}
+
+fn peer_config(peer_id: &str) -> PeerConfigRecord {
+    PeerConfigRecord {
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        node_id: Some("node-hub-1".into()),
+        display_name: Some("Hub".into()),
+        allowed_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 1,
+    }
+}
+
+fn connection_status(peer_id: &str) -> PeerConnectionStatusRecord {
+    PeerConnectionStatusRecord {
+        connection_id: uuid::Uuid::new_v4().to_string(),
+        peer_id: peer_id.into(),
+        route_name: "hub".into(),
+        direction: PeerConnectionDirection::Acceptor,
+        status: PeerConnectionStatus::Connected,
+        negotiated_capabilities: PeerCapabilities::resource_read(),
+        updated_ms: 2,
+    }
+}
+
+fn led_snapshot(state: &str) -> ResourceSnapshot {
+    ResourceSnapshot {
+        id: "resource-id".into(),
+        kind: "led".into(),
+        name: Some("front".into()),
+        state: Some(state.into()),
+        node: "hub".into(),
+        properties: serde_json::Map::new(),
+        labels: BTreeMap::new(),
+        transitions: Vec::new(),
+        streams: Vec::new(),
+        revision: Some("rev-1".into()),
+        metadata: serde_json::Map::new(),
+    }
+}
+
+fn write_bad_resource_identity_row(db_path: &Path, id: &str) {
+    let db = redb::Database::create(db_path).unwrap();
+    let table_def: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resource_identities_v1");
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(table_def).unwrap();
+        table.insert(id, b"not-json".as_slice()).unwrap();
+    }
+    txn.commit().unwrap();
+}
+
+fn write_bad_latest_snapshot_row(db_path: &Path, resource_id: &str) {
+    let db = redb::Database::create(db_path).unwrap();
+    let latest_snapshots: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resource_snapshot_records_v1");
+    let txn = db.begin_write().unwrap();
+    {
+        let mut table = txn.open_table(latest_snapshots).unwrap();
+        table.insert(resource_id, b"not-json".as_slice()).unwrap();
+    }
+    txn.commit().unwrap();
+}
+
+fn assert_no_backend_error_details(message: &str) {
+    for snippet in [
+        "redb",
+        "io:",
+        "encode:",
+        "decode",
+        "registry",
+        "not-a-directory",
+    ] {
+        assert!(
+            !message.contains(snippet),
+            "public storage error must not expose backend detail `{snippet}`: {message}"
+        );
+    }
+}
+
+async fn response_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+async fn register_factory_resource(
+    db_path: &Path,
+    kind: &str,
+    name: &str,
+    explicit_id: Option<uuid::Uuid>,
+) -> String {
+    try_register_factory_resource(db_path, kind, name, explicit_id)
+        .await
+        .unwrap()
+}
+
+async fn try_register_factory_resource(
+    db_path: &Path,
+    kind: &str,
+    name: &str,
+    explicit_id: Option<uuid::Uuid>,
+) -> Result<String, ResourceRegistrationError> {
+    let built = Boardwalk::new()
+        .name("hub")
+        .persist(db_path)
+        .register_actor_factory(kind, |registration| {
+            Ok(FactorySnapshotActor::new(
+                registration.kind,
+                registration.name,
+                "off",
+            ))
+        })
+        .build()
+        .unwrap();
+    let registrar = built.resource_registrar.unwrap();
+    registrar(ResourceRegistration {
+        kind: kind.into(),
+        name: Some(name.into()),
+        id: explicit_id,
+        fields: HashMap::new(),
+    })
+    .await
+}
+
+fn assert_conflict(err: ResourceRegistrationError) {
+    match err {
+        ResourceRegistrationError::Conflict(_) => {}
+        other => panic!("expected conflict, got {other:?}"),
+    }
+}
+
+struct FactorySnapshotActor {
+    kind: String,
+    name: Option<String>,
+    state: String,
+}
+
+impl FactorySnapshotActor {
+    fn new(kind: impl Into<String>, name: Option<String>, state: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            name,
+            state: state.into(),
+        }
+    }
+}
+
+impl Resource for FactorySnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: self.kind.clone(),
+            name: self.name.clone(),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move {
+            let mut snapshot = led_snapshot(&self.state);
+            snapshot.kind.clone_from(&self.kind);
+            snapshot.name.clone_from(&self.name);
+            Ok(snapshot)
+        })
+    }
+}
+
+impl Actor for FactorySnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
+    }
+}
+
+struct SnapshotActor {
+    state: String,
+    properties: serde_json::Map<String, serde_json::Value>,
+}
+
+impl SnapshotActor {
+    fn new(state: impl Into<String>) -> Self {
+        Self {
+            state: state.into(),
+            properties: serde_json::Map::new(),
+        }
+    }
+
+    fn with_room(state: impl Into<String>, room: impl Into<String>) -> Self {
+        let mut properties = serde_json::Map::new();
+        properties.insert("room".into(), serde_json::json!(room.into()));
+        Self {
+            state: state.into(),
+            properties,
+        }
+    }
+}
+
+impl Resource for SnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some("front".into()),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move {
+            let mut snapshot = led_snapshot(&self.state);
+            snapshot.properties.clone_from(&self.properties);
+            Ok(snapshot)
+        })
+    }
+}
+
+impl Actor for SnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
+    }
+}
+
+struct UnavailableSnapshotActor;
+
+impl Resource for UnavailableSnapshotActor {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "led".into(),
+            name: Some("front".into()),
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: Vec::new(),
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async { Err(ResourceError::Unavailable("offline".into())) })
+    }
+}
+
+impl Actor for UnavailableSnapshotActor {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
+    }
 }
