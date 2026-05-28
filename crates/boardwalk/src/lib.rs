@@ -33,7 +33,6 @@ mod http;
 mod peer;
 mod persistence;
 pub mod query;
-mod registry;
 pub mod runtime;
 mod server;
 mod siren;

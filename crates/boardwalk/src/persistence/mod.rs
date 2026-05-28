@@ -11,7 +11,6 @@ use thiserror::Error;
 
 use crate::events::EventEnvelope;
 use crate::peer::{PeerCapabilities, PeerConnectionStatus};
-use crate::registry::PeerConnectionDirection;
 use crate::runtime::ResourceSnapshot;
 
 pub(crate) mod redb;
@@ -104,6 +103,13 @@ pub(crate) struct PeerConfigRecord {
     pub(crate) display_name: Option<String>,
     pub(crate) allowed_capabilities: PeerCapabilities,
     pub(crate) updated_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PeerConnectionDirection {
+    Initiator,
+    Acceptor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

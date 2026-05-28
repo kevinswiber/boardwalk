@@ -21,7 +21,6 @@ use crate::persistence::{
     DefaultRepositories, IdentityKey, NodeConfigRecord, NodeConfigRepository, Repositories,
     ResourceIdentityRecord, ResourceSnapshotRecord, StorageError,
 };
-use crate::registry::Registry;
 use crate::runtime::{
     Actor, ActorCtx, ActorError, DynFuture, Node, NodeBuilder, Resource, ResourceCtx,
     ResourceError, ResourceSnapshot, ResourceSpec, TransitionCtx, TransitionError, TransitionInput,
@@ -273,15 +272,10 @@ impl Boardwalk {
     pub(crate) fn build(self) -> anyhow::Result<Built> {
         // Open the redb file if persistence was requested. Repository
         // records keep resource IDs stable across restarts.
-        let registry = self
+        let repositories = self
             .persist_path
             .as_ref()
-            .map(|p| Registry::open(p).map_err(storage_unavailable_error))
-            .transpose()?
-            .map(Arc::new);
-        let repositories = registry
-            .as_ref()
-            .map(|registry| registry.repositories().map_err(storage_unavailable_error))
+            .map(|p| DefaultRepositories::open(p).map_err(storage_unavailable_error))
             .transpose()?
             .map(Arc::new);
 
@@ -327,7 +321,6 @@ impl Boardwalk {
         let core: Arc<Core> = Core::from_node_with_name_and_persistence(
             self.name.clone(),
             node.clone(),
-            registry.clone(),
             repositories.clone(),
         );
 
@@ -388,7 +381,6 @@ impl Boardwalk {
             router,
             acceptors,
             peer_streams,
-            registry,
             peer_admission: self.accepted_peer_tokens,
             resource_registrar,
             repositories,
@@ -667,10 +659,9 @@ pub(crate) struct Built {
     pub(crate) router: axum::Router,
     pub(crate) acceptors: PeerAcceptors,
     pub(crate) peer_streams: crate::http::PeerStreamHub,
-    pub(crate) registry: Option<Arc<Registry>>,
     pub(crate) peer_admission: Vec<PeerAdmissionConfig>,
     pub(crate) resource_registrar: Option<ResourceRegistrar>,
-    repositories: Option<Arc<DefaultRepositories>>,
+    pub(crate) repositories: Option<Arc<DefaultRepositories>>,
 }
 
 impl Built {

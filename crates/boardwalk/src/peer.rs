@@ -19,9 +19,9 @@ use uuid::Uuid;
 
 use crate::http::{PeerInitState, PeerSenders};
 use crate::persistence::{
-    DefaultRepositories, PeerConfigRecord, PeerConnectionStatusRecord, Repositories,
+    DefaultRepositories, PeerConfigRecord, PeerConnectionDirection, PeerConnectionStatusRecord,
+    Repositories,
 };
-use crate::registry::PeerConnectionDirection;
 
 #[derive(Debug, Error)]
 pub enum PeerError {

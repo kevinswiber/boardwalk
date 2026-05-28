@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::Boardwalk;
 use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerConnectionStatus, PeerLinkConfig};
-use crate::registry::{PeerRecord, Registry};
+use crate::persistence::{PeerConfigRecord, PeerConnectionStatusRecord};
 use crate::server::Built;
 use crate::tunnel::SUBPROTOCOL;
 
@@ -61,13 +61,16 @@ async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
         "cloud should confirm the admitted peer"
     );
 
-    let registry = cloud.built.registry.as_ref().expect("registry");
-    let record = wait_for_peer_record(registry, "hub").await;
+    let record = wait_for_peer_record(&cloud.built, "hub").await;
     assert_eq!(record.node_id.as_deref(), Some("node-hub-1"));
     assert_eq!(record.display_name.as_deref(), Some("Kitchen Hub"));
 
-    let connection = registry
-        .latest_peer_connection("hub")
+    let connection = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_connection_status()
+        .latest_by_route("hub")
         .unwrap()
         .expect("peer connection");
     assert_eq!(
@@ -226,7 +229,6 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
             .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
     )
     .await;
-    let registry = cloud.built.registry.as_ref().expect("registry");
 
     let first_connection_id = Uuid::new_v4();
     let first_peer = connect_admitted_peer(
@@ -238,33 +240,20 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
             .token("kid-1", "secret"),
     )
     .await;
-    let first_record = wait_for_peer_record(registry, "hub").await;
+    let first_record = wait_for_peer_record(&cloud.built, "hub").await;
     assert_eq!(
         first_record.peer_id, "peer-hub-kid-1",
         "durable token-bound peer identity should include route name and token id"
     );
-    let first_config = cloud
-        .built
-        .repositories()
-        .unwrap()
-        .peer_configs()
-        .get_by_route("hub")
-        .unwrap()
-        .unwrap();
-    assert_eq!(first_config.peer_id, first_record.peer_id);
-    assert_eq!(first_config.route_name, "hub");
-    assert_eq!(first_config.node_id.as_deref(), Some("node-hub-1"));
-    assert_eq!(first_config.display_name.as_deref(), Some("Kitchen Hub"));
+    assert_eq!(first_record.route_name, "hub");
+    assert_eq!(first_record.node_id.as_deref(), Some("node-hub-1"));
+    assert_eq!(first_record.display_name.as_deref(), Some("Kitchen Hub"));
     assert!(
-        first_config
+        first_record
             .allowed_capabilities
             .contains(PeerCapabilities::resource_read())
     );
 
-    let first_connection = registry
-        .latest_peer_connection("hub")
-        .unwrap()
-        .expect("first peer connection");
     let first_status = cloud
         .built
         .repositories()
@@ -272,10 +261,9 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         .peer_connection_status()
         .latest_by_route("hub")
         .unwrap()
-        .unwrap();
-    assert_eq!(first_connection.connection_id, first_connection_id);
+        .expect("first peer connection");
     assert_eq!(first_status.connection_id, first_connection_id.to_string());
-    assert_eq!(first_status.peer_id, first_config.peer_id);
+    assert_eq!(first_status.peer_id, first_record.peer_id);
     assert_ne!(
         first_record.peer_id,
         first_connection_id.to_string(),
@@ -295,19 +283,7 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
             .token("kid-1", "secret"),
     )
     .await;
-    let second_record = wait_for_peer_record(registry, "hub").await;
-    let second_config = cloud
-        .built
-        .repositories()
-        .unwrap()
-        .peer_configs()
-        .get_by_route("hub")
-        .unwrap()
-        .unwrap();
-    let second_connection = registry
-        .latest_peer_connection("hub")
-        .unwrap()
-        .expect("second peer connection");
+    let second_record = wait_for_peer_record(&cloud.built, "hub").await;
     let second_status = cloud
         .built
         .repositories()
@@ -315,25 +291,20 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         .peer_connection_status()
         .latest_by_route("hub")
         .unwrap()
-        .unwrap();
+        .expect("second peer connection");
 
     assert_eq!(
         second_record.peer_id, first_record.peer_id,
         "durable peer identity should remain stable across reconnects"
     );
-    assert_eq!(second_config.peer_id, first_config.peer_id);
-    assert_ne!(
-        second_config.peer_id,
-        second_connection.connection_id.to_string()
-    );
-    assert_eq!(second_connection.connection_id, second_connection_id);
+    assert_ne!(second_record.peer_id, second_status.connection_id);
     assert_eq!(
         second_status.connection_id,
         second_connection_id.to_string()
     );
-    assert_eq!(second_status.peer_id, second_config.peer_id);
+    assert_eq!(second_status.peer_id, second_record.peer_id);
     assert_ne!(
-        second_connection.connection_id, first_connection.connection_id,
+        second_status.connection_id, first_status.connection_id,
         "reconnect must create a new connection without replacing peer identity"
     );
 }
@@ -349,7 +320,6 @@ async fn failed_peer_confirmation_persists_failed_connection_status() {
             .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
     )
     .await;
-    let registry = cloud.built.registry.as_ref().expect("registry");
 
     let connection_id = Uuid::new_v4();
     let upgrade = raw_peer_upgrade(
@@ -376,8 +346,8 @@ async fn failed_peer_confirmation_persists_failed_connection_status() {
     });
 
     let connection =
-        wait_for_peer_connection_status(registry, "hub", PeerConnectionStatus::Failed).await;
-    assert_eq!(connection.connection_id, connection_id);
+        wait_for_peer_connection_status(&cloud.built, "hub", PeerConnectionStatus::Failed).await;
+    assert_eq!(connection.connection_id, connection_id.to_string());
     assert_no_peer_sender_registered(&cloud.built, "hub").await;
 }
 
@@ -447,10 +417,16 @@ async fn wait_for_confirmation(built: &Built, previous: u64) {
     .expect("peer confirmation");
 }
 
-async fn wait_for_peer_record(registry: &Registry, route_name: &str) -> PeerRecord {
+async fn wait_for_peer_record(built: &Built, route_name: &str) -> PeerConfigRecord {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Some(record) = registry.get_peer(route_name).unwrap() {
+            if let Some(record) = built
+                .repositories()
+                .unwrap()
+                .peer_configs()
+                .get_by_route(route_name)
+                .unwrap()
+            {
                 return record;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -461,13 +437,18 @@ async fn wait_for_peer_record(registry: &Registry, route_name: &str) -> PeerReco
 }
 
 async fn wait_for_peer_connection_status(
-    registry: &Registry,
+    built: &Built,
     route_name: &str,
     status: PeerConnectionStatus,
-) -> crate::registry::PeerConnectionRecord {
+) -> PeerConnectionStatusRecord {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Some(connection) = registry.latest_peer_connection(route_name).unwrap()
+            if let Some(connection) = built
+                .repositories()
+                .unwrap()
+                .peer_connection_status()
+                .latest_by_route(route_name)
+                .unwrap()
                 && connection.status == status
             {
                 return connection;

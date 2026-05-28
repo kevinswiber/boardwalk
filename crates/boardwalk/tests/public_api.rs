@@ -526,26 +526,6 @@ fn runtime_owns_final_resource_and_transition_contracts() {
 }
 
 #[test]
-fn registry_uses_resources_table_without_old_table_fallback() {
-    let registry = read("crates/boardwalk/src/registry.rs");
-    assert!(
-        registry.contains("TableDefinition::new(\"resources\")"),
-        "resource registry should persist records in the `resources` table"
-    );
-    for snippet in [
-        "TableDefinition::new(\"devices\")",
-        "open_table(DEVICES",
-        "DEVICE_TABLE",
-        "devices table",
-    ] {
-        assert!(
-            !registry.contains(snippet),
-            "resource registry must not keep old persistence fallback `{snippet}`"
-        );
-    }
-}
-
-#[test]
 fn boardwalk_builder_does_not_expose_private_adapter_surface() {
     let server = read("crates/boardwalk/src/server.rs");
     let routes = read("crates/boardwalk/src/http/routes.rs");

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::events::{EventBus, SubscribeOpts, Subscription, SubscriptionId, TopicPattern};
 use crate::persistence::{DefaultRepositories, ResourceSnapshotRecord, ResourceSnapshotRepository};
-use crate::registry::Registry;
 use crate::runtime::{
     ActorSpec, Node, NodeHandle, RequestCtx, ResourceError, ResourceSnapshot, ResourceSnapshotRead,
     TransitionCtx, TransitionError, TransitionInput, TransitionOutcome,
@@ -13,7 +12,6 @@ pub struct Core {
     pub name: String,
     pub bus: EventBus,
     node: Arc<Node>,
-    registry: Option<Arc<Registry>>,
     repositories: Option<Arc<DefaultRepositories>>,
 }
 
@@ -44,28 +42,18 @@ impl Core {
     }
 
     pub(crate) fn from_node_with_name(name: impl Into<String>, node: Arc<Node>) -> Arc<Self> {
-        Self::from_node_with_name_and_registry(name, node, None)
-    }
-
-    pub(crate) fn from_node_with_name_and_registry(
-        name: impl Into<String>,
-        node: Arc<Node>,
-        registry: Option<Arc<Registry>>,
-    ) -> Arc<Self> {
-        Self::from_node_with_name_and_persistence(name, node, registry, None)
+        Self::from_node_with_name_and_persistence(name, node, None)
     }
 
     pub(crate) fn from_node_with_name_and_persistence(
         name: impl Into<String>,
         node: Arc<Node>,
-        registry: Option<Arc<Registry>>,
         repositories: Option<Arc<DefaultRepositories>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             name: name.into(),
             bus: node.events().clone(),
             node,
-            registry,
             repositories,
         })
     }
@@ -183,25 +171,19 @@ impl Core {
     }
 
     fn persist_latest_resource_snapshot(&self, snapshot: &ResourceSnapshot) {
-        if let Some(repositories) = self.repositories.as_ref() {
-            let snapshots = repositories.resource_snapshots();
-            match snapshots.latest(&snapshot.id) {
-                Ok(Some(existing)) if snapshots_match(&existing.snapshot, snapshot) => return,
-                Ok(_) => {}
-                Err(err) => {
-                    tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to read latest resource snapshot before persist");
-                }
-            }
-            let record = ResourceSnapshotRecord::latest(snapshot.clone(), now_ms());
-            if let Err(err) = snapshots.upsert_latest(record) {
-                tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to persist latest resource snapshot");
-            }
+        let Some(repositories) = self.repositories.as_ref() else {
             return;
+        };
+        let snapshots = repositories.resource_snapshots();
+        match snapshots.latest(&snapshot.id) {
+            Ok(Some(existing)) if snapshots_match(&existing.snapshot, snapshot) => return,
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to read latest resource snapshot before persist");
+            }
         }
-
-        if let Some(registry) = self.registry.as_ref()
-            && let Err(err) = registry.put_latest_resource_snapshot(snapshot)
-        {
+        let record = ResourceSnapshotRecord::latest(snapshot.clone(), now_ms());
+        if let Err(err) = snapshots.upsert_latest(record) {
             tracing::warn!(error = %err, resource_id = %snapshot.id, "failed to persist latest resource snapshot");
         }
     }
@@ -210,33 +192,17 @@ impl Core {
         &self,
         resource_id: &str,
     ) -> Result<Option<ResourceSnapshot>, String> {
-        let Some(registry) = self.registry.as_ref() else {
-            if let Some(repositories) = self.repositories.as_ref() {
-                return repositories
-                    .resource_snapshots()
-                    .latest(resource_id)
-                    .map(|record| record.map(|record| record.snapshot))
-                    .map_err(|err| {
-                        tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
-                        "storage unavailable".to_string()
-                    });
-            }
+        let Some(repositories) = self.repositories.as_ref() else {
             return Ok(None);
         };
-        if let Some(repositories) = self.repositories.as_ref() {
-            return repositories
-                .resource_snapshots()
-                .latest(resource_id)
-                .map(|record| record.map(|record| record.snapshot))
-                .map_err(|err| {
-                    tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
-                    "storage unavailable".to_string()
-                });
-        }
-        registry.latest_resource_snapshot(resource_id).map_err(|err| {
-            tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
-            "storage unavailable".to_string()
-        })
+        repositories
+            .resource_snapshots()
+            .latest(resource_id)
+            .map(|record| record.map(|record| record.snapshot))
+            .map_err(|err| {
+                tracing::warn!(error = %err, resource_id, "failed to read latest resource snapshot");
+                "storage unavailable".to_string()
+            })
     }
 }
 

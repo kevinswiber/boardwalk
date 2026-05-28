@@ -14,12 +14,10 @@ use crate::peer::{PeerCapabilities, PeerConnectionStatus};
 use crate::persistence::redb::RedbRepositories;
 use crate::persistence::{
     EventHistoryRepository, IdentityKey, MemoryRepositories, NodeConfigRecord,
-    NodeConfigRepository, PeerConfigRecord, PeerConfigRepository, PeerConnectionStatusRecord,
-    PeerConnectionStatusRepository, Repositories, ResourceIdentityRecord,
-    ResourceIdentityRepository, ResourceSnapshotRecord, ResourceSnapshotRepository, StorageError,
-};
-use crate::registry::{
-    PeerConnectionDirection, PeerConnectionRecord, PeerRecord, Registry, ResourceRecord,
+    NodeConfigRepository, PeerConfigRecord, PeerConfigRepository, PeerConnectionDirection,
+    PeerConnectionStatusRecord, PeerConnectionStatusRepository, Repositories,
+    ResourceIdentityRecord, ResourceIdentityRepository, ResourceSnapshotRecord,
+    ResourceSnapshotRepository, StorageError,
 };
 use crate::runtime::{
     Actor, DynFuture, RequestCtx, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
@@ -114,133 +112,6 @@ fn redb_repositories_round_trip_domain_records() {
 }
 
 #[test]
-fn redb_repositories_adapt_existing_resource_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("boardwalk.redb");
-    let resource_id = uuid::Uuid::new_v4();
-    let registry = Registry::open(&db_path).unwrap();
-    registry
-        .put_resource(&ResourceRecord {
-            id: resource_id,
-            type_: "led".into(),
-            name: Some("front".into()),
-            properties: serde_json::Map::new(),
-        })
-        .unwrap();
-    drop(registry);
-
-    let repos = RedbRepositories::open(&db_path).unwrap();
-
-    let by_key = repos
-        .resource_identities()
-        .find_by_identity_key(&IdentityKey::static_name("led", "front"))
-        .unwrap()
-        .unwrap();
-    assert_eq!(by_key.id, resource_id.to_string());
-    assert_eq!(
-        repos
-            .resource_identities()
-            .get(&resource_id.to_string())
-            .unwrap()
-            .unwrap()
-            .kind,
-        "led"
-    );
-}
-
-#[test]
-fn redb_repositories_adapt_existing_latest_snapshot_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("boardwalk.redb");
-    let registry = Registry::open(&db_path).unwrap();
-    let mut snapshot = led_snapshot("off");
-    snapshot.id = "front-panel".into();
-    registry.put_latest_resource_snapshot(&snapshot).unwrap();
-    drop(registry);
-
-    let repos = RedbRepositories::open(&db_path).unwrap();
-
-    let latest = repos
-        .resource_snapshots()
-        .latest("front-panel")
-        .unwrap()
-        .unwrap();
-    assert_eq!(latest.resource_id, "front-panel");
-    assert_eq!(latest.node_id, "hub");
-    assert_eq!(latest.revision.as_deref(), Some("rev-1"));
-    assert_eq!(latest.snapshot.state.as_deref(), Some("off"));
-
-    repos
-        .resource_snapshots()
-        .upsert_latest(latest_snapshot_record("front-panel", "on"))
-        .unwrap();
-    drop(repos);
-    let registry = Registry::open(&db_path).unwrap();
-    assert_eq!(
-        registry
-            .latest_resource_snapshot("front-panel")
-            .unwrap()
-            .unwrap()
-            .state
-            .as_deref(),
-        Some("on")
-    );
-}
-
-#[test]
-fn redb_repositories_adapt_existing_peer_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("boardwalk.redb");
-    let registry = Registry::open(&db_path).unwrap();
-    registry.put_peer(&peer_record("hub-peer")).unwrap();
-    let connection = peer_connection_record("hub-peer");
-    registry.put_peer_connection(&connection).unwrap();
-    drop(registry);
-
-    let repos = RedbRepositories::open(&db_path).unwrap();
-
-    assert_eq!(
-        repos
-            .peer_configs()
-            .get_by_route("hub")
-            .unwrap()
-            .unwrap()
-            .peer_id,
-        "hub-peer"
-    );
-    let latest = repos
-        .peer_connection_status()
-        .latest_by_route("hub")
-        .unwrap()
-        .unwrap();
-    assert_eq!(latest.connection_id, connection.connection_id.to_string());
-    assert_eq!(latest.status, PeerConnectionStatus::Connected);
-
-    repos
-        .peer_configs()
-        .put(peer_config("new-hub-peer"))
-        .unwrap();
-    repos
-        .peer_connection_status()
-        .put_latest(connection_status("new-hub-peer"))
-        .unwrap();
-    drop(repos);
-    let registry = Registry::open(&db_path).unwrap();
-    assert_eq!(
-        registry.get_peer_by_route("hub").unwrap().unwrap().peer_id,
-        "new-hub-peer"
-    );
-    assert_eq!(
-        registry
-            .latest_peer_connection("hub")
-            .unwrap()
-            .unwrap()
-            .peer_id,
-        "new-hub-peer"
-    );
-}
-
-#[test]
 fn redb_open_failure_maps_to_storage_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let not_a_directory = dir.path().join("not-a-directory");
@@ -276,16 +147,7 @@ fn builder_persistence_open_error_is_generic() {
 fn redb_decode_failure_maps_to_storage_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
-    let db = redb::Database::create(&db_path).unwrap();
-    let legacy_resources: redb::TableDefinition<&str, &[u8]> =
-        redb::TableDefinition::new("resources");
-    let txn = db.begin_write().unwrap();
-    {
-        let mut table = txn.open_table(legacy_resources).unwrap();
-        table.insert("bad", b"not-json".as_slice()).unwrap();
-    }
-    txn.commit().unwrap();
-    drop(db);
+    write_bad_resource_identity_row(&db_path, "bad");
 
     let repos = RedbRepositories::open(&db_path).unwrap();
     let err = repos.resource_identities().get("bad").unwrap_err();
@@ -297,7 +159,7 @@ fn redb_decode_failure_maps_to_storage_corrupt() {
 fn resource_identity_storage_error_is_generic() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
-    write_bad_resource_row(&db_path);
+    write_bad_resource_identity_row(&db_path, "bad");
 
     let err = match Boardwalk::new()
         .name("hub")
@@ -318,7 +180,7 @@ fn resource_identity_storage_error_is_generic() {
 async fn factory_registration_storage_error_is_generic() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
-    write_bad_resource_row(&db_path);
+    write_bad_resource_identity_row(&db_path, "bad");
 
     let built = Boardwalk::new()
         .name("hub")
@@ -466,34 +328,6 @@ async fn resource_id_is_stable_across_builds() {
 }
 
 #[tokio::test]
-async fn legacy_unnamed_resource_identity_is_reused() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("boardwalk.redb");
-    let resource_id = uuid::Uuid::new_v4();
-    let registry = Registry::open(&db_path).unwrap();
-    registry
-        .put_resource(&ResourceRecord {
-            id: resource_id,
-            type_: "led".into(),
-            name: None,
-            properties: serde_json::Map::new(),
-        })
-        .unwrap();
-    drop(registry);
-
-    let built = Boardwalk::new()
-        .name("hub")
-        .persist(&db_path)
-        .use_actor(UnnamedSnapshotActor)
-        .build()
-        .unwrap();
-
-    let resources = built.core.list_resources().await;
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].id, resource_id.to_string());
-}
-
-#[tokio::test]
 async fn persistent_static_resource_identity_records_kind_name_and_identity_key() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("boardwalk.redb");
@@ -521,16 +355,6 @@ async fn persistent_static_resource_identity_records_kind_name_and_identity_key(
             .identity_keys
             .iter()
             .any(|key| { key.namespace == "static" && key.kind == "led" && key.key == "LED" })
-    );
-
-    drop(built);
-    let legacy_registry = Registry::open(&db_path).unwrap();
-    assert!(
-        legacy_registry
-            .get_resource(&uuid::Uuid::parse_str(&id).unwrap())
-            .unwrap()
-            .is_none(),
-        "resource identity should not be persisted as an empty legacy resource record"
     );
 }
 
@@ -1119,32 +943,9 @@ fn peer_config(peer_id: &str) -> PeerConfigRecord {
     }
 }
 
-fn peer_record(peer_id: &str) -> PeerRecord {
-    PeerRecord {
-        peer_id: peer_id.into(),
-        route_name: "hub".into(),
-        node_id: Some("node-hub-1".into()),
-        display_name: Some("Hub".into()),
-        allowed_capabilities: PeerCapabilities::resource_read(),
-        updated_ms: 1,
-    }
-}
-
 fn connection_status(peer_id: &str) -> PeerConnectionStatusRecord {
     PeerConnectionStatusRecord {
         connection_id: uuid::Uuid::new_v4().to_string(),
-        peer_id: peer_id.into(),
-        route_name: "hub".into(),
-        direction: PeerConnectionDirection::Acceptor,
-        status: PeerConnectionStatus::Connected,
-        negotiated_capabilities: PeerCapabilities::resource_read(),
-        updated_ms: 2,
-    }
-}
-
-fn peer_connection_record(peer_id: &str) -> PeerConnectionRecord {
-    PeerConnectionRecord {
-        connection_id: uuid::Uuid::new_v4(),
         peer_id: peer_id.into(),
         route_name: "hub".into(),
         direction: PeerConnectionDirection::Acceptor,
@@ -1170,14 +971,14 @@ fn led_snapshot(state: &str) -> ResourceSnapshot {
     }
 }
 
-fn write_bad_resource_row(db_path: &Path) {
+fn write_bad_resource_identity_row(db_path: &Path, id: &str) {
     let db = redb::Database::create(db_path).unwrap();
-    let legacy_resources: redb::TableDefinition<&str, &[u8]> =
-        redb::TableDefinition::new("resources");
+    let table_def: redb::TableDefinition<&str, &[u8]> =
+        redb::TableDefinition::new("resource_identities_v1");
     let txn = db.begin_write().unwrap();
     {
-        let mut table = txn.open_table(legacy_resources).unwrap();
-        table.insert("bad", b"not-json".as_slice()).unwrap();
+        let mut table = txn.open_table(table_def).unwrap();
+        table.insert(id, b"not-json".as_slice()).unwrap();
     }
     txn.commit().unwrap();
 }
@@ -1185,7 +986,7 @@ fn write_bad_resource_row(db_path: &Path) {
 fn write_bad_latest_snapshot_row(db_path: &Path, resource_id: &str) {
     let db = redb::Database::create(db_path).unwrap();
     let latest_snapshots: redb::TableDefinition<&str, &[u8]> =
-        redb::TableDefinition::new("resource_latest_snapshots_v1");
+        redb::TableDefinition::new("resource_snapshot_records_v1");
     let txn = db.begin_write().unwrap();
     {
         let mut table = txn.open_table(latest_snapshots).unwrap();
@@ -1361,42 +1162,6 @@ impl Resource for SnapshotActor {
 }
 
 impl Actor for SnapshotActor {
-    fn transition<'a>(
-        &'a mut self,
-        _ctx: TransitionCtx,
-        _name: &'a str,
-        _input: TransitionInput,
-    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
-        Box::pin(async { Err(TransitionError::NotAllowed("not implemented".into())) })
-    }
-}
-
-struct UnnamedSnapshotActor;
-
-impl Resource for UnnamedSnapshotActor {
-    fn spec(&self) -> ResourceSpec {
-        ResourceSpec {
-            kind: "led".into(),
-            name: None,
-            labels: BTreeMap::new(),
-            property_schema: None,
-            streams: Vec::new(),
-        }
-    }
-
-    fn snapshot<'a>(
-        &'a self,
-        _ctx: ResourceCtx,
-    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
-        Box::pin(async {
-            let mut snapshot = led_snapshot("off");
-            snapshot.name = None;
-            Ok(snapshot)
-        })
-    }
-}
-
-impl Actor for UnnamedSnapshotActor {
     fn transition<'a>(
         &'a mut self,
         _ctx: TransitionCtx,
