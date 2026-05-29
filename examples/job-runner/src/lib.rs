@@ -9,15 +9,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use boardwalk::runtime::{
-    Actor, ActorCtx, ActorError, DynFuture, Resource, ResourceCtx, ResourceError, TransitionCtx,
-    TransitionError,
-};
-use boardwalk::{
-    Boardwalk, Effect, Idempotency, JobHandle as OutcomeJobHandle, ResourceSnapshot, ResourceSpec,
-    SnapshotStreamSpec, StreamKind, StreamSpec, TransitionAffordance, TransitionInput,
-    TransitionOutcome, TransitionResultKind, TransitionSpec,
-};
+use boardwalk::prelude::*;
+use boardwalk::{Boardwalk, JobHandle as OutcomeJobHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
@@ -281,11 +274,7 @@ impl Resource for JobQueue {
             node: String::new(),
             properties,
             labels: example_labels(),
-            transitions: vec![TransitionAffordance {
-                spec: submit_spec(),
-                available: true,
-                unavailable_reason: None,
-            }],
+            transitions: vec![TransitionAffordance::available(submit_spec())],
             streams: vec![],
             revision: None,
             metadata: Map::new(),
@@ -294,31 +283,24 @@ impl Resource for JobQueue {
     }
 }
 
-impl Actor for JobQueue {
-    fn transition<'a>(
-        &'a mut self,
+#[boardwalk::actor]
+impl JobQueue {
+    #[boardwalk::transition]
+    async fn submit(
+        &mut self,
         ctx: TransitionCtx,
-        name: &'a str,
         input: TransitionInput,
-    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
-        Box::pin(async move {
-            if name != "submit" {
-                return Err(TransitionError::NotAllowed(format!(
-                    "transition `{name}` not supported by job queue"
-                )));
-            }
-            let input = input_from_fields::<SubmitJob>(input)?;
-            let id = ctx
-                .register_actor(Job::from_submit(self.name.clone(), input))
-                .await?;
-            self.submitted += 1;
-            let handle = JobHandle::for_job(id);
-            let output = serde_json::to_value(&handle)
-                .map_err(|err| TransitionError::Internal(err.to_string()))?;
-            Ok(TransitionOutcome::Accepted {
-                job: handle.to_outcome_handle(true),
-                output: Some(output),
-            })
+    ) -> Result<TransitionOutcome, TransitionError> {
+        let input = input.deserialize::<SubmitJob>()?;
+        let id = ctx
+            .register_actor(Job::from_submit(self.name.clone(), input))
+            .await?;
+        self.submitted += 1;
+        let handle = JobHandle::for_job(id);
+        let output = serde_json::to_value(&handle).map_err(TransitionError::internal)?;
+        Ok(TransitionOutcome::Accepted {
+            job: handle.to_outcome_handle(true),
+            output: Some(output),
         })
     }
 }
@@ -390,74 +372,73 @@ impl Resource for Job {
     }
 }
 
-impl Actor for Job {
-    fn transition<'a>(
-        &'a mut self,
+#[boardwalk::actor]
+impl Job {
+    #[boardwalk::transition]
+    async fn cancel(
+        &mut self,
         ctx: TransitionCtx,
-        name: &'a str,
-        input: TransitionInput,
-    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
-        Box::pin(async move {
-            match name {
-                "cancel" => {
-                    let mut data = self.shared.lock().await;
-                    data.cancel()?;
-                    publish_lifecycle(&ctx, &data, Some("user_cancelled")).await?;
-                    Ok(TransitionOutcome::Completed {
-                        output: Some(json!({
-                            "accepted": true,
-                            "state": data.state.as_str(),
-                        })),
-                        snapshot: data.snapshot_for_ctx(&ctx)?,
-                    })
-                }
-                "retry" => {
-                    let _input = input_from_fields::<RetryJob>(input)?;
-                    let mut data = self.shared.lock().await;
-                    if !data.state.can_retry() {
-                        return Err(TransitionError::Conflict(format!(
-                            "retry is not available for {} jobs",
-                            data.state.as_str()
-                        )));
-                    }
-                    data.attempt += 1;
-                    data.state = JobState::Queued;
-                    data.step = 0;
-                    data.progress = 0;
-                    data.started_at = None;
-                    data.finished_at = None;
-                    data.result = None;
-                    data.error = None;
-                    publish_lifecycle(&ctx, &data, Some("retried")).await?;
-                    let id = resource_id(&ctx)?;
-                    let handle = JobHandle::for_job(id);
-                    let output = serde_json::to_value(&handle)
-                        .map_err(|err| TransitionError::Internal(err.to_string()))?;
-                    Ok(TransitionOutcome::Accepted {
-                        job: handle.to_outcome_handle(false),
-                        output: Some(output),
-                    })
-                }
-                other => Err(TransitionError::NotAllowed(format!(
-                    "transition `{other}` not supported by job"
-                ))),
-            }
+        _input: TransitionInput,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        let mut data = self.shared.lock().await;
+        data.cancel()?;
+        publish_lifecycle(&ctx, &data, Some("user_cancelled")).await?;
+        Ok(TransitionOutcome::Completed {
+            output: Some(json!({
+                "accepted": true,
+                "state": data.state.as_str(),
+            })),
+            snapshot: data.snapshot_for_ctx(&ctx)?,
         })
     }
 
-    fn on_start<'a>(&'a mut self, ctx: ActorCtx) -> DynFuture<'a, Result<(), ActorError>> {
+    #[boardwalk::transition]
+    async fn retry(
+        &mut self,
+        ctx: TransitionCtx,
+        input: TransitionInput,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        let _input = input.deserialize::<RetryJob>()?;
+        let mut data = self.shared.lock().await;
+        if !data.state.can_retry() {
+            return Err(TransitionError::Conflict(format!(
+                "retry is not available for {} jobs",
+                data.state.as_str()
+            )));
+        }
+        data.attempt += 1;
+        data.state = JobState::Queued;
+        data.step = 0;
+        data.progress = 0;
+        data.started_at = None;
+        data.finished_at = None;
+        data.result = None;
+        data.error = None;
+        publish_lifecycle(&ctx, &data, Some("retried")).await?;
+        let id = ctx.resource_id_required()?;
+        let handle = JobHandle::for_job(id.to_string());
+        let output = serde_json::to_value(&handle).map_err(TransitionError::internal)?;
+        Ok(TransitionOutcome::Accepted {
+            job: handle.to_outcome_handle(false),
+            output: Some(output),
+        })
+    }
+
+    #[boardwalk::on_start]
+    async fn boot(&mut self, ctx: ActorCtx) -> Result<(), ActorError> {
         let shared = self.shared.clone();
         self.runner = Some(tokio::spawn(async move {
             run_job(shared, ctx).await;
         }));
-        Box::pin(async { Ok(()) })
+        Ok(())
     }
 
-    fn on_stop<'a>(&'a mut self, _ctx: ActorCtx) -> DynFuture<'a, Result<(), ActorError>> {
+    #[boardwalk::on_stop]
+    async fn teardown(&mut self, _ctx: ActorCtx) -> Result<(), ActorError> {
         if let Some(runner) = self.runner.take() {
             runner.abort();
         }
-        Box::pin(async { Ok(()) })
+        Ok(())
     }
 }
 
@@ -511,18 +492,21 @@ impl JobData {
             labels: self.labels.clone(),
             transitions: self.transitions(),
             streams: vec![
-                SnapshotStreamSpec {
+                StreamSpec {
                     name: "lifecycle".into(),
-                    kind: "object".into(),
-                },
-                SnapshotStreamSpec {
+                    kind: StreamKind::Object,
+                }
+                .into(),
+                StreamSpec {
                     name: "progress".into(),
-                    kind: "object".into(),
-                },
-                SnapshotStreamSpec {
+                    kind: StreamKind::Object,
+                }
+                .into(),
+                StreamSpec {
                     name: "logs".into(),
-                    kind: "object".into(),
-                },
+                    kind: StreamKind::Object,
+                }
+                .into(),
             ],
             revision: None,
             metadata: Map::new(),
@@ -531,7 +515,7 @@ impl JobData {
 
     fn snapshot_for_ctx(&self, ctx: &TransitionCtx) -> Result<ResourceSnapshot, TransitionError> {
         let mut snapshot = self.snapshot();
-        snapshot.id = resource_id(ctx)?;
+        snapshot.id = ctx.resource_id_required()?.to_string();
         snapshot.node = ctx.node().to_string();
         Ok(snapshot)
     }
@@ -557,18 +541,24 @@ impl JobData {
     }
 
     fn transitions(&self) -> Vec<TransitionAffordance> {
+        let can_cancel = self.state.can_cancel();
+        let can_retry = self.state.can_retry();
         vec![
-            TransitionAffordance {
-                spec: cancel_spec(),
-                available: self.state.can_cancel(),
-                unavailable_reason: (!self.state.can_cancel())
-                    .then(|| "cancel is only available for queued or running jobs".into()),
+            if can_cancel {
+                TransitionAffordance::available(cancel_spec())
+            } else {
+                TransitionAffordance::unavailable(
+                    cancel_spec(),
+                    "cancel is only available for queued or running jobs",
+                )
             },
-            TransitionAffordance {
-                spec: retry_spec(),
-                available: self.state.can_retry(),
-                unavailable_reason: (!self.state.can_retry())
-                    .then(|| "retry is only available for failed jobs".into()),
+            if can_retry {
+                TransitionAffordance::available(retry_spec())
+            } else {
+                TransitionAffordance::unavailable(
+                    retry_spec(),
+                    "retry is only available for failed jobs",
+                )
             },
         ]
     }
@@ -640,14 +630,6 @@ async fn run_job(shared: Arc<Mutex<JobData>>, ctx: ActorCtx) {
     }
 }
 
-fn input_from_fields<T>(input: TransitionInput) -> Result<T, TransitionError>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    serde_json::from_value(Value::Object(input.fields.into_iter().collect()))
-        .map_err(|err| TransitionError::InvalidInput(err.to_string()))
-}
-
 fn example_labels() -> BTreeMap<String, String> {
     BTreeMap::from([("example".into(), "jobs".into())])
 }
@@ -658,12 +640,6 @@ fn option_json(value: Option<&str>) -> Value {
 
 fn progress_percent(step: u32, total: u32) -> u8 {
     ((step.saturating_mul(100)) / total.max(1)).min(99) as u8
-}
-
-fn resource_id(ctx: &TransitionCtx) -> Result<String, TransitionError> {
-    ctx.resource_id()
-        .map(str::to_string)
-        .ok_or_else(|| TransitionError::Internal("TransitionCtx has no actor identity".into()))
 }
 
 async fn publish_lifecycle(
@@ -680,7 +656,7 @@ async fn publish_lifecycle(
             data,
             reason,
         ))
-        .map_err(|err| TransitionError::Internal(err.to_string()))?,
+        .map_err(TransitionError::internal)?,
     )
     .await
 }
@@ -695,7 +671,7 @@ async fn publish_lifecycle_from_actor(
         "job.lifecycle",
         1,
         serde_json::to_value(lifecycle_event(ctx.resource_id(), data, reason))
-            .map_err(|err| ActorError::Internal(err.to_string()))?,
+            .map_err(ActorError::internal)?,
     )
     .await
 }
@@ -718,7 +694,7 @@ async fn publish_progress_from_actor(
             total_steps: data.command.total_steps(),
             message: message.into(),
         })
-        .map_err(|err| ActorError::Internal(err.to_string()))?,
+        .map_err(ActorError::internal)?,
     )
     .await
 }
@@ -739,7 +715,7 @@ async fn publish_log_from_actor(
             level: level.into(),
             line: line.into(),
         })
-        .map_err(|err| ActorError::Internal(err.to_string()))?,
+        .map_err(ActorError::internal)?,
     )
     .await
 }
@@ -754,39 +730,27 @@ fn lifecycle_event(job_id: &str, data: &JobData, reason: Option<&str>) -> Lifecy
 }
 
 fn submit_spec() -> TransitionSpec {
-    TransitionSpec {
-        name: "submit".into(),
-        title: Some("Submit job".into()),
-        allowed_states: vec!["open".into()],
-        result: TransitionResultKind::AsyncJob,
-        idempotency: Idempotency::Supported,
-        effect: Effect::Unsafe,
-        ..Default::default()
-    }
+    TransitionSpec::async_job("submit")
+        .title("Submit job")
+        .allowed_states(["open"])
+        .idempotency(Idempotency::Supported)
+        .effect(Effect::Unsafe)
 }
 
 fn cancel_spec() -> TransitionSpec {
-    TransitionSpec {
-        name: "cancel".into(),
-        title: Some("Cancel job".into()),
-        allowed_states: vec!["queued".into(), "running".into()],
-        result: TransitionResultKind::Sync,
-        idempotency: Idempotency::Supported,
-        effect: Effect::UnsafeIdempotent,
-        ..Default::default()
-    }
+    TransitionSpec::sync("cancel")
+        .title("Cancel job")
+        .allowed_states(["queued", "running"])
+        .idempotency(Idempotency::Supported)
+        .effect(Effect::UnsafeIdempotent)
 }
 
 fn retry_spec() -> TransitionSpec {
-    TransitionSpec {
-        name: "retry".into(),
-        title: Some("Retry job".into()),
-        allowed_states: vec!["failed".into()],
-        result: TransitionResultKind::AsyncJob,
-        idempotency: Idempotency::None,
-        effect: Effect::Unsafe,
-        ..Default::default()
-    }
+    TransitionSpec::async_job("retry")
+        .title("Retry job")
+        .allowed_states(["failed"])
+        .idempotency(Idempotency::None)
+        .effect(Effect::Unsafe)
 }
 
 #[derive(Debug, Default, Deserialize)]

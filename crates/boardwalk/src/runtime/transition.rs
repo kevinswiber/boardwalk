@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// Intentional sibling use: actor.rs imports TransitionInput, while decode helpers
+// here need the transition error type. The types do not recursively contain each other.
+use super::actor::TransitionError;
+
 /// Wire-level identity of a transition (kebab-case in Siren responses).
 pub type TransitionName = String;
 
@@ -33,6 +37,20 @@ impl TransitionInput {
 
     pub fn get_str(&self, name: &str) -> Option<&str> {
         self.fields.get(name).and_then(Value::as_str)
+    }
+
+    pub fn deserialize<T: serde::de::DeserializeOwned>(self) -> Result<T, TransitionError> {
+        serde_json::from_value(self.into_value())
+            .map_err(|e| TransitionError::InvalidInput(e.to_string()))
+    }
+
+    pub fn as_deserialized<T: serde::de::DeserializeOwned>(&self) -> Result<T, TransitionError> {
+        serde_json::from_value(Value::Object(self.fields.clone().into_iter().collect()))
+            .map_err(|e| TransitionError::InvalidInput(e.to_string()))
+    }
+
+    pub fn into_value(self) -> Value {
+        Value::Object(self.fields.into_iter().collect())
     }
 }
 
@@ -111,6 +129,48 @@ pub struct TransitionSpec {
     pub fields: Vec<FieldSpec>,
 }
 
+impl TransitionSpec {
+    pub fn sync(name: impl Into<String>) -> Self {
+        TransitionSpec {
+            name: name.into(),
+            result: TransitionResultKind::Sync,
+            ..Default::default()
+        }
+    }
+
+    pub fn async_job(name: impl Into<String>) -> Self {
+        TransitionSpec {
+            name: name.into(),
+            result: TransitionResultKind::AsyncJob,
+            ..Default::default()
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn allowed_states<I, S>(mut self, states: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_states = states.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn effect(mut self, effect: Effect) -> Self {
+        self.effect = effect;
+        self
+    }
+
+    pub fn idempotency(mut self, idempotency: Idempotency) -> Self {
+        self.idempotency = idempotency;
+        self
+    }
+}
+
 /// Declarative shape of a resource kind: stable identity, optional
 /// property schema, and the streams it publishes.
 #[derive(Debug, Default, Clone)]
@@ -128,4 +188,97 @@ pub struct ResourceSpec {
 pub struct ActorSpec {
     pub resource: ResourceSpec,
     pub transitions: Vec<TransitionSpec>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde::Deserialize;
+    use serde_json::json;
+
+    use super::super::actor::TransitionError;
+    use super::*;
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Demo {
+        a: u32,
+        b: String,
+    }
+
+    fn input(pairs: &[(&str, serde_json::Value)]) -> TransitionInput {
+        TransitionInput {
+            fields: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    #[test]
+    fn deserialize_valid_object_into_struct() {
+        let got = input(&[("a", json!(1)), ("b", json!("x"))]).deserialize::<Demo>();
+        assert_eq!(
+            got.unwrap(),
+            Demo {
+                a: 1,
+                b: "x".into()
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_bad_input_is_invalid_input() {
+        let err = input(&[("a", json!("not-a-number"))])
+            .deserialize::<Demo>()
+            .unwrap_err();
+        assert!(matches!(err, TransitionError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn as_deserialized_does_not_consume() {
+        let inp = input(&[("a", json!(2)), ("b", json!("y"))]);
+        let got: Demo = inp.as_deserialized().unwrap();
+        assert_eq!(
+            got,
+            Demo {
+                a: 2,
+                b: "y".into()
+            }
+        );
+        assert!(inp.fields.contains_key("a"));
+    }
+
+    #[test]
+    fn into_value_is_json_object() {
+        let v = input(&[("a", json!(3))]).into_value();
+        assert_eq!(v, json!({ "a": 3 }));
+    }
+
+    #[test]
+    fn sync_builder_matches_literal() {
+        let spec = TransitionSpec::sync("cancel")
+            .title("Cancel job")
+            .allowed_states(["queued", "running"])
+            .effect(Effect::UnsafeIdempotent)
+            .idempotency(Idempotency::Supported);
+        assert_eq!(spec.name, "cancel");
+        assert_eq!(spec.title.as_deref(), Some("Cancel job"));
+        assert_eq!(
+            spec.allowed_states,
+            vec!["queued".to_string(), "running".to_string()]
+        );
+        assert_eq!(spec.result, TransitionResultKind::Sync);
+        assert_eq!(spec.effect, Effect::UnsafeIdempotent);
+        assert_eq!(spec.idempotency, Idempotency::Supported);
+    }
+
+    #[test]
+    fn async_job_builder_sets_result_kind() {
+        let spec = TransitionSpec::async_job("submit")
+            .title("Submit job")
+            .allowed_states(["open"]);
+        assert_eq!(spec.result, TransitionResultKind::AsyncJob);
+        assert_eq!(spec.name, "submit");
+    }
 }

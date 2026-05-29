@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
 use super::transition::{
-    Effect, Idempotency, ResourceKind, ResourceSpec, TransitionResultKind, TransitionSpec,
+    Effect, Idempotency, ResourceKind, ResourceSpec, StreamKind, StreamSpec, TransitionResultKind,
+    TransitionSpec,
 };
 
 /// Pinned, boxed `Future` alias used by the trait methods so the
@@ -80,6 +81,22 @@ pub struct TransitionAffordance {
 }
 
 impl TransitionAffordance {
+    pub fn available(spec: TransitionSpec) -> Self {
+        TransitionAffordance {
+            spec,
+            available: true,
+            unavailable_reason: None,
+        }
+    }
+
+    pub fn unavailable(spec: TransitionSpec, reason: impl Into<String>) -> Self {
+        TransitionAffordance {
+            spec,
+            available: false,
+            unavailable_reason: Some(reason.into()),
+        }
+    }
+
     /// Convenience accessor since the most common use site needs only
     /// the name.
     pub fn name(&self) -> &str {
@@ -94,6 +111,19 @@ impl TransitionAffordance {
 pub struct SnapshotStreamSpec {
     pub name: String,
     pub kind: String,
+}
+
+impl From<StreamSpec> for SnapshotStreamSpec {
+    fn from(spec: StreamSpec) -> Self {
+        let kind = match spec.kind {
+            StreamKind::Object => "object",
+            StreamKind::Binary => "binary",
+        };
+        SnapshotStreamSpec {
+            name: spec.name,
+            kind: kind.into(),
+        }
+    }
 }
 
 impl ResourceSnapshot {
@@ -278,4 +308,42 @@ pub trait Resource: Send + Sync + 'static {
         &'a self,
         ctx: ResourceCtx,
     ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::transition::{StreamKind, StreamSpec};
+    use super::*;
+
+    #[test]
+    fn affordance_available_and_unavailable() {
+        let spec = TransitionSpec::sync("cancel");
+        let a = TransitionAffordance::available(spec.clone());
+        assert!(a.available && a.unavailable_reason.is_none());
+        let u = TransitionAffordance::unavailable(spec, "only for queued/running");
+        assert!(!u.available);
+        assert_eq!(
+            u.unavailable_reason.as_deref(),
+            Some("only for queued/running")
+        );
+    }
+
+    #[test]
+    fn from_stream_spec_object() {
+        let s = SnapshotStreamSpec::from(StreamSpec {
+            name: "lifecycle".into(),
+            kind: StreamKind::Object,
+        });
+        assert_eq!(s.name, "lifecycle");
+        assert_eq!(s.kind, "object");
+    }
+
+    #[test]
+    fn from_stream_spec_binary() {
+        let s = SnapshotStreamSpec::from(StreamSpec {
+            name: "frames".into(),
+            kind: StreamKind::Binary,
+        });
+        assert_eq!(s.kind, "binary");
+    }
 }

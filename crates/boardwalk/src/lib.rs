@@ -41,7 +41,7 @@ mod tunnel;
 #[cfg(test)]
 mod internal_runtime_tests;
 
-pub use boardwalk_macros::{actor, transition};
+pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
 pub use crate::events::SlowConsumerPolicy;
 pub use crate::runtime::{
@@ -51,3 +51,17 @@ pub use crate::runtime::{
     TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
 pub use crate::server::Boardwalk;
+
+pub mod prelude {
+    //! One-stop authoring import for `Resource`/`Actor` implementors.
+
+    pub use boardwalk_macros::{actor, on_start, on_stop, transition};
+
+    pub use crate::runtime::{
+        Actor, ActorCtx, ActorError, ActorSpec, DynFuture, Effect, FieldSpec, Idempotency,
+        JobHandle, Resource, ResourceCtx, ResourceError, ResourceKind, ResourceSnapshot,
+        ResourceSpec, SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance,
+        TransitionCtx, TransitionError, TransitionInput, TransitionName, TransitionOutcome,
+        TransitionResultKind, TransitionSpec,
+    };
+}

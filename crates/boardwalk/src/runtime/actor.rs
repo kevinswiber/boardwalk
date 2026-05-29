@@ -92,6 +92,11 @@ impl TransitionCtx {
         self.actor.as_ref().map(|actor| actor.resource_id())
     }
 
+    pub fn resource_id_required(&self) -> Result<&str, TransitionError> {
+        self.resource_id()
+            .ok_or_else(|| TransitionError::Internal("TransitionCtx has no actor identity".into()))
+    }
+
     /// Register an actor-created resource on the same node and return
     /// its newly assigned resource id. Requires a context built via
     /// `TransitionCtx::with_node`; otherwise returns `Internal`.
@@ -308,6 +313,12 @@ pub enum TransitionError {
     Internal(String),
 }
 
+impl TransitionError {
+    pub fn internal(msg: impl std::fmt::Display) -> Self {
+        TransitionError::Internal(msg.to_string())
+    }
+}
+
 /// Failure modes for `on_start` / `on_stop` lifecycle hooks. Carried
 /// separately so the runtime can decide whether to retry, escalate,
 /// or unregister the actor.
@@ -316,6 +327,12 @@ pub enum ActorError {
     StartFailed(String),
     StopFailed(String),
     Internal(String),
+}
+
+impl ActorError {
+    pub fn internal(msg: impl std::fmt::Display) -> Self {
+        ActorError::Internal(msg.to_string())
+    }
 }
 
 /// Executable resource: drives state through transitions and owns
@@ -340,5 +357,45 @@ pub trait Actor: Resource {
     /// release external resources.
     fn on_stop<'a>(&'a mut self, _ctx: ActorCtx) -> DynFuture<'a, Result<(), ActorError>> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transition_error_internal_wraps_display() {
+        let err = TransitionError::internal("boom");
+        assert!(matches!(err, TransitionError::Internal(s) if s == "boom"));
+    }
+
+    #[test]
+    fn actor_error_internal_wraps_display() {
+        let err = ActorError::internal("boom");
+        assert!(matches!(err, ActorError::Internal(s) if s == "boom"));
+    }
+
+    #[test]
+    fn internal_accepts_any_display_not_just_str() {
+        let serde_err = serde_json::from_str::<u8>("\"x\"").unwrap_err();
+        let err = TransitionError::internal(serde_err);
+        assert!(matches!(err, TransitionError::Internal(_)));
+    }
+
+    #[test]
+    fn resource_id_required_errors_without_actor_identity() {
+        let ctx = TransitionCtx::new_test();
+        let err = ctx.resource_id_required().unwrap_err();
+        assert!(
+            matches!(err, TransitionError::Internal(s) if s == "TransitionCtx has no actor identity")
+        );
+    }
+
+    #[test]
+    fn resource_id_required_returns_id_when_attached() {
+        let actor = ActorCtx::new("node", "res-1", "job", Default::default());
+        let ctx = TransitionCtx::new_test().with_actor(actor);
+        assert_eq!(ctx.resource_id_required().unwrap(), "res-1");
     }
 }

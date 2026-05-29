@@ -3,7 +3,7 @@
 //! ```ignore
 //! use boardwalk::{TransitionInput, TransitionOutcome};
 //! use boardwalk::runtime::{TransitionCtx, TransitionError};
-//! use boardwalk_macros::{actor, transition};
+//! use boardwalk_macros::{actor, on_start, transition};
 //!
 //! pub struct Led { pub on: bool }
 //!
@@ -20,6 +20,14 @@
 //!         self.on = true;
 //!         /* return TransitionOutcome::Completed { ... } */
 //! #       unimplemented!()
+//!     }
+//!
+//!     #[on_start]
+//!     async fn boot(
+//!         &mut self,
+//!         _ctx: boardwalk::runtime::ActorCtx,
+//!     ) -> Result<(), boardwalk::runtime::ActorError> {
+//!         Ok(())
 //!     }
 //! }
 //! ```
@@ -38,6 +46,20 @@ use syn::{Attribute, ImplItem, ItemImpl, parse_macro_input};
 /// it's a no-op.
 #[proc_macro_attribute]
 pub fn transition(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}
+
+/// Marker attribute. Recognized by `#[actor]` on methods. On its own,
+/// it's a no-op.
+#[proc_macro_attribute]
+pub fn on_start(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}
+
+/// Marker attribute. Recognized by `#[actor]` on methods. On its own,
+/// it's a no-op.
+#[proc_macro_attribute]
+pub fn on_stop(_attr: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
@@ -84,19 +106,27 @@ pub fn actor(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let (impl_generics, _ty_generics, where_clause) = impl_block.generics.split_for_impl();
 
     let mut transitions: Vec<(syn::Ident, String, Vec<Attribute>)> = Vec::new();
+    let mut on_start_method: Option<(syn::Ident, Vec<Attribute>)> = None;
+    let mut on_stop_method: Option<(syn::Ident, Vec<Attribute>)> = None;
     for item in &mut impl_block.items {
         if let ImplItem::Fn(method) = item {
             let mut keep = Vec::with_capacity(method.attrs.len());
             let mut is_transition = false;
+            let mut is_on_start = false;
+            let mut is_on_stop = false;
             for attr in method.attrs.drain(..) {
-                let is_tr = attr
+                let marker = attr
                     .path()
                     .segments
                     .last()
-                    .map(|s| s.ident == "transition")
-                    .unwrap_or(false);
-                if is_tr {
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
+                if marker == "transition" {
                     is_transition = true;
+                } else if marker == "on_start" {
+                    is_on_start = true;
+                } else if marker == "on_stop" {
+                    is_on_stop = true;
                 } else {
                     keep.push(attr);
                 }
@@ -108,6 +138,12 @@ pub fn actor(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 let cfgs = cfg_attrs(&method.attrs);
                 transitions.push((name, wire, cfgs));
             }
+            if is_on_start && on_start_method.is_none() {
+                on_start_method = Some((method.sig.ident.clone(), cfg_attrs(&method.attrs)));
+            }
+            if is_on_stop && on_stop_method.is_none() {
+                on_stop_method = Some((method.sig.ident.clone(), cfg_attrs(&method.attrs)));
+            }
         }
     }
 
@@ -116,6 +152,34 @@ pub fn actor(_attr: TokenStream, input: TokenStream) -> TokenStream {
         quote! {
             #(#cfgs)*
             #wire => self.#method(__ctx, __input).await,
+        }
+    });
+    let on_start_fn = on_start_method.map(|(method, cfgs)| {
+        quote! {
+            #(#cfgs)*
+            fn on_start<'__a>(
+                &'__a mut self,
+                __ctx: #bw::runtime::ActorCtx,
+            ) -> #bw::runtime::DynFuture<
+                '__a,
+                ::std::result::Result<(), #bw::runtime::ActorError>,
+            > {
+                ::std::boxed::Box::pin(async move { self.#method(__ctx).await })
+            }
+        }
+    });
+    let on_stop_fn = on_stop_method.map(|(method, cfgs)| {
+        quote! {
+            #(#cfgs)*
+            fn on_stop<'__a>(
+                &'__a mut self,
+                __ctx: #bw::runtime::ActorCtx,
+            ) -> #bw::runtime::DynFuture<
+                '__a,
+                ::std::result::Result<(), #bw::runtime::ActorError>,
+            > {
+                ::std::boxed::Box::pin(async move { self.#method(__ctx).await })
+            }
         }
     });
 
@@ -146,6 +210,9 @@ pub fn actor(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     }
                 })
             }
+
+            #on_start_fn
+            #on_stop_fn
         }
     };
 
