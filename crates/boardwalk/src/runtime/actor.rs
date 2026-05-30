@@ -7,7 +7,7 @@ use serde_json::Value as JsonValue;
 
 use super::context::{CommandId, EmissionContext, EnvelopePlan, Publisher, RequestCtx};
 use super::node::Node;
-use super::resource::{DynFuture, Resource, ResourceError, TransitionOutcome};
+use super::resource::{DynFuture, Resource, ResourceError, ResourceSnapshot, TransitionOutcome};
 use super::transition::TransitionInput;
 use crate::events::{NodeId, PublishError, TraceContext};
 
@@ -95,6 +95,16 @@ impl TransitionCtx {
     pub fn resource_id_required(&self) -> Result<&str, TransitionError> {
         self.resource_id()
             .ok_or_else(|| TransitionError::Internal("TransitionCtx has no actor identity".into()))
+    }
+
+    pub fn completed(
+        &self,
+        output: Option<JsonValue>,
+        mut snapshot: ResourceSnapshot,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        snapshot.id = self.resource_id_required()?.to_string();
+        snapshot.node = self.node().to_string();
+        Ok(TransitionOutcome::Completed { output, snapshot })
     }
 
     /// Register an actor-created resource on the same node and return
@@ -397,5 +407,44 @@ mod tests {
         let actor = ActorCtx::new("node", "res-1", "job", Default::default());
         let ctx = TransitionCtx::new_test().with_actor(actor);
         assert_eq!(ctx.resource_id_required().unwrap(), "res-1");
+    }
+
+    #[test]
+    fn completed_fills_snapshot_identity_from_context() {
+        let actor = ActorCtx::new("runner", "job-1", "job", Default::default());
+        let ctx = TransitionCtx::new(RequestCtx::default(), "runner").with_actor(actor);
+
+        let outcome = ctx
+            .completed(
+                Some(serde_json::json!({ "accepted": true })),
+                crate::runtime::ResourceSnapshot::builder("job")
+                    .state("cancelled")
+                    .build(),
+            )
+            .unwrap();
+
+        let TransitionOutcome::Completed { output, snapshot } = outcome else {
+            panic!("expected completed outcome");
+        };
+        assert_eq!(output, Some(serde_json::json!({ "accepted": true })));
+        assert_eq!(snapshot.id, "job-1");
+        assert_eq!(snapshot.node, "runner");
+        assert_eq!(snapshot.kind, "job");
+        assert_eq!(snapshot.state.as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn completed_errors_without_actor_identity() {
+        let ctx = TransitionCtx::new_test();
+        let err = ctx
+            .completed(
+                None,
+                crate::runtime::ResourceSnapshot::builder("job").build(),
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(err, TransitionError::Internal(s) if s == "TransitionCtx has no actor identity")
+        );
     }
 }

@@ -260,19 +260,13 @@ impl Resource for JobQueue {
         properties.insert("succeeded_count".into(), json!(0));
         properties.insert("failed_count".into(), json!(0));
         properties.insert("cancelled_count".into(), json!(0));
-        let snapshot = ResourceSnapshot {
-            id: String::new(),
-            kind: "job.queue".into(),
-            name: Some(self.name.clone()),
-            state: Some("open".into()),
-            node: String::new(),
-            properties,
-            labels: example_labels(),
-            transitions: vec![TransitionAffordance::available(submit_spec())],
-            streams: vec![],
-            revision: None,
-            metadata: Map::new(),
-        };
+        let snapshot = ResourceSnapshot::builder("job.queue")
+            .name(self.name.clone())
+            .state("open")
+            .properties(properties)
+            .labels(example_labels())
+            .transitions(vec![TransitionAffordance::available(submit_spec())])
+            .build();
         Box::pin(async move { Ok(snapshot) })
     }
 }
@@ -377,13 +371,13 @@ impl Job {
         let mut data = self.shared.lock().await;
         data.cancel()?;
         publish_lifecycle(&ctx, &data, Some("user_cancelled")).await?;
-        Ok(TransitionOutcome::Completed {
-            output: Some(json!({
+        ctx.completed(
+            Some(json!({
                 "accepted": true,
                 "state": data.state.as_str(),
             })),
-            snapshot: data.snapshot_for_ctx(&ctx)?,
-        })
+            data.snapshot(),
+        )
     }
 
     #[boardwalk::transition]
@@ -476,42 +470,12 @@ impl JobData {
     }
 
     fn snapshot(&self) -> ResourceSnapshot {
-        ResourceSnapshot {
-            id: String::new(),
-            kind: "job".into(),
-            name: None,
-            state: Some(self.state.as_str().into()),
-            node: String::new(),
-            properties: self.properties(),
-            labels: self.labels.clone(),
-            transitions: self.transitions(),
-            streams: vec![
-                StreamSpec {
-                    name: "lifecycle".into(),
-                    kind: StreamKind::Object,
-                }
-                .into(),
-                StreamSpec {
-                    name: "progress".into(),
-                    kind: StreamKind::Object,
-                }
-                .into(),
-                StreamSpec {
-                    name: "logs".into(),
-                    kind: StreamKind::Object,
-                }
-                .into(),
-            ],
-            revision: None,
-            metadata: Map::new(),
-        }
-    }
-
-    fn snapshot_for_ctx(&self, ctx: &TransitionCtx) -> Result<ResourceSnapshot, TransitionError> {
-        let mut snapshot = self.snapshot();
-        snapshot.id = ctx.resource_id_required()?.to_string();
-        snapshot.node = ctx.node().to_string();
-        Ok(snapshot)
+        ResourceSnapshot::builder("job")
+            .state(self.state.as_str())
+            .properties(self.properties())
+            .labels(self.labels.clone())
+            .transitions(self.transitions())
+            .build()
     }
 
     fn properties(&self) -> Map<String, Value> {

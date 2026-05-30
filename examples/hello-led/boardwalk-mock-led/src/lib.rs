@@ -32,23 +32,16 @@ impl Led {
         ]
     }
 
-    fn snapshot(&self, id: impl Into<String>, node: impl Into<String>) -> ResourceSnapshot {
-        ResourceSnapshot {
-            id: id.into(),
-            kind: "led".into(),
-            name: Some("LED".into()),
-            state: Some(self.state().into()),
-            node: node.into(),
-            properties: serde_json::Map::new(),
-            labels: BTreeMap::new(),
-            transitions: self.transition_affordances(),
-            streams: vec![SnapshotStreamSpec {
+    fn snapshot(&self) -> ResourceSnapshot {
+        ResourceSnapshot::builder("led")
+            .name("LED")
+            .state(self.state())
+            .transitions(self.transition_affordances())
+            .streams(vec![SnapshotStreamSpec {
                 name: "state".into(),
-                kind: "object".into(),
-            }],
-            revision: None,
-            metadata: serde_json::Map::new(),
-        }
+                kind: StreamKind::Object,
+            }])
+            .build()
     }
 }
 
@@ -70,8 +63,7 @@ impl Resource for Led {
         &'a self,
         _ctx: ResourceCtx,
     ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
-        // Runtime directory entries overwrite id/kind/node on snapshots.
-        let snap = self.snapshot("ignored", "ignored");
+        let snap = self.snapshot();
         Box::pin(async move { Ok(snap) })
     }
 }
@@ -116,13 +108,7 @@ impl Led {
 }
 
 fn completed(ctx: &TransitionCtx, led: &Led) -> Result<TransitionOutcome, TransitionError> {
-    let resource_id = ctx
-        .resource_id()
-        .ok_or_else(|| TransitionError::Internal("TransitionCtx has no actor identity".into()))?;
-    Ok(TransitionOutcome::Completed {
-        output: None,
-        snapshot: led.snapshot(resource_id, ctx.node().to_string()),
-    })
+    ctx.completed(None, led.snapshot())
 }
 
 fn transition(

@@ -49,7 +49,7 @@ impl ActorLed {
             ],
             streams: vec![SnapshotStreamSpec {
                 name: "state".into(),
-                kind: "object".into(),
+                kind: StreamKind::Object,
             }],
             revision: None,
             metadata: Map::new(),

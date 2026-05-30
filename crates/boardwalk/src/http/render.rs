@@ -5,9 +5,7 @@ use url::Url;
 
 use super::core::Core;
 use crate::peer::PeerCapabilities;
-use crate::runtime::{
-    ActorSpec, Effect, Idempotency, ResourceSnapshot, StreamKind, TransitionResultKind,
-};
+use crate::runtime::{ActorSpec, Effect, Idempotency, ResourceSnapshot, TransitionResultKind};
 use crate::siren::{Action, EmbeddedEntity, Entity, Field, Link, SubEntity, rels};
 
 /// Url root for absolute hrefs. Computed per-request from request scheme + host.
@@ -415,10 +413,7 @@ pub(crate) fn render_meta_type(h: &Hrefs, ty: &KindMeta) -> Entity {
 fn stream_spec_json(spec: &crate::runtime::StreamSpec) -> Value {
     serde_json::json!({
         "name": spec.name,
-        "kind": match spec.kind {
-            StreamKind::Object => "object",
-            StreamKind::Binary => "binary",
-        },
+        "kind": spec.kind,
     })
 }
 
@@ -462,7 +457,7 @@ mod tests {
     use serde_json::{Map, Value as Json};
 
     use super::*;
-    use crate::runtime::{SnapshotStreamSpec as StreamSpec, TransitionAffordance};
+    use crate::runtime::{SnapshotStreamSpec as StreamSpec, StreamKind, TransitionAffordance};
 
     fn hrefs() -> Hrefs {
         Hrefs {
@@ -501,7 +496,7 @@ mod tests {
             ],
             streams: vec![StreamSpec {
                 name: "state".into(),
-                kind: "object".into(),
+                kind: StreamKind::Object,
             }],
             revision: None,
             metadata: Map::new(),
@@ -667,5 +662,25 @@ mod tests {
             stream_href.contains("hub%2Fled%2Fabc%2Fstate"),
             "stream href should use snapshot stream metadata, got {stream_href}"
         );
+    }
+
+    #[test]
+    fn resource_renderer_serializes_snapshot_stream_kind_lowercase() {
+        let h = hrefs();
+        let mut snap = led_snapshot();
+        snap.streams.push(StreamSpec {
+            name: "frames".into(),
+            kind: StreamKind::Binary,
+        });
+
+        let resource = render_resource(&h, &snap, RenderPolicy::local());
+        let v = serde_json::to_value(&resource).unwrap();
+        let links = v["links"].as_array().unwrap();
+        assert!(links.iter().any(|link| link["title"] == "state"));
+        assert!(links.iter().any(|link| link["title"] == "frames"));
+
+        let query_value = snap.to_query_value();
+        assert_eq!(query_value["streams"][0]["kind"], "object");
+        assert_eq!(query_value["streams"][1]["kind"], "binary");
     }
 }

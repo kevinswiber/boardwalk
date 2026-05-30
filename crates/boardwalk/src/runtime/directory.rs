@@ -7,7 +7,7 @@ use super::executor::{ActorHandle, ActorSlot};
 use super::resource::{
     ResourceCtx, ResourceError, ResourceSnapshot, SnapshotStreamSpec, TransitionAffordance,
 };
-use super::transition::{ActorSpec, ResourceSpec, StreamKind};
+use super::transition::{ActorSpec, ResourceSpec};
 
 /// One registered entry in the directory. Holds the live actor task
 /// handle so the node can shut it down deterministically.
@@ -95,6 +95,9 @@ impl Entry {
         snap.id = self.id.clone();
         snap.kind = self.kind.clone();
         snap.node = node.to_string();
+        if snap.streams.is_empty() {
+            snap.streams = self.default_snapshot_streams();
+        }
         Ok(snap)
     }
 
@@ -127,20 +130,18 @@ impl Entry {
             properties: serde_json::Map::new(),
             labels: self.resource_spec.labels.clone(),
             transitions: Vec::new(),
-            streams: self
-                .resource_spec
-                .streams
-                .iter()
-                .map(|stream| SnapshotStreamSpec {
-                    name: stream.name.clone(),
-                    kind: match stream.kind {
-                        StreamKind::Object => "object".into(),
-                        StreamKind::Binary => "binary".into(),
-                    },
-                })
-                .collect(),
+            streams: self.default_snapshot_streams(),
             revision: None,
             metadata: serde_json::Map::new(),
         }
+    }
+
+    fn default_snapshot_streams(&self) -> Vec<SnapshotStreamSpec> {
+        self.resource_spec
+            .streams
+            .iter()
+            .cloned()
+            .map(SnapshotStreamSpec::from)
+            .collect()
     }
 }

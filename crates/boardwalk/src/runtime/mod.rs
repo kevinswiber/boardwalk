@@ -23,7 +23,7 @@ pub(crate) use node::ResourceSnapshotRead;
 pub use node::{Node, NodeBuilder};
 pub use resource::{
     DynFuture, JobHandle, Resource, ResourceCtx, ResourceError, ResourceSnapshot,
-    SnapshotStreamSpec, TransitionAffordance, TransitionOutcome,
+    ResourceSnapshotBuilder, SnapshotStreamSpec, TransitionAffordance, TransitionOutcome,
 };
 pub use transition::{
     ActorSpec, Effect, FieldSpec, Idempotency, ResourceKind, ResourceSpec, StateName, StreamKind,

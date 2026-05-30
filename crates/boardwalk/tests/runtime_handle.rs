@@ -9,7 +9,10 @@ use boardwalk::runtime::{
     Actor, DynFuture, NodeBuilder, NodeHandle, Resource, ResourceCtx, ResourceError, TransitionCtx,
     TransitionError,
 };
-use boardwalk::{ResourceSnapshot, ResourceSpec, TransitionInput, TransitionOutcome};
+use boardwalk::{
+    ResourceSnapshot, ResourceSpec, SnapshotStreamSpec, StreamKind, StreamSpec, TransitionInput,
+    TransitionOutcome,
+};
 
 #[derive(Default)]
 struct Counter {
@@ -63,6 +66,56 @@ impl Actor for Counter {
     }
 }
 
+struct Streamy {
+    override_streams: Option<Vec<SnapshotStreamSpec>>,
+}
+
+impl Resource for Streamy {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "streamy".into(),
+            name: None,
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: vec![
+                StreamSpec {
+                    name: "lifecycle".into(),
+                    kind: StreamKind::Object,
+                },
+                StreamSpec {
+                    name: "frames".into(),
+                    kind: StreamKind::Binary,
+                },
+            ],
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move {
+            let streams = self.override_streams.clone().unwrap_or_default();
+            Ok(ResourceSnapshot::builder("streamy")
+                .streams(streams)
+                .build())
+        })
+    }
+}
+
+impl Actor for Streamy {
+    fn transition<'a>(
+        &'a mut self,
+        _ctx: TransitionCtx,
+        _name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(
+            async move { Err::<TransitionOutcome, _>(TransitionError::NotAllowed("stub".into())) },
+        )
+    }
+}
+
 #[tokio::test]
 async fn node_handle_query_returns_resource_proxy() {
     let node = Arc::new(NodeBuilder::new("runner").build());
@@ -89,6 +142,75 @@ async fn resource_proxy_snapshot_returns_resource_snapshot() {
     assert_eq!(snap.id, id);
     assert_eq!(snap.kind, "counter");
     assert_eq!(snap.properties.get("n"), Some(&serde_json::json!(7)));
+}
+
+#[tokio::test]
+async fn resource_snapshot_inherits_spec_streams_when_snapshot_streams_are_empty() {
+    let node = Arc::new(NodeBuilder::new("runner").build());
+    let id = node
+        .register_actor(Streamy {
+            override_streams: None,
+        })
+        .await
+        .unwrap();
+
+    let handle = NodeHandle::new(node);
+    let snap = handle
+        .query(r#"where kind = "streamy""#)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|proxy| proxy.id() == id)
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+
+    let streams: Vec<(&str, StreamKind)> = snap
+        .streams
+        .iter()
+        .map(|stream| (stream.name.as_str(), stream.kind))
+        .collect();
+    assert_eq!(
+        streams,
+        vec![
+            ("lifecycle", StreamKind::Object),
+            ("frames", StreamKind::Binary)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn resource_snapshot_keeps_non_empty_stream_override() {
+    let node = Arc::new(NodeBuilder::new("runner").build());
+    let id = node
+        .register_actor(Streamy {
+            override_streams: Some(vec![SnapshotStreamSpec {
+                name: "custom".into(),
+                kind: StreamKind::Object,
+            }]),
+        })
+        .await
+        .unwrap();
+
+    let handle = NodeHandle::new(node);
+    let snap = handle
+        .query(r#"where kind = "streamy""#)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|proxy| proxy.id() == id)
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+
+    let streams: Vec<(&str, StreamKind)> = snap
+        .streams
+        .iter()
+        .map(|stream| (stream.name.as_str(), stream.kind))
+        .collect();
+    assert_eq!(streams, vec![("custom", StreamKind::Object)]);
 }
 
 #[tokio::test]

@@ -67,6 +67,57 @@ pub struct ResourceSnapshot {
     pub metadata: Map<String, JsonValue>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResourceSnapshotBuilder {
+    snapshot: ResourceSnapshot,
+}
+
+impl ResourceSnapshotBuilder {
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.snapshot.name = Some(name.into());
+        self
+    }
+
+    pub fn state(mut self, state: impl Into<String>) -> Self {
+        self.snapshot.state = Some(state.into());
+        self
+    }
+
+    pub fn properties(mut self, properties: Map<String, JsonValue>) -> Self {
+        self.snapshot.properties = properties;
+        self
+    }
+
+    pub fn labels(mut self, labels: BTreeMap<String, String>) -> Self {
+        self.snapshot.labels = labels;
+        self
+    }
+
+    pub fn transitions(mut self, transitions: Vec<TransitionAffordance>) -> Self {
+        self.snapshot.transitions = transitions;
+        self
+    }
+
+    pub fn streams(mut self, streams: Vec<SnapshotStreamSpec>) -> Self {
+        self.snapshot.streams = streams;
+        self
+    }
+
+    pub fn revision(mut self, revision: impl Into<String>) -> Self {
+        self.snapshot.revision = Some(revision.into());
+        self
+    }
+
+    pub fn metadata(mut self, metadata: Map<String, JsonValue>) -> Self {
+        self.snapshot.metadata = metadata;
+        self
+    }
+
+    pub fn build(self) -> ResourceSnapshot {
+        self.snapshot
+    }
+}
+
 /// One transition affordance on a resource. Carries the full
 /// declared `TransitionSpec` so metadata renderers can read schema,
 /// effect, idempotency, and required scopes directly from a snapshot.
@@ -110,23 +161,37 @@ impl TransitionAffordance {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotStreamSpec {
     pub name: String,
-    pub kind: String,
+    pub kind: StreamKind,
 }
 
 impl From<StreamSpec> for SnapshotStreamSpec {
     fn from(spec: StreamSpec) -> Self {
-        let kind = match spec.kind {
-            StreamKind::Object => "object",
-            StreamKind::Binary => "binary",
-        };
         SnapshotStreamSpec {
             name: spec.name,
-            kind: kind.into(),
+            kind: spec.kind,
         }
     }
 }
 
 impl ResourceSnapshot {
+    pub fn builder(kind: impl Into<String>) -> ResourceSnapshotBuilder {
+        ResourceSnapshotBuilder {
+            snapshot: ResourceSnapshot {
+                id: String::new(),
+                kind: kind.into(),
+                name: None,
+                state: None,
+                node: String::new(),
+                properties: Map::new(),
+                labels: BTreeMap::new(),
+                transitions: Vec::new(),
+                streams: Vec::new(),
+                revision: None,
+                metadata: Map::new(),
+            },
+        }
+    }
+
     /// Produces the JSON shape the query evaluator targets. `None`
     /// fields serialize as `Null` so `Exists(path)` semantics remain
     /// truthful (the key is always present).
@@ -172,7 +237,10 @@ impl ResourceSnapshot {
             .map(|s| {
                 let mut m = Map::new();
                 m.insert("name".into(), JsonValue::String(s.name.clone()));
-                m.insert("kind".into(), JsonValue::String(s.kind.clone()));
+                m.insert(
+                    "kind".into(),
+                    serde_json::to_value(s.kind).expect("StreamKind serializes"),
+                );
                 JsonValue::Object(m)
             })
             .collect();
@@ -335,7 +403,7 @@ mod tests {
             kind: StreamKind::Object,
         });
         assert_eq!(s.name, "lifecycle");
-        assert_eq!(s.kind, "object");
+        assert_eq!(s.kind, StreamKind::Object);
     }
 
     #[test]
@@ -344,6 +412,77 @@ mod tests {
             name: "frames".into(),
             kind: StreamKind::Binary,
         });
-        assert_eq!(s.kind, "binary");
+        assert_eq!(s.kind, StreamKind::Binary);
+    }
+
+    #[test]
+    fn builder_defaults_runtime_owned_fields_empty() {
+        let snap = ResourceSnapshot::builder("job").state("running").build();
+
+        assert_eq!(snap.kind, "job");
+        assert!(snap.id.is_empty());
+        assert!(snap.node.is_empty());
+        assert_eq!(snap.state.as_deref(), Some("running"));
+        assert!(snap.revision.is_none());
+        assert!(snap.metadata.is_empty());
+    }
+
+    #[test]
+    fn builder_serializes_like_equivalent_struct_literal() {
+        let mut properties = serde_json::Map::new();
+        properties.insert("progress".into(), serde_json::json!(50));
+
+        let built = ResourceSnapshot::builder("job")
+            .name("Example job")
+            .state("running")
+            .properties(properties.clone())
+            .labels(BTreeMap::from([("queue".into(), "default".into())]))
+            .streams(vec![SnapshotStreamSpec {
+                name: "progress".into(),
+                kind: StreamKind::Object,
+            }])
+            .build();
+
+        let literal = ResourceSnapshot {
+            id: String::new(),
+            kind: "job".into(),
+            name: Some("Example job".into()),
+            state: Some("running".into()),
+            node: String::new(),
+            properties,
+            labels: BTreeMap::from([("queue".into(), "default".into())]),
+            transitions: vec![],
+            streams: vec![SnapshotStreamSpec {
+                name: "progress".into(),
+                kind: StreamKind::Object,
+            }],
+            revision: None,
+            metadata: serde_json::Map::new(),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&built).unwrap(),
+            serde_json::to_string(&literal).unwrap()
+        );
+    }
+
+    #[test]
+    fn snapshot_stream_kind_serializes_lowercase_in_query_value() {
+        let snap = ResourceSnapshot::builder("job")
+            .streams(vec![
+                SnapshotStreamSpec {
+                    name: "progress".into(),
+                    kind: StreamKind::Object,
+                },
+                SnapshotStreamSpec {
+                    name: "frames".into(),
+                    kind: StreamKind::Binary,
+                },
+            ])
+            .build();
+
+        let value = snap.to_query_value();
+        assert_eq!(value["streams"][0]["kind"], "object");
+        assert_eq!(value["streams"][1]["kind"], "binary");
     }
 }

@@ -56,6 +56,7 @@ impl TransitionInput {
 
 /// Stream kind hint, surfaced in metadata for clients.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum StreamKind {
     /// JSON-serializable structured data.
     #[default]
