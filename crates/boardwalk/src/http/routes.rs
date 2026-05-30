@@ -16,7 +16,7 @@ use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
 use crate::peer::{AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities};
-use crate::query::{FieldPath, QueryScope};
+use crate::query::QueryScope;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
 
@@ -1083,44 +1083,10 @@ fn subscribe_opts_from_query(query: &EventsQuery) -> Result<SubscribeOpts, Strin
     let policy_name = query
         .slow_consumer_policy
         .as_deref()
-        .unwrap_or("disconnect")
-        .replace('_', "-")
-        .to_ascii_lowercase();
-    let slow_consumer_policy = match policy_name.as_str() {
-        "disconnect" => {
-            if query.coalesce_key.is_some() {
-                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
-            }
-            SlowConsumerPolicy::Disconnect
-        }
-        "backpressure" => {
-            if query.coalesce_key.is_some() {
-                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
-            }
-            SlowConsumerPolicy::Backpressure
-        }
-        "drop-newest" | "dropnewest" => {
-            if query.coalesce_key.is_some() {
-                return Err("coalesceKey requires slowConsumerPolicy=coalesce".into());
-            }
-            SlowConsumerPolicy::DropNewest
-        }
-        "coalesce" => {
-            let key = query
-                .coalesce_key
-                .as_deref()
-                .ok_or_else(|| "slowConsumerPolicy=coalesce requires coalesceKey".to_string())?;
-            let key_path = FieldPath::try_parse(key)
-                .map_err(|err| format!("invalid coalesceKey `{key}`: {err}"))?;
-            SlowConsumerPolicy::Coalesce { key_path }
-        }
-        _ => {
-            return Err(format!(
-                "unknown slowConsumerPolicy `{}`; expected disconnect, backpressure, drop-newest, or coalesce",
-                query.slow_consumer_policy.as_deref().unwrap_or_default()
-            ));
-        }
-    };
+        .unwrap_or("disconnect");
+    let slow_consumer_policy =
+        SlowConsumerPolicy::from_query(policy_name, query.coalesce_key.as_deref())
+            .map_err(|err| err.to_string())?;
     Ok(SubscribeOpts {
         outbound_capacity: query.outbound_capacity,
         slow_consumer_policy,

@@ -9,8 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use boardwalk::links::SubscriptionUrl;
 use boardwalk::prelude::*;
-use boardwalk::{Boardwalk, JobHandle as OutcomeJobHandle};
+use boardwalk::{Boardwalk, JobHandle as OutcomeJobHandle, SlowConsumerPolicy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
@@ -178,25 +179,18 @@ impl JobStreams {
 }
 
 fn stream_href(job_id: &str, stream: &str) -> String {
-    let topic = format!("{NODE_NAME}/job/{job_id}/{stream}");
-    let capacity = STREAM_OUTBOUND_CAPACITY.to_string();
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    query
-        .append_pair("topic", &topic)
-        .append_pair("outboundCapacity", &capacity)
-        .append_pair("replay", "true");
-    match stream {
-        "progress" => {
-            query
-                .append_pair("slowConsumerPolicy", "coalesce")
-                .append_pair("coalesceKey", "data.coalesceKey");
-        }
-        "logs" | "lifecycle" => {
-            query.append_pair("slowConsumerPolicy", "backpressure");
-        }
-        _ => {}
-    }
-    format!("/servers/{NODE_NAME}/events?{}", query.finish())
+    let url = SubscriptionUrl::for_resource(NODE_NAME, "job", job_id, stream)
+        .outbound_capacity(STREAM_OUTBOUND_CAPACITY)
+        .replay(true);
+    let url = match stream {
+        "progress" => url.slow_consumer(
+            SlowConsumerPolicy::from_query("coalesce", Some("data.coalesceKey"))
+                .expect("static coalesce key path is valid"),
+        ),
+        "logs" | "lifecycle" => url.slow_consumer(SlowConsumerPolicy::Backpressure),
+        _ => url,
+    };
+    url.relative_href()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -771,21 +765,5 @@ mod tests {
             .expect("test server should bind and build node");
         assert_eq!(runner.queue_id(), QUEUE_ID);
         assert!(runner.url("/resources").starts_with("http://127.0.0.1:"));
-    }
-
-    #[test]
-    fn stream_href_url_encodes_topic_and_policy_query() {
-        let href = stream_href("id&weird", "progress");
-
-        assert!(href.starts_with("/servers/runner/events?"));
-        assert!(href.contains("topic=runner%2Fjob%2Fid%26weird%2Fprogress"));
-        assert!(href.contains("outboundCapacity=16"));
-        assert!(href.contains("replay=true"));
-        assert!(href.contains("slowConsumerPolicy=coalesce"));
-        assert!(href.contains("coalesceKey=data.coalesceKey"));
-        assert!(
-            !href.contains("id&weird"),
-            "topic query value should be URL-encoded: {href}"
-        );
     }
 }

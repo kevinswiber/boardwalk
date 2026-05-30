@@ -30,6 +30,7 @@
 pub mod caql;
 pub mod events;
 mod http;
+pub mod links;
 mod peer;
 mod persistence;
 pub mod query;
