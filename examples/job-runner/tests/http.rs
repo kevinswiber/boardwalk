@@ -5,9 +5,35 @@ use futures::StreamExt;
 use reqwest::StatusCode;
 use serde_json::{Value as Json, json};
 
+fn example_sources() -> Vec<(String, String)> {
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources: Vec<_> = std::fs::read_dir(&src_dir)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", src_dir.display()))
+        .map(|entry| {
+            let path = entry
+                .unwrap_or_else(|e| panic!("could not read entry under {}: {e}", src_dir.display()))
+                .path();
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
+            (path.display().to_string(), source)
+        })
+        .filter(|(path, _)| path.ends_with(".rs"))
+        .collect();
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
+    sources
+}
+
+fn joined_example_source() -> String {
+    example_sources()
+        .into_iter()
+        .map(|(path, source)| format!("// {path}\n{source}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn job_runner_example_uses_reusable_boardwalk_runtime() {
-    let example_source = include_str!("../src/lib.rs");
+    let example_source = joined_example_source();
 
     assert!(
         example_source.contains("Boardwalk::new()"),
@@ -99,7 +125,7 @@ async fn job_runner_example_submits_and_streams_success_without_shelling_out() {
     assert_eq!(job["properties"]["progress"], 100);
     assert_eq!(job["properties"]["result"], json!({ "status": "ok" }));
 
-    let example_source = include_str!("../src/lib.rs");
+    let example_source = joined_example_source();
     for forbidden in ["std::process", "tokio::process", "Command::new", "/bin/sh"] {
         assert!(
             !example_source.contains(forbidden),
