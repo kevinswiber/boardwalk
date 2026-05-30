@@ -82,7 +82,7 @@ pub struct FieldSpec {
 
 /// How a transition's effect is delivered. `Sync` transitions return
 /// the updated `ResourceSnapshot` directly; `AsyncJob` transitions
-/// hand back a typed `JobHandle` that the caller follows on a job
+/// hand back a typed `AcceptedJob` that the caller follows on a job
 /// resource.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionResultKind {

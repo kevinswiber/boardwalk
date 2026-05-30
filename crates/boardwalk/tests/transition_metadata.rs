@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use boardwalk::{
-    ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceSpec, StreamKind, StreamSpec,
+    AcceptedJob, ActorSpec, Effect, FieldSpec, Idempotency, ResourceSpec, StreamKind, StreamSpec,
     TransitionOutcome, TransitionResultKind, TransitionSpec,
 };
 use serde_json::json;
@@ -102,8 +102,8 @@ fn actor_spec_carries_transition_specs() {
 }
 
 #[test]
-fn transition_outcome_accepted_carries_typed_job_handle() {
-    let handle = JobHandle {
+fn transition_outcome_accepted_carries_typed_accepted_job() {
+    let handle = AcceptedJob {
         id: "job-1".into(),
         kind: "job".into(),
         location: "/resources/job-1".into(),

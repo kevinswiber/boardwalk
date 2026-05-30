@@ -46,7 +46,7 @@ pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
 pub use crate::events::SlowConsumerPolicy;
 pub use crate::runtime::{
-    Actor, ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, Node, NodeBuilder, NodeHandle,
+    AcceptedJob, Actor, ActorSpec, Effect, FieldSpec, Idempotency, Node, NodeBuilder, NodeHandle,
     Resource, ResourceKind, ResourceSnapshot, ResourceSnapshotBuilder, ResourceSpec,
     SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance, TransitionInput,
     TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
@@ -59,8 +59,8 @@ pub mod prelude {
     pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
     pub use crate::runtime::{
-        Actor, ActorCtx, ActorError, ActorSpec, DynFuture, Effect, FieldSpec, Idempotency,
-        JobHandle, Resource, ResourceCtx, ResourceError, ResourceKind, ResourceSnapshot,
+        AcceptedJob, Actor, ActorCtx, ActorError, ActorSpec, DynFuture, Effect, FieldSpec,
+        Idempotency, Resource, ResourceCtx, ResourceError, ResourceKind, ResourceSnapshot,
         ResourceSnapshotBuilder, ResourceSpec, SnapshotStreamSpec, StateName, StreamKind,
         StreamSpec, TransitionAffordance, TransitionCtx, TransitionError, TransitionInput,
         TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,

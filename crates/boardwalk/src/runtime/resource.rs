@@ -12,6 +12,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
+use super::actor::TransitionError;
 use super::transition::{
     Effect, Idempotency, ResourceKind, ResourceSpec, StreamKind, StreamSpec, TransitionResultKind,
     TransitionSpec,
@@ -342,7 +343,7 @@ fn transition_affordance_to_query_json(t: &TransitionAffordance) -> JsonValue {
 
 /// Typed handle for an async transition's downstream job resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobHandle {
+pub struct AcceptedJob {
     pub id: String,
     pub kind: ResourceKind,
     pub location: String,
@@ -351,7 +352,7 @@ pub struct JobHandle {
 
 /// Typed return type for invoking a transition. `Sync` transitions
 /// produce `Completed`; async ones produce `Accepted` with a typed
-/// `JobHandle`.
+/// `AcceptedJob`.
 #[derive(Debug, Clone)]
 pub enum TransitionOutcome {
     Completed {
@@ -359,9 +360,19 @@ pub enum TransitionOutcome {
         snapshot: ResourceSnapshot,
     },
     Accepted {
-        job: JobHandle,
+        job: AcceptedJob,
         output: Option<JsonValue>,
     },
+}
+
+impl TransitionOutcome {
+    pub fn accepted(job: AcceptedJob, output: impl Serialize) -> Result<Self, TransitionError> {
+        let output = serde_json::to_value(output).map_err(TransitionError::internal)?;
+        Ok(TransitionOutcome::Accepted {
+            job,
+            output: Some(output),
+        })
+    }
 }
 
 /// Addressable read-only projection on a node.
@@ -380,8 +391,33 @@ pub trait Resource: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+    use serde::Serialize;
+    use serde_json::json;
+
+    use super::super::actor::TransitionError;
     use super::super::transition::{StreamKind, StreamSpec};
     use super::*;
+
+    fn accepted_job(created: bool) -> AcceptedJob {
+        AcceptedJob {
+            id: "job-1".into(),
+            kind: "job".into(),
+            location: "/resources/job-1".into(),
+            created,
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingPayload;
+
+    impl Serialize for FailingPayload {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("boom"))
+        }
+    }
 
     #[test]
     fn affordance_available_and_unavailable() {
@@ -394,6 +430,32 @@ mod tests {
             u.unavailable_reason.as_deref(),
             Some("only for queued/running")
         );
+    }
+
+    #[test]
+    fn accepted_serializes_payload_and_job_handle() {
+        let handle = accepted_job(true);
+        let outcome = TransitionOutcome::accepted(handle.clone(), json!({"queued": true}))
+            .expect("accepted outcome");
+
+        match outcome {
+            TransitionOutcome::Accepted { job, output } => {
+                assert_eq!(job, handle);
+                assert_eq!(output, Some(json!({"queued": true})));
+            }
+            TransitionOutcome::Completed { .. } => panic!("expected accepted outcome"),
+        }
+    }
+
+    #[test]
+    fn accepted_maps_payload_serialization_errors() {
+        let err = TransitionOutcome::accepted(accepted_job(false), FailingPayload)
+            .expect_err("payload serialization should fail");
+
+        assert!(matches!(
+            err,
+            TransitionError::Internal(message) if message.contains("boom")
+        ));
     }
 
     #[test]

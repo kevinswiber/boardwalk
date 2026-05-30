@@ -20,6 +20,8 @@ fn job_runner_example_uses_reusable_boardwalk_runtime() {
         "resource_stream_get",
         "transition_response",
         "event_line",
+        "JobHandle as OutcomeJobHandle",
+        "OutcomeJobHandle",
     ] {
         assert!(
             !example_source.contains(forbidden),

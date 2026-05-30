@@ -457,17 +457,17 @@ fn peer_policy_internals_are_not_crate_root_exports() {
 #[test]
 fn runtime_owns_final_resource_and_transition_contracts() {
     use boardwalk::runtime::{
-        ActorSpec, Effect, FieldSpec, Idempotency, JobHandle, ResourceKind, ResourceSnapshot,
+        AcceptedJob, ActorSpec, Effect, FieldSpec, Idempotency, ResourceKind, ResourceSnapshot,
         ResourceSpec, SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance,
         TransitionInput, TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
     };
 
     fn assert_public<T>() {}
+    assert_public::<AcceptedJob>();
     assert_public::<ActorSpec>();
     assert_public::<Effect>();
     assert_public::<FieldSpec>();
     assert_public::<Idempotency>();
-    assert_public::<JobHandle>();
     assert_public::<ResourceKind>();
     assert_public::<ResourceSnapshot>();
     assert_public::<ResourceSpec>();
@@ -485,6 +485,13 @@ fn runtime_owns_final_resource_and_transition_contracts() {
     let root_snapshot: Option<boardwalk::ResourceSnapshot> = None;
     let runtime_snapshot: Option<ResourceSnapshot> = root_snapshot;
     let _: Option<ResourceSnapshot> = runtime_snapshot;
+
+    let root_job: Option<boardwalk::AcceptedJob> = None;
+    let runtime_job: Option<AcceptedJob> = root_job;
+    let _: Option<AcceptedJob> = runtime_job;
+
+    fn assert_prelude_accepts_accepted_job(_: Option<boardwalk::prelude::AcceptedJob>) {}
+    assert_prelude_accepts_accepted_job(None);
 
     let runtime_dir = repo_path("crates/boardwalk/src/runtime");
     let mut runtime_files = Vec::new();

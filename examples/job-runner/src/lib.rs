@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use boardwalk::links::SubscriptionUrl;
 use boardwalk::prelude::*;
-use boardwalk::{Boardwalk, JobHandle as OutcomeJobHandle, SlowConsumerPolicy};
+use boardwalk::{Boardwalk, SlowConsumerPolicy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
@@ -150,8 +150,8 @@ impl JobHandle {
         }
     }
 
-    fn to_outcome_handle(&self, created: bool) -> OutcomeJobHandle {
-        OutcomeJobHandle {
+    fn to_outcome_job(&self, created: bool) -> AcceptedJob {
+        AcceptedJob {
             id: self.job_id.clone(),
             kind: "job".into(),
             location: self.href.clone(),
@@ -285,11 +285,7 @@ impl JobQueue {
             .await?;
         self.submitted += 1;
         let handle = JobHandle::for_job(id);
-        let output = serde_json::to_value(&handle).map_err(TransitionError::internal)?;
-        Ok(TransitionOutcome::Accepted {
-            job: handle.to_outcome_handle(true),
-            output: Some(output),
-        })
+        TransitionOutcome::accepted(handle.to_outcome_job(true), &handle)
     }
 }
 
@@ -405,11 +401,7 @@ impl Job {
         publish_lifecycle(&ctx, &data, Some("retried")).await?;
         let id = ctx.resource_id_required()?;
         let handle = JobHandle::for_job(id.to_string());
-        let output = serde_json::to_value(&handle).map_err(TransitionError::internal)?;
-        Ok(TransitionOutcome::Accepted {
-            job: handle.to_outcome_handle(false),
-            output: Some(output),
-        })
+        TransitionOutcome::accepted(handle.to_outcome_job(false), &handle)
     }
 
     #[boardwalk::on_start]

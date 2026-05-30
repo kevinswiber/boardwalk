@@ -1686,12 +1686,12 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::runtime::{JobHandle, NodeBuilder};
+    use crate::runtime::{AcceptedJob, NodeBuilder};
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {
         let resp = transition_outcome_response(TransitionOutcome::Accepted {
-            job: JobHandle {
+            job: AcceptedJob {
                 id: "job-1".into(),
                 kind: "job".into(),
                 location: "/resources/job-1".into(),
@@ -1717,7 +1717,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_existing_transition_sets_202_without_location() {
         let resp = transition_outcome_response(TransitionOutcome::Accepted {
-            job: JobHandle {
+            job: AcceptedJob {
                 id: "job-1".into(),
                 kind: "job".into(),
                 location: "/resources/job-1".into(),
@@ -1736,7 +1736,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_created_transition_rejects_invalid_location_header() {
         let resp = transition_outcome_response(TransitionOutcome::Accepted {
-            job: JobHandle {
+            job: AcceptedJob {
                 id: "job-1".into(),
                 kind: "job".into(),
                 location: "/resources/job-1\nx".into(),
