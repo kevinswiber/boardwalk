@@ -13,6 +13,7 @@ use crate::events::{
     publish_lifecycle, publish_lifecycle_from_actor, publish_log_from_actor,
     publish_progress_from_actor,
 };
+use crate::streams::JobStream;
 use crate::{FIXED_FINISHED_AT, FIXED_STARTED_AT, FIXED_SUBMITTED_AT};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,20 +87,7 @@ impl Resource for Job {
             name: None,
             labels: example_labels(),
             property_schema: None,
-            streams: vec![
-                StreamSpec {
-                    name: "lifecycle".into(),
-                    kind: StreamKind::Object,
-                },
-                StreamSpec {
-                    name: "progress".into(),
-                    kind: StreamKind::Object,
-                },
-                StreamSpec {
-                    name: "logs".into(),
-                    kind: StreamKind::Object,
-                },
-            ],
+            streams: JobStream::ALL.into_iter().map(JobStream::spec).collect(),
         }
     }
 
@@ -384,4 +372,54 @@ fn retry_spec() -> TransitionSpec {
         .allowed_states(["failed"])
         .idempotency(Idempotency::None)
         .effect(Effect::Unsafe)
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+    use crate::api::{FakeCommand, SubmitJob};
+    use crate::streams::JobStream;
+
+    fn sample_job() -> Job {
+        Job::from_submit(
+            "default".into(),
+            SubmitJob {
+                command: FakeCommand::SuccessAfterTicks { ticks: 1 },
+                labels: Default::default(),
+                owner: None,
+                priority: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn spec_declares_streams_from_jobstream() {
+        let spec = sample_job().spec();
+        let declared: Vec<String> = spec.streams.iter().map(|s| s.name.clone()).collect();
+        let expected: Vec<String> = JobStream::ALL
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(declared, expected);
+        assert!(
+            spec.streams
+                .iter()
+                .all(|s| matches!(s.kind, StreamKind::Object))
+        );
+    }
+
+    #[test]
+    fn spec_has_no_inline_stream_name_literals() {
+        let production = include_str!("job.rs").split("#[cfg(test)]").next().unwrap();
+        for literal in [
+            "name: \"lifecycle\"",
+            "name: \"progress\"",
+            "name: \"logs\"",
+        ] {
+            assert!(
+                !production.contains(literal),
+                "job.rs spec should derive stream names from JobStream, found `{literal}`"
+            );
+        }
+    }
 }

@@ -8,6 +8,7 @@ mod api;
 mod events;
 mod job;
 mod queue;
+mod streams;
 
 use std::net::SocketAddr;
 

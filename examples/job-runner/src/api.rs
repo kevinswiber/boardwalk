@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use boardwalk::links::SubscriptionUrl;
-use boardwalk::{AcceptedJob, SlowConsumerPolicy};
+use boardwalk::AcceptedJob;
 use serde::{Deserialize, Serialize};
 
-use crate::{NODE_NAME, STREAM_OUTBOUND_CAPACITY};
+use crate::streams::JobStream;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -71,26 +70,11 @@ struct JobStreams {
 impl JobStreams {
     fn for_job(job_id: &str) -> Self {
         Self {
-            lifecycle: stream_href(job_id, "lifecycle"),
-            progress: stream_href(job_id, "progress"),
-            logs: stream_href(job_id, "logs"),
+            lifecycle: JobStream::Lifecycle.href(job_id),
+            progress: JobStream::Progress.href(job_id),
+            logs: JobStream::Logs.href(job_id),
         }
     }
-}
-
-fn stream_href(job_id: &str, stream: &str) -> String {
-    let url = SubscriptionUrl::for_resource(NODE_NAME, "job", job_id, stream)
-        .outbound_capacity(STREAM_OUTBOUND_CAPACITY)
-        .replay(true);
-    let url = match stream {
-        "progress" => url.slow_consumer(
-            SlowConsumerPolicy::from_query("coalesce", Some("data.coalesceKey"))
-                .expect("static coalesce key path is valid"),
-        ),
-        "logs" | "lifecycle" => url.slow_consumer(SlowConsumerPolicy::Backpressure),
-        _ => url,
-    };
-    url.relative_href()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -98,4 +82,39 @@ pub(crate) struct RetryJob {
     #[allow(dead_code)]
     #[serde(default)]
     reset_logs: bool,
+}
+
+#[cfg(test)]
+mod href_tests {
+    use super::*;
+
+    const EXPECTED_LIFECYCLE: &str = "/servers/runner/events?topic=runner%2Fjob%2Fjob-1%2Flifecycle&outboundCapacity=16&replay=true&slowConsumerPolicy=backpressure";
+    const EXPECTED_PROGRESS: &str = "/servers/runner/events?topic=runner%2Fjob%2Fjob-1%2Fprogress&outboundCapacity=16&replay=true&slowConsumerPolicy=coalesce&coalesceKey=data.coalesceKey";
+    const EXPECTED_LOGS: &str = "/servers/runner/events?topic=runner%2Fjob%2Fjob-1%2Flogs&outboundCapacity=16&replay=true&slowConsumerPolicy=backpressure";
+
+    #[test]
+    fn for_job_hrefs_are_unchanged() {
+        let s = JobStreams::for_job("job-1");
+        assert_eq!(s.lifecycle, EXPECTED_LIFECYCLE);
+        assert_eq!(s.progress, EXPECTED_PROGRESS);
+        assert_eq!(s.logs, EXPECTED_LOGS);
+    }
+
+    #[test]
+    fn progress_href_coalesces_and_others_backpressure() {
+        let s = JobStreams::for_job("job-1");
+        assert!(s.progress.contains("slowConsumerPolicy=coalesce"));
+        assert!(s.progress.contains("coalesceKey=data.coalesceKey"));
+        assert!(s.logs.contains("slowConsumerPolicy=backpressure"));
+        assert!(s.lifecycle.contains("slowConsumerPolicy=backpressure"));
+    }
+
+    #[test]
+    fn stream_href_helper_is_removed() {
+        let production = include_str!("api.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !production.contains("fn stream_href"),
+            "api.rs should delegate hrefs to JobStream::href, not a local stream_href"
+        );
+    }
 }
