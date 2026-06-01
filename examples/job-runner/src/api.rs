@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use boardwalk::AcceptedJob;
 use serde::{Deserialize, Serialize};
 
+use crate::address::job_resource;
 use crate::streams::JobStream;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,20 +43,16 @@ pub(crate) struct JobHandle {
 
 impl JobHandle {
     pub(crate) fn for_job(job_id: String) -> Self {
+        let resource = job_resource(&job_id);
         Self {
-            href: format!("/resources/{job_id}"),
+            href: resource.resource_href(),
             streams: JobStreams::for_job(&job_id),
             job_id,
         }
     }
 
     pub(crate) fn to_outcome_job(&self, created: bool) -> AcceptedJob {
-        AcceptedJob {
-            id: self.job_id.clone(),
-            kind: "job".into(),
-            location: self.href.clone(),
-            created,
-        }
+        AcceptedJob::for_resource(job_resource(&self.job_id), created)
     }
 }
 
@@ -69,10 +66,11 @@ struct JobStreams {
 
 impl JobStreams {
     fn for_job(job_id: &str) -> Self {
+        let resource = job_resource(job_id);
         Self {
-            lifecycle: JobStream::Lifecycle.href(job_id),
-            progress: JobStream::Progress.href(job_id),
-            logs: JobStream::Logs.href(job_id),
+            lifecycle: JobStream::Lifecycle.href(resource),
+            progress: JobStream::Progress.href(resource),
+            logs: JobStream::Logs.href(resource),
         }
     }
 }
@@ -115,6 +113,41 @@ mod href_tests {
         assert!(
             !production.contains("fn stream_href"),
             "api.rs should delegate hrefs to JobStream::href, not a local stream_href"
+        );
+    }
+
+    #[test]
+    fn job_handle_and_accepted_job_shape_are_unchanged() {
+        let handle = JobHandle::for_job("job-1".into());
+        let job = handle.to_outcome_job(true);
+        let json = serde_json::to_value(&handle).expect("JobHandle serializes");
+
+        assert_eq!(json["jobId"], "job-1");
+        assert_eq!(json["href"], "/resources/job-1");
+        assert_eq!(job.id, "job-1");
+        assert_eq!(job.kind, "job");
+        assert_eq!(job.location, "/resources/job-1");
+        assert!(job.created);
+    }
+
+    #[test]
+    fn job_handle_uses_typed_resource_address_for_href_and_accepted_job() {
+        let production = include_str!("api.rs").split("#[cfg(test)]").next().unwrap();
+
+        assert!(
+            !production.contains("format!(\"/resources/{job_id}\")"),
+            "JobHandle::for_job should use ResourceRef::resource_href"
+        );
+        // Positive guard: the return type `-> AcceptedJob {` makes a bare
+        // `AcceptedJob {` substring check ambiguous, so assert the constructor
+        // is used rather than asserting the struct literal is absent.
+        assert!(
+            production.contains("AcceptedJob::for_resource("),
+            "JobHandle::to_outcome_job should use AcceptedJob::for_resource"
+        );
+        assert!(
+            !production.contains("kind: \"job\""),
+            "accepted-job construction should not repeat the job kind literal"
         );
     }
 }
