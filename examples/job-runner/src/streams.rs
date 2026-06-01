@@ -1,10 +1,10 @@
 //! Single source of truth for the job-runner stream names, kinds, versions, policies, and hrefs.
 
 use boardwalk::SlowConsumerPolicy;
-use boardwalk::links::SubscriptionUrl;
+use boardwalk::links::{ResourceRef, SubscriptionUrl};
 use boardwalk::prelude::{StreamKind, StreamSpec};
 
-use crate::{NODE_NAME, STREAM_OUTBOUND_CAPACITY};
+use crate::STREAM_OUTBOUND_CAPACITY;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JobStream {
@@ -60,9 +60,9 @@ impl JobStream {
         }
     }
 
-    /// Relative subscription href for this stream of `job_id`.
-    pub(crate) fn href(self, job_id: &str) -> String {
-        SubscriptionUrl::for_resource(NODE_NAME, "job", job_id, self.name())
+    /// Relative subscription href for this stream of `resource`.
+    pub(crate) fn href(self, resource: ResourceRef<'_>) -> String {
+        SubscriptionUrl::for_resource_ref(resource, self.name())
             .outbound_capacity(STREAM_OUTBOUND_CAPACITY)
             .replay(true)
             .slow_consumer(self.slow_consumer_policy())
@@ -131,15 +131,36 @@ mod tests {
 
     #[test]
     fn href_encodes_topic_capacity_replay_and_policy() {
-        let progress = JobStream::Progress.href("job-1");
+        let progress = JobStream::Progress.href(crate::address::job_resource("job-1"));
         assert!(progress.contains("slowConsumerPolicy=coalesce"));
         assert!(progress.contains("coalesceKey=data.coalesceKey"));
         assert!(progress.contains("outboundCapacity=16"));
         assert!(progress.contains("replay=true"));
         assert!(
             JobStream::Logs
-                .href("job-1")
+                .href(crate::address::job_resource("job-1"))
                 .contains("slowConsumerPolicy=backpressure")
+        );
+    }
+
+    #[test]
+    fn stream_hrefs_use_typed_resource_ref() {
+        let production = include_str!("streams.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+
+        assert!(
+            !production.contains("SubscriptionUrl::for_resource("),
+            "JobStream::href should call SubscriptionUrl::for_resource_ref"
+        );
+        assert!(
+            !production.contains("NODE_NAME"),
+            "JobStream::href should receive the resource address instead of the node"
+        );
+        assert!(
+            !production.contains("\"job\""),
+            "JobStream::href should receive the resource address instead of repeating the kind"
         );
     }
 }

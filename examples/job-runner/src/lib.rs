@@ -4,6 +4,7 @@
 //! Jobs are advanced by a spawned task and short `tokio::time::sleep` intervals;
 //! production schedulers should use an explicit queue, tick, and shutdown boundary.
 
+mod address;
 mod api;
 mod events;
 mod job;
