@@ -800,6 +800,32 @@ fn peer_internals_extended_negative_list() {
 }
 
 #[test]
+fn caller_ingress_machinery_is_not_public() {
+    // The per-request ingress contract is exactly one constant; the
+    // resolver and the handshake-only header idents stay private.
+    // (`AdmittedPeerConnection` is covered by the extended negative
+    // list above, which scans the same lib.rs blocks.)
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+    for ident in [
+        "resolve_caller_ingress",
+        "PEER_NODE_ID_HEADER",
+        "PEER_NODE_NAME_HEADER",
+        "PEER_CAPABILITIES_HEADER",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|block| contains_ident(block, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export caller ingress internal `{ident}`; found {offenders:#?}"
+        );
+    }
+}
+
+#[test]
 fn security_config_is_never_warn_and_continue() {
     let server = read("crates/boardwalk/src/server.rs");
     for stale in [
