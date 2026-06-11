@@ -232,6 +232,10 @@ fn unknown_server_response() -> Response {
 /// Returns `None` only if the name matches the local server (caller
 /// serves); returns a response for forwarded requests, unknown peers, or
 /// forwarding failures.
+///
+/// Gate order: local-name early-return → intent parse → resolve caller
+/// (ingress credentials) → caller capability ceiling → target context →
+/// target capability ceiling → forward.
 async fn maybe_forward_or_404(
     state: &AppState,
     target_name: &str,
@@ -257,6 +261,30 @@ async fn maybe_forward_or_404(
             Ok(caller) => caller,
             Err(response) => return Some(*response),
         };
+    // Caller-side twin of the target-side gate below: the caller's own
+    // negotiated ceiling gates the intent, before any target-side
+    // information (404 vs 403) is computed. The effective ceiling for a
+    // forwarded request is caller.negotiated ∩ target.negotiated,
+    // enforced as two sequential gates so each principal's denial is
+    // separately attributable in tracing.
+    if let Some(caller) = &caller
+        && !caller
+            .negotiated_capabilities
+            .contains(intent.required_capability())
+    {
+        tracing::warn!(
+            target: ADMISSION_TRACING_TARGET,
+            kind = "capability",
+            route = %target_name,
+            caller = %caller.peer_id,
+            intent = %intent.required_capability(),
+            negotiated = %caller.negotiated_capabilities,
+            reason = "caller capability denied",
+            status = StatusCode::FORBIDDEN.as_u16(),
+            "caller capability denied"
+        );
+        return Some((StatusCode::FORBIDDEN, "caller capability denied").into_response());
+    }
     let Some(context) = senders.peer_context(target_name).await else {
         return Some(unknown_server_response());
     };
@@ -2176,6 +2204,61 @@ mod tests {
 
     #[tokio::test]
     async fn forwarded_request_with_ingress_credentials_attests_the_caller() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert_eq!(
+            headers.get("boardwalk-caller-peer-id"),
+            Some(&"peer-reviewer-kid-2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_without_invoke_capability_cannot_invoke_through_the_gateway() {
+        // The reviewer's live context negotiated resource.read only; the
+        // target "hub" context allows everything. The caller's own
+        // ceiling must gate the intent before anything is forwarded.
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::POST,
+            &"/servers/hub/resources/r-1/transitions/report"
+                .parse()
+                .unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("gateway denial response");
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            seen.lock().await.is_empty(),
+            "caller above its ceiling must not be forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_read_within_ceiling_still_forwards() {
+        // Same read-only reviewer: reads stay within its negotiated
+        // ceiling and forward with attestation.
         let (senders, seen, _server) = recording_peer_senders().await;
         let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
 

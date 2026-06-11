@@ -1179,6 +1179,71 @@ async fn disconnected_caller_denial_traces_route_and_token() {
 }
 
 #[tokio::test]
+async fn caller_capability_denial_traces_kind_capability_with_caller_field() {
+    // A live read-only reviewer invoking a transition through the
+    // gateway: credential resolution succeeds, so the denial is a
+    // capability decision about an admitted principal — kind =
+    // "capability" with the attested caller, not "ingress".
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+    let _reviewer = Boardwalk::new()
+        .name("reviewer")
+        .link_peer(
+            PeerLink::new(format!("http://{}", cloud.addr), "reviewer")
+                .unwrap()
+                .token("kid-2", "reviewer-secret")
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        )
+        .build()
+        .unwrap();
+    assert!(
+        cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_secs(5))
+            .await,
+        "cloud should confirm the admitted reviewer"
+    );
+
+    let (events, _guard) = capture_admission_events();
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/r-1/transitions/report",
+            cloud.addr
+        ))
+        .header(crate::tunnel::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    // Generic wire body; the log carries the diagnostics.
+    assert_eq!(response.text().await.unwrap(), "caller capability denied");
+
+    let denials = admission_denials(&events);
+    let denial = denials
+        .iter()
+        .find(|event| event.field("reason") == "caller capability denied")
+        .expect("caller capability deny event");
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("caller"), "peer-reviewer-kid-2");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "transition.invoke");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("status"), "403");
+}
+
+#[tokio::test]
 async fn handshake_denials_still_trace_kind_admission() {
     // Regression pin: admit_peer_connection denials keep
     // `kind = "admission"` after the kind field is threaded through

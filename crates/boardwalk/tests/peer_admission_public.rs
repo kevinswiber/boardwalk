@@ -458,6 +458,42 @@ async fn ingress_for_a_configured_but_disconnected_caller_is_403() {
 }
 
 #[tokio::test]
+async fn read_only_admitted_caller_cannot_invoke_transitions_through_the_gateway() {
+    // The reviewer requests read + invoke but is allowed read only, so
+    // its negotiated ceiling is read — the caller-side twin of the F-07
+    // guard: the target link's invoke capability must not open the
+    // operative path for a read-only caller.
+    let (cloud_addr, id) = boot_reviewer_trio(
+        PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+            .unwrap()
+            .allow([PeerCapability::ResourceRead]),
+    )
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // And the ceiling still permits reads:
+    let read = reqwest::Client::new()
+        .get(format!("http://{cloud_addr}/servers/hub/resources/{id}"))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(read.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn forwarded_invoke_carries_gateway_provenance() {
     let (cloud_addr, _hub_addr, id) = boot_probe_pair().await;
     let response = reqwest::Client::new()
