@@ -19,4 +19,4 @@ pub(crate) use routes::{
     ResourceRegistrationError, TunnelLeg, router_with,
 };
 #[allow(unused_imports)]
-pub(crate) use routes::{PeerSenders, router};
+pub(crate) use routes::{PeerSenders, resolve_caller_ingress, router};

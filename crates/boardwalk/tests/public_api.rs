@@ -765,6 +765,14 @@ fn public_facade_exports_peer_admission_api() {
 }
 
 #[test]
+fn peer_token_id_header_is_a_crate_root_export() {
+    // Compile-time pin: the per-request ingress wire contract is
+    // spellable without hardcoding the header string, and its value is
+    // the same header the tunnel handshake already uses.
+    assert_eq!(boardwalk::PEER_TOKEN_ID_HEADER, "boardwalk-peer-token-id");
+}
+
+#[test]
 fn peer_internals_extended_negative_list() {
     let lib = read("crates/boardwalk/src/lib.rs");
     let blocks = pub_use_blocks(&lib);
@@ -787,6 +795,32 @@ fn peer_internals_extended_negative_list() {
         assert!(
             offenders.is_empty(),
             "crate root must not re-export peer internal `{ident}`; found {offenders:#?}"
+        );
+    }
+}
+
+#[test]
+fn caller_ingress_machinery_is_not_public() {
+    // The per-request ingress contract is exactly one constant; the
+    // resolver and the handshake-only header idents stay private.
+    // (`AdmittedPeerConnection` is covered by the extended negative
+    // list above, which scans the same lib.rs blocks.)
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+    for ident in [
+        "resolve_caller_ingress",
+        "PEER_NODE_ID_HEADER",
+        "PEER_NODE_NAME_HEADER",
+        "PEER_CAPABILITIES_HEADER",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|block| contains_ident(block, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export caller ingress internal `{ident}`; found {offenders:#?}"
         );
     }
 }

@@ -1099,3 +1099,230 @@ async fn empty_intersection_refusal_log_enumerates_requested_vs_allowed() {
     assert_eq!(denial.field("requested"), "transition.invoke");
     assert_eq!(denial.field("allowed"), "resource.read");
 }
+
+/// `PeerSenders` stub with no live contexts, for exercising
+/// `resolve_caller_ingress` denial tracing directly.
+struct NoLivePeers;
+
+#[async_trait::async_trait]
+impl crate::http::PeerSenders for NoLivePeers {
+    async fn sender(
+        &self,
+        _name: &str,
+    ) -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>> {
+        None
+    }
+
+    async fn names(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+fn ingress_credential_headers(token_id: &str, bearer: &str) -> http::HeaderMap {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        crate::tunnel::PEER_TOKEN_ID_HEADER,
+        token_id.parse().unwrap(),
+    );
+    headers.insert(
+        http::header::AUTHORIZATION,
+        format!("Bearer {bearer}").parse().unwrap(),
+    );
+    headers
+}
+
+fn reviewer_ingress_admission() -> crate::peer::PeerAdmissionConfig {
+    crate::peer::PeerAdmissionConfig::shared_token("reviewer", "kid-2", "reviewer-secret").unwrap()
+}
+
+#[tokio::test]
+async fn ingress_denial_emits_structured_admission_event() {
+    let (events, _guard) = capture_admission_events();
+
+    crate::http::resolve_caller_ingress(
+        &ingress_credential_headers("kid-2", "reviewer-secret"),
+        &[crate::peer::PeerAdmissionConfig::shared_token("hub", "kid-1", "secret").unwrap()],
+        &NoLivePeers,
+    )
+    .await
+    .unwrap_err();
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "ingress");
+    assert_eq!(denial.field("reason"), "unknown peer token id");
+    assert_eq!(denial.field("status"), "401");
+    assert_eq!(denial.field("token_id"), "kid-2");
+}
+
+#[tokio::test]
+async fn disconnected_caller_denial_traces_route_and_token() {
+    let (events, _guard) = capture_admission_events();
+
+    crate::http::resolve_caller_ingress(
+        &ingress_credential_headers("kid-2", "reviewer-secret"),
+        &[reviewer_ingress_admission()],
+        &NoLivePeers,
+    )
+    .await
+    .unwrap_err();
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "ingress");
+    assert_eq!(denial.field("reason"), "caller peer is not connected");
+    assert_eq!(denial.field("status"), "403");
+    assert_eq!(denial.field("route"), "reviewer");
+    assert_eq!(denial.field("token_id"), "kid-2");
+}
+
+#[tokio::test]
+async fn stalled_peer_upgrade_does_not_satisfy_caller_ingress() {
+    // `PeerAcceptors` records the admitted context as soon as the WS
+    // upgrade completes, before the H2 handshake confirms the tunnel
+    // and registers the sender. A dialer with valid credentials that
+    // stalls right after the upgrade must not count as a live caller
+    // for separate gateway requests: ingress requires the confirmed
+    // sender, not just the context.
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+                .unwrap()
+                .allow([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        ),
+    )
+    .await;
+
+    let stalled = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("reviewer", Uuid::new_v4())
+            .token("kid-2", "reviewer-secret")
+            .node_id("node-reviewer-9")
+            .request_capabilities(["resource.read", "transition.invoke"]),
+    )
+    .await;
+    assert_eq!(stalled.status, StatusCode::SWITCHING_PROTOCOLS);
+    // Hold the upgraded stream without ever speaking HTTP/2.
+    let _stalled_tunnel = stalled.upgraded;
+
+    // Wait until the half-open context is recorded, so the assertion
+    // below races nothing.
+    use crate::http::PeerSenders as _;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while cloud
+        .built
+        .acceptors
+        .peer_context("reviewer")
+        .await
+        .is_none()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cloud never recorded the half-open reviewer context"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/r-1/transitions/report",
+            cloud.addr
+        ))
+        .header(crate::tunnel::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "caller peer is not connected"
+    );
+}
+
+#[tokio::test]
+async fn caller_capability_denial_traces_kind_capability_with_caller_field() {
+    // A live read-only reviewer invoking a transition through the
+    // gateway: credential resolution succeeds, so the denial is a
+    // capability decision about an admitted principal — kind =
+    // "capability" with the attested caller, not "ingress".
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+    let _reviewer = Boardwalk::new()
+        .name("reviewer")
+        .link_peer(
+            PeerLink::new(format!("http://{}", cloud.addr), "reviewer")
+                .unwrap()
+                .token("kid-2", "reviewer-secret")
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        )
+        .build()
+        .unwrap();
+    assert!(
+        cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_secs(5))
+            .await,
+        "cloud should confirm the admitted reviewer"
+    );
+
+    let (events, _guard) = capture_admission_events();
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/r-1/transitions/report",
+            cloud.addr
+        ))
+        .header(crate::tunnel::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    // Generic wire body; the log carries the diagnostics.
+    assert_eq!(response.text().await.unwrap(), "caller capability denied");
+
+    let denials = admission_denials(&events);
+    let denial = denials
+        .iter()
+        .find(|event| event.field("reason") == "caller capability denied")
+        .expect("caller capability deny event");
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("caller"), "peer-reviewer-kid-2");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "transition.invoke");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("status"), "403");
+}
+
+#[tokio::test]
+async fn handshake_denials_still_trace_kind_admission() {
+    // Regression pin: admit_peer_connection denials keep
+    // `kind = "admission"` after the kind field is threaded through
+    // `AdmissionDeny`.
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(cloud.addr, PeerUpgradeAttempt::new("hub", Uuid::new_v4())).await;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    assert_eq!(denials[0].field("kind"), "admission");
+}

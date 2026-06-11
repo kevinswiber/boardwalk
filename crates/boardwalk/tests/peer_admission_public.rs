@@ -119,6 +119,10 @@ impl Actor for ProvenanceProbe {
                 "is_local": provenance.is_local(),
                 "forwarded_by": provenance.forwarded_by(),
                 "peer_is_some": provenance.peer().is_some(),
+                "peer_id": provenance.peer().map(|p| p.peer_id()),
+                "peer_can_invoke": provenance
+                    .peer()
+                    .is_some_and(|p| p.has_capability(PeerCapability::TransitionInvoke)),
             });
             Ok(TransitionOutcome::Completed {
                 output: Some(output),
@@ -262,6 +266,233 @@ async fn boot_probe_pair_with_admission(
     }
 }
 
+/// Boots the reviewer topology: a cloud accepting two admissions — the
+/// hub link (probe target, kid-1) and the supplied reviewer admission
+/// (caller, kid-2) — with the hub running the provenance probe. When
+/// `connect_reviewer` is set, a third node dials in as the reviewer and
+/// holds a live tunnel while serving nothing. Returns
+/// `(cloud_addr, probe_resource_id)` once the booted links are live.
+async fn boot_reviewer_topology(
+    reviewer_admission: PeerAdmission,
+    connect_reviewer: bool,
+) -> (std::net::SocketAddr, String) {
+    let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud_addr = cloud_listener.local_addr().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        )
+        .accept_peer(reviewer_admission);
+    tokio::spawn(cloud.listen_until_on(cloud_listener, std::future::pending()));
+
+    let hub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub = Boardwalk::new()
+        .name("hub")
+        .use_actor(ProvenanceProbe)
+        .link_peer(
+            PeerLink::new(format!("http://{cloud_addr}"), "hub")
+                .unwrap()
+                .token("kid-1", "secret")
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        );
+    tokio::spawn(hub.listen_until_on(hub_listener, std::future::pending()));
+
+    if connect_reviewer {
+        let reviewer_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reviewer = Boardwalk::new().name("reviewer").link_peer(
+            PeerLink::new(format!("http://{cloud_addr}"), "reviewer")
+                .unwrap()
+                .token("kid-2", "reviewer-secret")
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        );
+        tokio::spawn(reviewer.listen_until_on(reviewer_listener, std::future::pending()));
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let probe_id = loop {
+        if let Ok(response) =
+            reqwest::get(format!("http://{cloud_addr}/servers/hub/resources")).await
+            && response.status() == reqwest::StatusCode::OK
+        {
+            let body: serde_json::Value = response.json().await.unwrap();
+            if let Some(id) = body
+                .get("entities")
+                .and_then(|e| e.as_array())
+                .and_then(|entities| {
+                    entities.iter().find_map(|entity| {
+                        (entity.pointer("/properties/kind").and_then(|k| k.as_str())
+                            == Some("provenance-probe"))
+                        .then(|| entity.pointer("/properties/id")?.as_str())
+                        .flatten()
+                        .map(str::to_string)
+                    })
+                })
+            {
+                break id;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cloud did not serve the hub probe resource within 10s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    if connect_reviewer {
+        loop {
+            if let Ok(response) =
+                reqwest::get(format!("http://{cloud_addr}/servers/reviewer")).await
+                && response.status() == reqwest::StatusCode::OK
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "cloud did not serve the reviewer link within 10s"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    (cloud_addr, probe_id)
+}
+
+/// Cloud accepting hub (probe target) and reviewer (caller) admissions;
+/// the reviewer node holds a live tunnel and serves nothing.
+async fn boot_reviewer_trio(reviewer_admission: PeerAdmission) -> (std::net::SocketAddr, String) {
+    boot_reviewer_topology(reviewer_admission, true).await
+}
+
+#[tokio::test]
+async fn admitted_caller_ingress_populates_forwarded_provenance() {
+    let (cloud_addr, id) = boot_reviewer_trio(
+        PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+            .unwrap()
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]),
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let output = body.get("output").expect("transition output");
+    assert_eq!(output["is_local"], serde_json::json!(false));
+    assert_eq!(output["forwarded_by"], serde_json::json!("cloud"));
+    assert_eq!(output["peer_is_some"], serde_json::json!(true));
+    assert_eq!(output["peer_id"], serde_json::json!("peer-reviewer-kid-2"));
+    assert_eq!(output["peer_can_invoke"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn ingress_with_wrong_secret_is_refused_not_forwarded_anonymously() {
+    let (cloud_addr, id) = boot_reviewer_trio(
+        PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+            .unwrap()
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]),
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("wrong")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ingress_for_a_configured_but_disconnected_caller_is_403() {
+    // Admission configured for the reviewer, but no reviewer node dials
+    // in: valid kid-2 credentials must refuse, never forward anonymously.
+    let (cloud_addr, id) = boot_reviewer_topology(
+        PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+            .unwrap()
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]),
+        false,
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn read_only_admitted_caller_cannot_invoke_transitions_through_the_gateway() {
+    // The reviewer requests read + invoke but is allowed read only, so
+    // its negotiated ceiling is read — the caller-side twin of the F-07
+    // guard: the target link's invoke capability must not open the
+    // operative path for a read-only caller.
+    let (cloud_addr, id) = boot_reviewer_trio(
+        PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+            .unwrap()
+            .allow([PeerCapability::ResourceRead]),
+    )
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // And the ceiling still permits reads:
+    let read = reqwest::Client::new()
+        .get(format!("http://{cloud_addr}/servers/hub/resources/{id}"))
+        .header(boardwalk::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(read.status(), reqwest::StatusCode::OK);
+}
+
 #[tokio::test]
 async fn forwarded_invoke_carries_gateway_provenance() {
     let (cloud_addr, _hub_addr, id) = boot_probe_pair().await;
@@ -278,10 +509,9 @@ async fn forwarded_invoke_carries_gateway_provenance() {
     let output = body.get("output").expect("transition output");
     assert_eq!(output["is_local"], serde_json::json!(false));
     assert_eq!(output["forwarded_by"], serde_json::json!("cloud"));
-    // Anonymous public caller: the gateway has no admission state to
-    // attest, so the hub sees no admitted caller. This is the honest
-    // permanent outcome of this plan; populating the caller requires
-    // the M1.3 caller-ingress follow-on.
+    // No credentials presented → anonymous caller. The ingress
+    // mechanism exists (see admitted_caller_ingress_populates_
+    // forwarded_provenance); requests that do not opt in stay anonymous.
     assert_eq!(output["peer_is_some"], serde_json::json!(false));
 }
 

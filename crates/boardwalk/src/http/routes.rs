@@ -49,9 +49,10 @@ const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TunnelLeg;
 
-/// Stable tracing target for every admission and capability deny
-/// decision. The target and its field names are a documented contract
-/// for log scraping and alerting (`docs/peers.md`).
+/// Stable tracing target for every admission, capability, and caller
+/// ingress deny decision. The target and its field names are a
+/// documented contract for log scraping and alerting (`docs/peers.md`);
+/// `kind` is `admission` | `capability` | `ingress`.
 pub(super) const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
 
 /// Build caller provenance for a request: local/anonymous unless the
@@ -231,6 +232,10 @@ fn unknown_server_response() -> Response {
 /// Returns `None` only if the name matches the local server (caller
 /// serves); returns a response for forwarded requests, unknown peers, or
 /// forwarding failures.
+///
+/// Gate order: local-name early-return → intent parse → resolve caller
+/// (ingress credentials) → caller capability ceiling → target context →
+/// target capability ceiling → forward.
 async fn maybe_forward_or_404(
     state: &AppState,
     target_name: &str,
@@ -248,6 +253,38 @@ async fn maybe_forward_or_404(
     let Some(senders) = state.peer_senders.as_ref() else {
         return Some(unknown_server_response());
     };
+    // Resolution happens after the local-name early-return, so
+    // local-target requests never engage ingress; invalid credentials
+    // are refused before any target-side information is computed.
+    let caller =
+        match resolve_caller_ingress(headers, &state.peer_admission, senders.as_ref()).await {
+            Ok(caller) => caller,
+            Err(response) => return Some(*response),
+        };
+    // Caller-side twin of the target-side gate below: the caller's own
+    // negotiated ceiling gates the intent, before any target-side
+    // information (404 vs 403) is computed. The effective ceiling for a
+    // forwarded request is caller.negotiated ∩ target.negotiated,
+    // enforced as two sequential gates so each principal's denial is
+    // separately attributable in tracing.
+    if let Some(caller) = &caller
+        && !caller
+            .negotiated_capabilities
+            .contains(intent.required_capability())
+    {
+        tracing::warn!(
+            target: ADMISSION_TRACING_TARGET,
+            kind = "capability",
+            route = %target_name,
+            caller = %caller.peer_id,
+            intent = %intent.required_capability(),
+            negotiated = %caller.negotiated_capabilities,
+            reason = "caller capability denied",
+            status = StatusCode::FORBIDDEN.as_u16(),
+            "caller capability denied"
+        );
+        return Some((StatusCode::FORBIDDEN, "caller capability denied").into_response());
+    }
     let Some(context) = senders.peer_context(target_name).await else {
         return Some(unknown_server_response());
     };
@@ -274,11 +311,10 @@ async fn maybe_forward_or_404(
         ForwardAttestation {
             gateway_name: &state.core.name,
             render_capabilities: context.negotiated_capabilities,
-            // Requests reaching the gateway's public listener carry no
-            // admission state today, so there is no caller to attest.
-            // Becomes `Some` when callers can present admission
-            // credentials at the gateway (M1.3 reviewer topology).
-            caller: None,
+            // Attested from the gateway's own admission state, resolved
+            // at ingress from the caller's per-request credentials and
+            // live tunnel.
+            caller: caller.as_ref(),
         },
         target_name,
         method,
@@ -1675,14 +1711,15 @@ fn admit_peer_connection(
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
     let deny = |status: StatusCode, reason: &str, token_id: Option<&str>, node_id: Option<&str>| {
         admission_denied(AdmissionDeny {
+            kind: "admission",
             status,
             reason,
-            route: peer_name,
+            route: Some(peer_name),
             token_id,
             node_id,
             requested: None,
             allowed: None,
-            connection_id,
+            connection_id: Some(connection_id),
         })
     };
     if admissions.is_empty() {
@@ -1718,31 +1755,8 @@ fn admit_peer_connection(
         )
     })?;
 
-    let token_matches = admissions
-        .iter()
-        .filter(|config| config.token_id == token_id)
-        .collect::<Vec<_>>();
-    if token_matches.is_empty() {
-        return Err(deny(
-            StatusCode::UNAUTHORIZED,
-            "unknown peer token id",
-            Some(token_id),
-            None,
-        ));
-    }
-
-    let verified = token_matches
-        .into_iter()
-        .filter(|config| config.token_verifier.verify(bearer))
-        .collect::<Vec<_>>();
-    if verified.is_empty() {
-        return Err(deny(
-            StatusCode::UNAUTHORIZED,
-            "invalid bearer token",
-            Some(token_id),
-            None,
-        ));
-    }
+    let verified = verified_admissions(admissions, token_id, bearer)
+        .map_err(|reason| deny(StatusCode::UNAUTHORIZED, reason, Some(token_id), None))?;
 
     let Some(config) = verified
         .into_iter()
@@ -1786,14 +1800,15 @@ fn admit_peer_connection(
         let requested = requested_capabilities.to_string();
         let allowed = config.allowed_capabilities.to_string();
         return Err(admission_denied(AdmissionDeny {
+            kind: "admission",
             status: StatusCode::FORBIDDEN,
             reason: "peer capabilities are not allowed",
-            route: peer_name,
+            route: Some(peer_name),
             token_id: Some(token_id),
             node_id: None,
             requested: Some(&requested),
             allowed: Some(&allowed),
-            connection_id,
+            connection_id: Some(connection_id),
         }));
     }
 
@@ -1810,19 +1825,140 @@ fn admit_peer_connection(
     ))
 }
 
+/// Token-id filter plus constant-time secret verification, shared by
+/// handshake admission (`admit_peer_connection`) and per-request caller
+/// ingress (`resolve_caller_ingress`) so the two paths cannot drift.
+/// Returns the verified configs or the denial reason; callers attach
+/// their own status and deny machinery.
+fn verified_admissions<'a>(
+    admissions: &'a [PeerAdmissionConfig],
+    token_id: &str,
+    bearer: &str,
+) -> Result<Vec<&'a PeerAdmissionConfig>, &'static str> {
+    let token_matches = admissions
+        .iter()
+        .filter(|config| config.token_id == token_id)
+        .collect::<Vec<_>>();
+    if token_matches.is_empty() {
+        return Err("unknown peer token id");
+    }
+    let verified = token_matches
+        .into_iter()
+        .filter(|config| config.token_verifier.verify(bearer))
+        .collect::<Vec<_>>();
+    if verified.is_empty() {
+        return Err("invalid bearer token");
+    }
+    Ok(verified)
+}
+
+/// Resolve an admitted caller from per-request ingress credentials.
+///
+/// Engagement signal: the `boardwalk-peer-token-id` header. Absent →
+/// `Ok(None)` (anonymous; unchanged behavior). Present → fail-closed:
+/// the credentials must verify against a configured admission AND the
+/// matching route must hold a live admitted tunnel under the same token
+/// id — live meaning the H2 channel was confirmed and its sender
+/// registered, not merely that an upgrade recorded a context.
+/// Negotiated capabilities and connection identity come from that live
+/// handshake — nothing is synthesized per-request.
+pub(crate) async fn resolve_caller_ingress(
+    headers: &HeaderMap,
+    admissions: &[PeerAdmissionConfig],
+    senders: &dyn PeerSenders,
+) -> Result<Option<AdmittedPeerConnection>, Box<Response>> {
+    let Some(token_id) = optional_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER) else {
+        return Ok(None);
+    };
+    // Ingress denials never enumerate capabilities; `token_id` is the
+    // engagement signal so it is always present on the event.
+    let refuse =
+        |status: StatusCode, reason: &str, route: Option<&str>, connection_id: Option<Uuid>| {
+            admission_denied(AdmissionDeny {
+                kind: "ingress",
+                status,
+                reason,
+                route,
+                token_id: Some(token_id),
+                node_id: None,
+                requested: None,
+                allowed: None,
+                connection_id,
+            })
+        };
+    if admissions.is_empty() {
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "peer admission is not configured",
+            None,
+            None,
+        ));
+    }
+    let Some(bearer) = bearer_token(headers) else {
+        return Err(refuse(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+            None,
+            None,
+        ));
+    };
+    let verified = verified_admissions(admissions, token_id, bearer)
+        .map_err(|reason| refuse(StatusCode::UNAUTHORIZED, reason, None, None))?;
+    let mut live = Vec::new();
+    let mut mismatched_connection = None;
+    for config in &verified {
+        let route = config.allowed_route_name.as_str();
+        if let Some(context) = senders.peer_context(route).await {
+            if context.token_id.as_deref() != Some(token_id) {
+                // The route is live, but under a different token id —
+                // recorded for the deny event, never attested.
+                mismatched_connection = Some(context.connection_id);
+            } else if senders.sender(route).await.is_some() {
+                // The context alone can be a half-open upgrade: it is
+                // recorded before the H2 handshake confirms the tunnel
+                // and registers the sender. Only the confirmed sender
+                // makes the tunnel live enough to attest.
+                live.push(context);
+            }
+        }
+    }
+    let verified_route = (verified.len() == 1).then(|| verified[0].allowed_route_name.as_str());
+    match live.len() {
+        0 => Err(refuse(
+            StatusCode::FORBIDDEN,
+            "caller peer is not connected",
+            verified_route,
+            mismatched_connection,
+        )),
+        1 => Ok(Some(live.remove(0))),
+        _ => Err(refuse(
+            StatusCode::FORBIDDEN,
+            "ambiguous caller admission",
+            None,
+            None,
+        )),
+    }
+}
+
 /// One admission deny decision, traced and converted to a response in
 /// one place so the event can never drift from what the dialer saw.
 struct AdmissionDeny<'a> {
+    /// Decision class: `admission` (handshake) or `ingress`
+    /// (per-request caller credentials). The target-side capability
+    /// denial logs `kind = "capability"` inline.
+    kind: &'a str,
     status: StatusCode,
     reason: &'a str,
-    route: &'a str,
+    route: Option<&'a str>,
     token_id: Option<&'a str>,
     node_id: Option<&'a str>,
     /// Requested-vs-allowed enumeration for the empty-intersection
     /// refusal: logged server-side only, never in the response body.
     requested: Option<&'a str>,
     allowed: Option<&'a str>,
-    connection_id: Uuid,
+    /// Handshake denials always carry the connection id; ingress
+    /// denials only when a live context exists (token mismatch).
+    connection_id: Option<Uuid>,
 }
 
 /// Emit the structured deny event at the stable `boardwalk::admission`
@@ -1839,9 +1975,10 @@ fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
     } else {
         "peer admission denied"
     };
+    let connection_id = deny.connection_id.map(|id| id.to_string());
     tracing::warn!(
         target: ADMISSION_TRACING_TARGET,
-        kind = "admission",
+        kind = deny.kind,
         route = deny.route,
         reason = deny.reason,
         status = deny.status.as_u16(),
@@ -1849,7 +1986,7 @@ fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
         node_id = deny.node_id,
         requested = deny.requested,
         allowed = deny.allowed,
-        connection_id = %deny.connection_id,
+        connection_id = connection_id.as_deref(),
         "{message}"
     );
     Box::new((deny.status, deny.reason.to_string()).into_response())
@@ -2067,6 +2204,141 @@ mod tests {
         )
         .unwrap();
         assert!(req.headers().get("boardwalk-caller-peer-id").is_none());
+    }
+
+    #[tokio::test]
+    async fn forwarded_request_with_ingress_credentials_attests_the_caller() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert_eq!(
+            headers.get("boardwalk-caller-peer-id"),
+            Some(&"peer-reviewer-kid-2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_without_invoke_capability_cannot_invoke_through_the_gateway() {
+        // The reviewer's live context negotiated resource.read only; the
+        // target "hub" context allows everything. The caller's own
+        // ceiling must gate the intent before anything is forwarded.
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::POST,
+            &"/servers/hub/resources/r-1/transitions/report"
+                .parse()
+                .unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("gateway denial response");
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            seen.lock().await.is_empty(),
+            "caller above its ceiling must not be forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_read_within_ceiling_still_forwards() {
+        // Same read-only reviewer: reads stay within its negotiated
+        // ceiling and forward with attestation.
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert_eq!(
+            headers.get("boardwalk-caller-peer-id"),
+            Some(&"peer-reviewer-kid-2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_credentials_never_cross_the_forwarding_hop() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        for denied in ["authorization", crate::tunnel::PEER_TOKEN_ID_HEADER] {
+            assert!(
+                !headers.contains_key(denied),
+                "caller credential header {denied} crossed the hop: {headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_forward_still_carries_no_caller_headers() {
+        // Regression pin: no credentials → no boardwalk-caller-* headers.
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &HeaderMap::new(),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.starts_with("boardwalk-caller-")),
+            "anonymous forward must carry no caller headers: {headers:?}"
+        );
     }
 
     #[tokio::test]
@@ -2380,7 +2652,9 @@ mod tests {
             &self,
             name: &str,
         ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
-            (name == "hub").then(|| self.sender.clone())
+            // Both routes are "live": the recorder is the forward target
+            // for "hub" and the sender-presence proof for "reviewer".
+            matches!(name, "hub" | "reviewer").then(|| self.sender.clone())
         }
 
         async fn names(&self) -> Vec<String> {
@@ -2388,9 +2662,15 @@ mod tests {
         }
 
         async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
-            (name == "hub").then(|| {
-                AdmittedPeerConnection::unauthenticated("hub", Uuid::nil(), PeerCapabilities::all())
-            })
+            match name {
+                "hub" => Some(AdmittedPeerConnection::unauthenticated(
+                    "hub",
+                    Uuid::nil(),
+                    PeerCapabilities::all(),
+                )),
+                "reviewer" => Some(live_reviewer_context()),
+                _ => None,
+            }
         }
     }
 
@@ -2440,6 +2720,13 @@ mod tests {
     }
 
     fn test_state(peer_senders: Arc<dyn PeerSenders>) -> AppState {
+        test_state_with_admissions(peer_senders, Vec::new())
+    }
+
+    fn test_state_with_admissions(
+        peer_senders: Arc<dyn PeerSenders>,
+        admissions: Vec<PeerAdmissionConfig>,
+    ) -> AppState {
         let node = Arc::new(NodeBuilder::new("cloud").try_build().unwrap());
         AppState {
             core: Core::from_node(node),
@@ -2447,7 +2734,7 @@ mod tests {
             peer_init: PeerInitState::default(),
             peer_senders: Some(peer_senders),
             peer_streams: super::super::peer_streams::PeerStreamHub::new(),
-            peer_admission: Arc::new(Vec::new()),
+            peer_admission: Arc::new(admissions),
             unauthenticated_local_peers: None,
             resource_registrar: None,
         }
@@ -2551,5 +2838,289 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// `PeerSenders` stub serving a static route-name → context map for
+    /// ingress resolution tests. `sender: None` models the half-open
+    /// window where a context exists but the H2 channel was never
+    /// confirmed; `live` wires a real (stub) sender for every route.
+    struct StaticContexts {
+        contexts: HashMap<String, AdmittedPeerConnection>,
+        sender: Option<hyper::client::conn::http2::SendRequest<Body>>,
+    }
+
+    impl StaticContexts {
+        fn disconnected() -> Self {
+            Self {
+                contexts: HashMap::new(),
+                sender: None,
+            }
+        }
+
+        async fn live(contexts: HashMap<String, AdmittedPeerConnection>) -> Self {
+            Self {
+                contexts,
+                sender: Some(stub_h2_sender().await),
+            }
+        }
+    }
+
+    /// A real HTTP/2 `SendRequest` over an in-memory duplex, backed by a
+    /// trivial server task — enough for sender-presence checks.
+    async fn stub_h2_sender() -> hyper::client::conn::http2::SendRequest<Body> {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, Body>(TokioIo::new(client_io))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        tokio::spawn(async move {
+            let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(
+                    TokioIo::new(server_io),
+                    service_fn(|_req: http::Request<hyper::body::Incoming>| async {
+                        Ok::<_, Infallible>(http::Response::new(Full::new(Bytes::new())))
+                    }),
+                )
+                .await;
+        });
+        sender
+    }
+
+    #[async_trait::async_trait]
+    impl PeerSenders for StaticContexts {
+        async fn sender(
+            &self,
+            name: &str,
+        ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
+            if self.contexts.contains_key(name) {
+                self.sender.clone()
+            } else {
+                None
+            }
+        }
+
+        async fn names(&self) -> Vec<String> {
+            self.contexts.keys().cloned().collect()
+        }
+
+        async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
+            self.contexts.get(name).cloned()
+        }
+    }
+
+    fn ingress_headers(token_id: &str, bearer: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::tunnel::PEER_TOKEN_ID_HEADER,
+            token_id.parse().unwrap(),
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        headers
+    }
+
+    fn reviewer_admission() -> PeerAdmissionConfig {
+        let mut config =
+            PeerAdmissionConfig::shared_token("reviewer", "kid-2", "reviewer-secret").unwrap();
+        config.allowed_capabilities =
+            PeerCapabilities::parse_list("resource.read,transition.invoke").unwrap();
+        config
+    }
+
+    fn live_reviewer_context() -> AdmittedPeerConnection {
+        AdmittedPeerConnection::token_bound(
+            "reviewer",
+            "kid-2",
+            Uuid::new_v4(),
+            "node-reviewer-9",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        )
+    }
+
+    #[tokio::test]
+    async fn ingress_without_token_id_header_is_anonymous() {
+        // Authorization alone never engages ingress.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer anything".parse().unwrap(),
+        );
+        let senders = StaticContexts::disconnected();
+        let caller = resolve_caller_ingress(&headers, &[], &senders)
+            .await
+            .unwrap();
+        assert!(caller.is_none());
+    }
+
+    #[tokio::test]
+    async fn ingress_resolves_live_admitted_caller() {
+        let senders = StaticContexts::live(HashMap::from([(
+            "reviewer".into(),
+            live_reviewer_context(),
+        )]))
+        .await;
+        let caller = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap()
+        .expect("admitted caller");
+        assert_eq!(caller.peer_id, "peer-reviewer-kid-2");
+        assert_eq!(caller.token_id.as_deref(), Some("kid-2"));
+        assert_eq!(
+            caller.negotiated_capabilities,
+            PeerCapabilities::resource_read()
+        );
+    }
+
+    #[tokio::test]
+    async fn ingress_with_unknown_token_id_is_401() {
+        let senders = StaticContexts::disconnected();
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-unknown", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_with_invalid_bearer_is_401() {
+        let senders = StaticContexts::live(HashMap::from([(
+            "reviewer".into(),
+            live_reviewer_context(),
+        )]))
+        .await;
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "wrong-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_with_missing_bearer_is_401() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::tunnel::PEER_TOKEN_ID_HEADER,
+            "kid-2".parse().unwrap(),
+        );
+        let senders = StaticContexts::disconnected();
+        let err = resolve_caller_ingress(&headers, &[reviewer_admission()], &senders)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_without_admission_config_is_403() {
+        let senders = StaticContexts::disconnected();
+        let err =
+            resolve_caller_ingress(&ingress_headers("kid-2", "reviewer-secret"), &[], &senders)
+                .await
+                .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_for_half_open_upgrade_without_sender_is_403() {
+        // `PeerAcceptors` inserts the admitted context before the H2
+        // handshake completes and registers the sender; a dialer that
+        // stalls after the WS upgrade leaves a context with no sender.
+        // That half-open state must not satisfy the live-caller check.
+        let senders = StaticContexts {
+            contexts: HashMap::from([("reviewer".into(), live_reviewer_context())]),
+            sender: None,
+        };
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_for_disconnected_peer_is_403() {
+        // Valid credentials, no live context at the config's route.
+        let senders = StaticContexts::disconnected();
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_token_mismatch_with_live_context_is_403() {
+        // Route is connected, but under a different token id: a second
+        // token valid for the same route must not be attested as the
+        // live principal.
+        let mut live = live_reviewer_context();
+        live.token_id = Some("kid-other".into());
+        live.peer_id = "peer-reviewer-kid-other".into();
+        let senders = StaticContexts::live(HashMap::from([("reviewer".into(), live)])).await;
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_ambiguous_across_routes_is_403() {
+        // One token id verified for two configs whose routes are both
+        // live under that token id → refuse rather than guess.
+        let second_admission = {
+            let mut config =
+                PeerAdmissionConfig::shared_token("reviewer-b", "kid-2", "reviewer-secret")
+                    .unwrap();
+            config.allowed_capabilities = PeerCapabilities::resource_read();
+            config
+        };
+        let second_live = AdmittedPeerConnection::token_bound(
+            "reviewer-b",
+            "kid-2",
+            Uuid::new_v4(),
+            "node-reviewer-10",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        );
+        let senders = StaticContexts::live(HashMap::from([
+            ("reviewer".into(), live_reviewer_context()),
+            ("reviewer-b".into(), second_live),
+        ]))
+        .await;
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission(), second_admission],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 }

@@ -24,7 +24,23 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 
 pub const SUBPROTOCOL: &str = "boardwalk-peer/3";
-pub(crate) const PEER_TOKEN_ID_HEADER: &str = "boardwalk-peer-token-id";
+
+/// Header naming the peer token id (`PeerAdmission::shared_token`'s
+/// `token_id`) on boardwalk's wire. Presented in two places:
+///
+/// 1. The tunnel handshake (`/peers/{route}` upgrade) alongside
+///    `Authorization: Bearer <secret>` — establishes the admitted link.
+/// 2. Per-request caller ingress at a gateway: an admitted peer
+///    attaches this header plus `Authorization: Bearer <secret>` to an
+///    ordinary gateway request, and the gateway forwards the request
+///    with the caller's attested admission context. Presenting this
+///    header opts the request into authentication: invalid credentials
+///    or a missing live admitted tunnel refuse the request (401/403) —
+///    there is no anonymous fallback. See the caller ingress section of
+///    `docs/peers.md` for the full contract.
+pub const PEER_TOKEN_ID_HEADER: &str = "boardwalk-peer-token-id";
+// The remaining admission headers are handshake-only vocabulary; they
+// have no per-request role and stay crate-private.
 pub(crate) const PEER_NODE_ID_HEADER: &str = "boardwalk-node-id";
 pub(crate) const PEER_NODE_NAME_HEADER: &str = "boardwalk-node-name";
 pub(crate) const PEER_CAPABILITIES_HEADER: &str = "boardwalk-peer-capabilities";
