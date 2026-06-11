@@ -85,6 +85,31 @@ fn admission_surface_is_spellable_from_the_crate_root() -> Result<(), PeerConfig
     Ok(())
 }
 
+#[test]
+#[should_panic(expected = "invalid peer admission config")]
+fn accept_peer_token_panics_on_invalid_route_name() {
+    let _ = Boardwalk::new()
+        .name("cloud")
+        .accept_peer_token("hub name", "kid-1", "secret");
+}
+
+#[test]
+#[should_panic(expected = "invalid peer url")]
+fn link_panics_on_invalid_url() {
+    let _ = Boardwalk::new().name("hub").link("not a url");
+}
+
+#[test]
+fn accept_peer_token_still_admits_at_resource_read_ceiling() {
+    // Behavior pin: the convenience delegates to PeerAdmission::shared_token,
+    // keeping the read-only default ceiling (no second silent behavioral break).
+    // End-to-end ceiling assertion is covered by the F-07 guard (5.2);
+    // here it is enough that valid input still builds.
+    let _ = Boardwalk::new()
+        .name("cloud")
+        .accept_peer_token("hub", "kid-1", "secret");
+}
+
 #[tokio::test]
 async fn token_bound_capability_scoped_link_serves_remote_resources() {
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

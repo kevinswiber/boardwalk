@@ -187,10 +187,15 @@ impl Boardwalk {
     /// admission token, so the accepting cloud must call
     /// [`Boardwalk::allow_unauthenticated_local_peers`] (or configure
     /// token admission) for the upgrade to be admitted.
+    ///
+    /// # Panics
+    /// Panics if `url` does not parse as a URL. Use [`PeerLink::new`]
+    /// with [`Boardwalk::link_peer`] to handle invalid input as an
+    /// error.
     pub fn link(mut self, url: impl AsRef<str>) -> Self {
         match Url::parse(url.as_ref()) {
             Ok(u) => self.peers.push(u),
-            Err(e) => tracing::warn!(?e, url = url.as_ref(), "ignoring invalid peer url"),
+            Err(e) => panic!("invalid peer url `{}`: {e}", url.as_ref()),
         }
         self
     }
@@ -204,17 +209,24 @@ impl Boardwalk {
         self
     }
 
+    /// Accept a shared-token peer on `/peers/{route_name}` at the
+    /// default `resource.read` ceiling. Chain richer config through
+    /// [`Boardwalk::accept_peer`] with [`PeerAdmission`] to widen the
+    /// ceiling or pin a node id.
+    ///
+    /// # Panics
+    /// Panics if `route_name` is not a valid route name. Use
+    /// [`PeerAdmission::shared_token`] to handle invalid input as an
+    /// error.
     pub fn accept_peer_token(
-        mut self,
+        self,
         route_name: impl Into<String>,
         token_id: impl Into<String>,
         token: impl Into<String>,
     ) -> Self {
-        match PeerAdmissionConfig::shared_token(route_name, token_id, token) {
-            Ok(config) => self.accepted_peer_tokens.push(config),
-            Err(err) => tracing::warn!(?err, "ignoring invalid peer admission config"),
-        }
-        self
+        let admission = PeerAdmission::shared_token(route_name, token_id, token)
+            .unwrap_or_else(|err| panic!("invalid peer admission config: {err}"));
+        self.accept_peer(admission)
     }
 
     /// Accept token-bound peer admission on `/peers/{route}` at the
