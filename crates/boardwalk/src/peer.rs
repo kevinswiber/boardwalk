@@ -525,10 +525,29 @@ impl PeerTokenVerifier {
         }
     }
 
+    /// Verify a presented bearer secret using a constant-time
+    /// comparison: every byte of both inputs is examined when lengths
+    /// match. A length mismatch returns false without content
+    /// comparison — token length is not treated as secret.
     #[allow(dead_code)]
     pub(crate) fn verify(&self, candidate: &str) -> bool {
-        self.secret == candidate
+        constant_time_eq(self.secret.as_bytes(), candidate.as_bytes())
     }
+}
+
+/// Constant-time byte-slice equality via an xor-accumulate fold.
+/// Best-effort without a vetted crate: `black_box` on the accumulator
+/// resists the optimizer collapsing the fold into an early-exit
+/// compare, but offers no formal guarantee.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff = std::hint::black_box(diff | (x ^ y));
+    }
+    diff == 0
 }
 
 impl fmt::Debug for PeerTokenVerifier {
@@ -1327,6 +1346,19 @@ mod peer_model_tests {
                 .requested_capabilities
                 .contains(PeerCapabilities::transition_invoke())
         );
+    }
+
+    #[test]
+    fn token_verifier_accepts_exact_match_and_rejects_everything_else() {
+        let verifier = PeerTokenVerifier::new("s3cret-token");
+        assert!(verifier.verify("s3cret-token"));
+        assert!(!verifier.verify("s3cret-tokeN")); // same length, last byte differs
+        assert!(!verifier.verify("s3cret-toke")); // shorter
+        assert!(!verifier.verify("s3cret-token2")); // longer
+        assert!(!verifier.verify(""));
+        let empty = PeerTokenVerifier::new("");
+        assert!(empty.verify(""));
+        assert!(!empty.verify("x"));
     }
 
     #[test]

@@ -705,3 +705,20 @@ fn final_resource_contract_replaces_old_characterizations() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn peer_token_verify_is_not_plain_equality() {
+    let peer = read("crates/boardwalk/src/peer.rs");
+    let start = peer
+        .find("fn verify(")
+        .expect("PeerTokenVerifier::verify exists");
+    let verify_fn = &peer[start..start + peer[start..].find("\n    }").expect("fn end")];
+    assert!(
+        !verify_fn.contains("self.secret == candidate"),
+        "PeerTokenVerifier::verify must use a constant-time comparison"
+    );
+    assert!(
+        verify_fn.contains("constant_time"),
+        "verify should delegate to the constant-time helper"
+    );
+}
