@@ -190,16 +190,27 @@ fn accept_peer_token_still_admits_at_resource_read_ceiling() {
 /// provenance probe (link requesting read + invoke). Returns
 /// `(cloud_addr, hub_addr, probe_resource_id)` once the link is live.
 async fn boot_probe_pair() -> (std::net::SocketAddr, std::net::SocketAddr, String) {
-    let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let cloud_addr = cloud_listener.local_addr().unwrap();
-    let cloud = Boardwalk::new().name("cloud").accept_peer(
+    boot_probe_pair_with_admission(
         PeerAdmission::shared_token("hub", "kid-1", "secret")
             .unwrap()
             .allow([
                 PeerCapability::ResourceRead,
                 PeerCapability::TransitionInvoke,
             ]),
-    );
+    )
+    .await
+}
+
+/// Same topology as [`boot_probe_pair`] parameterized over the cloud's
+/// admission config, so ceiling-pair tests cannot drift apart. The hub
+/// always requests read + invoke; the negotiated set is whatever the
+/// supplied admission allows.
+async fn boot_probe_pair_with_admission(
+    admission: PeerAdmission,
+) -> (std::net::SocketAddr, std::net::SocketAddr, String) {
+    let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud_addr = cloud_listener.local_addr().unwrap();
+    let cloud = Boardwalk::new().name("cloud").accept_peer(admission);
     tokio::spawn(cloud.listen_until_on(cloud_listener, std::future::pending()));
 
     let hub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -352,4 +363,65 @@ async fn token_bound_capability_scoped_link_serves_remote_resources() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+#[tokio::test]
+async fn token_admitted_without_allow_cannot_invoke_a_transition_through_the_gateway() {
+    // F-07 regression guard (negative half): the default ceiling is
+    // resource.read only — no .allow call.
+    let (cloud_addr, _hub_addr, id) = boot_probe_pair_with_admission(
+        PeerAdmission::shared_token("hub", "kid-1", "secret").unwrap(),
+    )
+    .await;
+
+    // Reads work at the default ceiling (the pair booted means the
+    // poll already saw a 200 read through the gateway).
+    let read = reqwest::get(format!("http://{cloud_addr}/servers/hub/resources"))
+        .await
+        .unwrap();
+    assert_eq!(read.status(), reqwest::StatusCode::OK);
+
+    // The operative path is denied post-admission.
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(response.text().await.unwrap(), "peer capability denied");
+}
+
+#[tokio::test]
+async fn allow_with_transition_invoke_forwards_the_transition() {
+    // F-07 regression guard (positive half): .allow is sufficient to
+    // open the operative path.
+    let (cloud_addr, _hub_addr, id) = boot_probe_pair_with_admission(
+        PeerAdmission::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]),
+    )
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "widened ceiling must forward the invoke: {}",
+        response.status()
+    );
+    // The probe actor observed the invocation.
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["output"]["forwarded_by"], serde_json::json!("cloud"));
 }
