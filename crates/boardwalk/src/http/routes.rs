@@ -24,6 +24,19 @@ use crate::siren::SIREN_CONTENT_TYPE;
 
 const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
 
+// Gateway-attested caller identity on the forwarding hop. Attached in
+// `build_peer_forward_request` after sanitization strips all inbound
+// `x-boardwalk-*` headers, so values are unforgeable across the hop and
+// derive only from the gateway's own admission state. (Tunnel admission
+// headers — the dialer's self-asserted identity — live in `tunnel.rs`.)
+const CALLER_PEER_ID_HEADER: &str = "x-boardwalk-caller-peer-id";
+const CALLER_ROUTE_HEADER: &str = "x-boardwalk-caller-route";
+const CALLER_TOKEN_ID_HEADER: &str = "x-boardwalk-caller-token-id";
+const CALLER_NODE_ID_HEADER: &str = "x-boardwalk-caller-node-id";
+const CALLER_NODE_NAME_HEADER: &str = "x-boardwalk-caller-node-name";
+const CALLER_CAPABILITIES_HEADER: &str = "x-boardwalk-caller-capabilities";
+const CALLER_CONNECTION_ID_HEADER: &str = "x-boardwalk-caller-connection-id";
+
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
 pub(crate) type PeerHandler = Arc<
@@ -192,13 +205,20 @@ async fn maybe_forward_or_404(
         return Some(unknown_server_response());
     };
     let req = match build_peer_forward_request(
-        &state.core.name,
+        ForwardAttestation {
+            gateway_name: &state.core.name,
+            render_capabilities: context.negotiated_capabilities,
+            // Requests reaching the gateway's public listener carry no
+            // admission state today, so there is no caller to attest.
+            // Becomes `Some` when callers can present admission
+            // credentials at the gateway (M1.3 reviewer topology).
+            caller: None,
+        },
         target_name,
         method,
         uri,
         headers,
         body,
-        context.negotiated_capabilities,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -321,14 +341,22 @@ fn has_query_param(query: Option<&str>, key: &str) -> bool {
     })
 }
 
+/// Gateway-owned values stamped onto a forwarded request after
+/// sanitization: who is forwarding, the render-capability ceiling, and
+/// the attested caller identity (if the gateway admitted one).
+struct ForwardAttestation<'a> {
+    gateway_name: &'a str,
+    render_capabilities: PeerCapabilities,
+    caller: Option<&'a AdmittedPeerConnection>,
+}
+
 fn build_peer_forward_request(
-    gateway_name: &str,
+    attestation: ForwardAttestation<'_>,
     target_name: &str,
     method: Method,
     uri: &Uri,
     headers: &HeaderMap,
     body: Body,
-    render_capabilities: PeerCapabilities,
 ) -> Result<http::Request<Body>, http::Error> {
     let path_and_query = uri
         .path_and_query()
@@ -350,9 +378,34 @@ fn build_peer_forward_request(
         .header("x-forwarded-proto", bases.scheme)
         .header("x-boardwalk-external-base", bases.http)
         .header("x-boardwalk-external-ws-base", bases.ws)
-        .header("x-boardwalk-forwarded-by", gateway_name)
-        .header(RENDER_CAPABILITIES_HEADER, render_capabilities.to_string())
+        .header("x-boardwalk-forwarded-by", attestation.gateway_name)
+        .header(
+            RENDER_CAPABILITIES_HEADER,
+            attestation.render_capabilities.to_string(),
+        )
         .header("x-boardwalk-correlation-id", Uuid::new_v4().to_string());
+    if let Some(caller) = attestation.caller {
+        builder = builder
+            .header(CALLER_PEER_ID_HEADER, caller.peer_id.as_str())
+            .header(CALLER_ROUTE_HEADER, caller.route_name.as_str())
+            .header(
+                CALLER_CAPABILITIES_HEADER,
+                caller.negotiated_capabilities.to_string(),
+            )
+            .header(
+                CALLER_CONNECTION_ID_HEADER,
+                caller.connection_id.to_string(),
+            );
+        if let Some(token_id) = caller.token_id.as_deref() {
+            builder = builder.header(CALLER_TOKEN_ID_HEADER, token_id);
+        }
+        if let Some(node_id) = caller.node_id.as_deref() {
+            builder = builder.header(CALLER_NODE_ID_HEADER, node_id);
+        }
+        if let Some(node_name) = caller.display_name.as_deref() {
+            builder = builder.header(CALLER_NODE_NAME_HEADER, node_name);
+        }
+    }
     builder.body(body)
 }
 
@@ -1699,7 +1752,99 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::peer::AdmittedPeerConnection;
     use crate::runtime::{AcceptedJob, NodeBuilder};
+
+    #[test]
+    fn forward_request_attaches_caller_headers_from_admission_state() {
+        let caller = AdmittedPeerConnection::token_bound(
+            "reviewer-respond",
+            "rs-1",
+            Uuid::nil(),
+            "node-reviewer-9",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        );
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let headers = HeaderMap::new();
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: Some(&caller),
+            },
+            "hub",
+            Method::POST,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        let h = req.headers();
+        assert_eq!(
+            h.get("x-boardwalk-caller-peer-id").unwrap(),
+            "peer-reviewer-respond-rs-1"
+        );
+        assert_eq!(
+            h.get("x-boardwalk-caller-node-id").unwrap(),
+            "node-reviewer-9"
+        );
+        assert_eq!(
+            h.get("x-boardwalk-caller-route").unwrap(),
+            "reviewer-respond"
+        );
+        assert_eq!(h.get("x-boardwalk-caller-token-id").unwrap(), "rs-1");
+        assert_eq!(
+            h.get("x-boardwalk-caller-capabilities").unwrap(),
+            "resource.read"
+        );
+        assert!(h.get("x-boardwalk-caller-connection-id").is_some());
+    }
+
+    #[test]
+    fn forward_request_attaches_no_caller_headers_for_anonymous_callers() {
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let headers = HeaderMap::new();
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
+            "hub",
+            Method::GET,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        assert!(req.headers().get("x-boardwalk-caller-peer-id").is_none());
+    }
+
+    #[test]
+    fn inbound_caller_headers_are_stripped_before_attestation() {
+        // A public caller trying to smuggle x-boardwalk-caller-* through
+        // the gateway must be stripped by the existing sanitization, and
+        // with an anonymous caller nothing is re-attached.
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
+            "hub",
+            Method::GET,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        assert!(req.headers().get("x-boardwalk-caller-peer-id").is_none());
+    }
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {
@@ -1845,13 +1990,16 @@ mod tests {
     #[test]
     fn peer_gateway_policy_strips_hop_by_hop_headers_before_h2_send() {
         let req = build_peer_forward_request(
-            "cloud",
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
             "hub",
             Method::GET,
             &"/servers/hub/resources/resource-1".parse().unwrap(),
             &sensitive_gateway_headers(),
             Body::empty(),
-            PeerCapabilities::resource_read(),
         )
         .expect("forward request");
         let headers = req.headers();
