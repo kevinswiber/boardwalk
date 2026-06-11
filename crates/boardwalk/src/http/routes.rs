@@ -249,6 +249,14 @@ async fn maybe_forward_or_404(
     let Some(senders) = state.peer_senders.as_ref() else {
         return Some(unknown_server_response());
     };
+    // Resolution happens after the local-name early-return, so
+    // local-target requests never engage ingress; invalid credentials
+    // are refused before any target-side information is computed.
+    let caller =
+        match resolve_caller_ingress(headers, &state.peer_admission, senders.as_ref()).await {
+            Ok(caller) => caller,
+            Err(response) => return Some(*response),
+        };
     let Some(context) = senders.peer_context(target_name).await else {
         return Some(unknown_server_response());
     };
@@ -275,11 +283,10 @@ async fn maybe_forward_or_404(
         ForwardAttestation {
             gateway_name: &state.core.name,
             render_capabilities: context.negotiated_capabilities,
-            // Requests reaching the gateway's public listener carry no
-            // admission state today, so there is no caller to attest.
-            // Becomes `Some` when callers can present admission
-            // credentials at the gateway (M1.3 reviewer topology).
-            caller: None,
+            // Attested from the gateway's own admission state, resolved
+            // at ingress from the caller's per-request credentials and
+            // live tunnel.
+            caller: caller.as_ref(),
         },
         target_name,
         method,
@@ -1825,7 +1832,6 @@ fn verified_admissions<'a>(
 /// matching route must hold a live admitted tunnel under the same token
 /// id. Negotiated capabilities and connection identity come from that
 /// live handshake — nothing is synthesized per-request.
-#[allow(dead_code)] // wired into the forwarding path by the caller-ingress population
 pub(crate) async fn resolve_caller_ingress(
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
@@ -2169,6 +2175,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarded_request_with_ingress_credentials_attests_the_caller() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert_eq!(
+            headers.get("boardwalk-caller-peer-id"),
+            Some(&"peer-reviewer-kid-2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_credentials_never_cross_the_forwarding_hop() {
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &ingress_headers("kid-2", "reviewer-secret"),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        for denied in ["authorization", crate::tunnel::PEER_TOKEN_ID_HEADER] {
+            assert!(
+                !headers.contains_key(denied),
+                "caller credential header {denied} crossed the hop: {headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_forward_still_carries_no_caller_headers() {
+        // Regression pin: no credentials → no boardwalk-caller-* headers.
+        let (senders, seen, _server) = recording_peer_senders().await;
+        let state = test_state_with_admissions(senders, vec![reviewer_admission()]);
+
+        let resp = maybe_forward_or_404(
+            &state,
+            "hub",
+            Method::GET,
+            &"/servers/hub/resources".parse().unwrap(),
+            &HeaderMap::new(),
+            Body::empty(),
+        )
+        .await
+        .expect("forwarded response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().await;
+        let headers = &seen.first().expect("forwarded request").headers;
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.starts_with("boardwalk-caller-")),
+            "anonymous forward must carry no caller headers: {headers:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {
         let resp = transition_outcome_response(TransitionOutcome::Accepted {
             job: AcceptedJob {
@@ -2487,9 +2573,15 @@ mod tests {
         }
 
         async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
-            (name == "hub").then(|| {
-                AdmittedPeerConnection::unauthenticated("hub", Uuid::nil(), PeerCapabilities::all())
-            })
+            match name {
+                "hub" => Some(AdmittedPeerConnection::unauthenticated(
+                    "hub",
+                    Uuid::nil(),
+                    PeerCapabilities::all(),
+                )),
+                "reviewer" => Some(live_reviewer_context()),
+                _ => None,
+            }
         }
     }
 
@@ -2539,6 +2631,13 @@ mod tests {
     }
 
     fn test_state(peer_senders: Arc<dyn PeerSenders>) -> AppState {
+        test_state_with_admissions(peer_senders, Vec::new())
+    }
+
+    fn test_state_with_admissions(
+        peer_senders: Arc<dyn PeerSenders>,
+        admissions: Vec<PeerAdmissionConfig>,
+    ) -> AppState {
         let node = Arc::new(NodeBuilder::new("cloud").try_build().unwrap());
         AppState {
             core: Core::from_node(node),
@@ -2546,7 +2645,7 @@ mod tests {
             peer_init: PeerInitState::default(),
             peer_senders: Some(peer_senders),
             peer_streams: super::super::peer_streams::PeerStreamHub::new(),
-            peer_admission: Arc::new(Vec::new()),
+            peer_admission: Arc::new(admissions),
             unauthenticated_local_peers: None,
             resource_registrar: None,
         }
