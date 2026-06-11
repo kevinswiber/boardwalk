@@ -8,7 +8,7 @@ use axum::routing::get;
 use bytes::Bytes;
 use http::StatusCode;
 use http::header::{CONNECTION, HOST, HeaderName, HeaderValue, UPGRADE};
-use http_body_util::Empty;
+use http_body_util::{BodyExt, Empty};
 use hyper::Request;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
@@ -639,6 +639,8 @@ struct PeerUpgradeResult {
     status: StatusCode,
     headers: http::HeaderMap,
     upgraded: Option<hyper::upgrade::Upgraded>,
+    /// Response body for denied (non-101) attempts; empty for upgrades.
+    body: String,
 }
 
 async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> PeerUpgradeResult {
@@ -696,16 +698,21 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
         .unwrap();
     let status = response.status();
     let headers = response.headers().clone();
-    let upgraded = if status == StatusCode::SWITCHING_PROTOCOLS {
-        Some(hyper::upgrade::on(response).await.unwrap())
+    let (upgraded, body) = if status == StatusCode::SWITCHING_PROTOCOLS {
+        (
+            Some(hyper::upgrade::on(response).await.unwrap()),
+            String::new(),
+        )
     } else {
-        None
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (None, String::from_utf8_lossy(&bytes).into_owned())
     };
 
     PeerUpgradeResult {
         status,
         headers,
         upgraded,
+        body,
     }
 }
 
@@ -778,20 +785,20 @@ impl PeerUpgradeAttempt {
 /// One structured tracing event captured during a test, with fields
 /// flattened to display/debug strings.
 #[derive(Clone, Debug, Default)]
-struct CapturedEvent {
+pub(super) struct CapturedEvent {
     target: String,
     fields: std::collections::HashMap<String, String>,
 }
 
 impl CapturedEvent {
-    fn field(&self, name: &str) -> &str {
+    pub(super) fn field(&self, name: &str) -> &str {
         self.fields
             .get(name)
             .map(String::as_str)
             .unwrap_or_else(|| panic!("event has no field `{name}`: {self:?}"))
     }
 
-    fn has_field(&self, name: &str) -> bool {
+    pub(super) fn has_field(&self, name: &str) -> bool {
         self.fields.contains_key(name)
     }
 }
@@ -829,7 +836,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
 /// Install a thread-local capturing subscriber. Works because the test
 /// runtime is current-thread: server tasks emit on this thread while
 /// the guard is held.
-fn capture_admission_events() -> (
+pub(super) fn capture_admission_events() -> (
     std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
     tracing::subscriber::DefaultGuard,
 ) {
@@ -842,7 +849,9 @@ fn capture_admission_events() -> (
     (events, guard)
 }
 
-fn admission_denials(events: &std::sync::Mutex<Vec<CapturedEvent>>) -> Vec<CapturedEvent> {
+pub(super) fn admission_denials(
+    events: &std::sync::Mutex<Vec<CapturedEvent>>,
+) -> Vec<CapturedEvent> {
     events
         .lock()
         .unwrap()
@@ -1056,4 +1065,37 @@ async fn successful_admission_emits_no_denial_event() {
 
     let denials = admission_denials(&events);
     assert!(denials.is_empty(), "unexpected denial events: {denials:?}");
+}
+
+#[tokio::test]
+async fn empty_intersection_refusal_log_enumerates_requested_vs_allowed() {
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .token("kid-1", "secret")
+            .node_id("node-hub-1")
+            .request_capabilities(["transition.invoke"]),
+    )
+    .await;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+    // Generic body: no capability enumeration leaks to the dialer.
+    assert_eq!(result.body, "peer capabilities are not allowed");
+
+    let denials = admission_denials(&events);
+    let denial = denials
+        .iter()
+        .find(|event| event.field("reason") == "peer capabilities are not allowed")
+        .expect("refusal event");
+    assert_eq!(denial.field("requested"), "transition.invoke");
+    assert_eq!(denial.field("allowed"), "resource.read");
 }

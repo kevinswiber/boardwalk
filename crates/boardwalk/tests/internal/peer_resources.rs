@@ -608,3 +608,53 @@ async fn last_unsubscribe_tears_down_shared_upstream() {
         "upstream should be torn down after the last subscriber leaves"
     );
 }
+
+#[tokio::test]
+async fn gateway_capability_denial_emits_structured_event() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let (events, _guard) = super::peer_admission::capture_admission_events();
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/{id}/transitions/turn-on",
+            p.cloud_addr
+        ))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let denials = super::peer_admission::admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one denial event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "transition.invoke");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("reason"), "peer capability denied");
+}
+
+#[tokio::test]
+async fn ws_subscribe_capability_denial_emits_structured_event() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let topic = format!("hub/led/{id}/state");
+    let mut ws = open_ws(p.cloud_addr).await;
+    let (events, _guard) = super::peer_admission::capture_admission_events();
+
+    send_json(&mut ws, json!({"type": "subscribe", "topic": topic})).await;
+    let denial_frame = recv_json(&mut ws, Duration::from_secs(2)).await;
+    assert_eq!(denial_frame["type"], "error");
+    assert_eq!(denial_frame["code"], 403);
+
+    let denials = super::peer_admission::admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one denial event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "stream.subscribe");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("topic"), topic);
+}

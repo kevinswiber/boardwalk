@@ -53,7 +53,7 @@ pub(crate) struct TunnelLeg;
 /// Stable tracing target for every admission and capability deny
 /// decision. The target and its field names are a documented contract
 /// for log scraping and alerting (`docs/peers.md`).
-const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
+pub(super) const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
 
 /// Build caller provenance for a request: local/anonymous unless the
 /// request arrived over this node's own authenticated tunnel leg, in
@@ -256,6 +256,16 @@ async fn maybe_forward_or_404(
         .negotiated_capabilities
         .contains(intent.required_capability())
     {
+        tracing::warn!(
+            target: ADMISSION_TRACING_TARGET,
+            kind = "capability",
+            route = %target_name,
+            intent = %intent.required_capability(),
+            negotiated = %context.negotiated_capabilities,
+            reason = "peer capability denied",
+            status = StatusCode::FORBIDDEN.as_u16(),
+            "peer capability denied"
+        );
         return Some((StatusCode::FORBIDDEN, "peer capability denied").into_response());
     }
     let Some(mut sender) = senders.sender(target_name).await else {
@@ -1671,6 +1681,8 @@ fn admit_peer_connection(
             route: peer_name,
             token_id,
             node_id,
+            requested: None,
+            allowed: None,
             connection_id,
         })
     };
@@ -1772,12 +1784,18 @@ fn admit_peer_connection(
         })?;
     let negotiated_capabilities = requested_capabilities.intersection(config.allowed_capabilities);
     if negotiated_capabilities.is_empty() {
-        return Err(deny(
-            StatusCode::FORBIDDEN,
-            "peer capabilities are not allowed",
-            Some(token_id),
-            None,
-        ));
+        let requested = requested_capabilities.to_string();
+        let allowed = config.allowed_capabilities.to_string();
+        return Err(admission_denied(AdmissionDeny {
+            status: StatusCode::FORBIDDEN,
+            reason: "peer capabilities are not allowed",
+            route: peer_name,
+            token_id: Some(token_id),
+            node_id: None,
+            requested: Some(&requested),
+            allowed: Some(&allowed),
+            connection_id,
+        }));
     }
 
     let display_name =
@@ -1801,6 +1819,10 @@ struct AdmissionDeny<'a> {
     route: &'a str,
     token_id: Option<&'a str>,
     node_id: Option<&'a str>,
+    /// Requested-vs-allowed enumeration for the empty-intersection
+    /// refusal: logged server-side only, never in the response body.
+    requested: Option<&'a str>,
+    allowed: Option<&'a str>,
     connection_id: Uuid,
 }
 
@@ -1811,6 +1833,13 @@ struct AdmissionDeny<'a> {
 /// alerting; `token_id` is a public identifier — bearer secrets are
 /// never logged.
 fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
+    // Stable, quotable hint only on the enumerating refusal — the one
+    // denial an operator fixes by widening the ceiling.
+    let message = if deny.requested.is_some() {
+        "peer admission denied; widen with PeerAdmission::allow(...) on the accepting node"
+    } else {
+        "peer admission denied"
+    };
     tracing::warn!(
         target: ADMISSION_TRACING_TARGET,
         kind = "admission",
@@ -1819,8 +1848,10 @@ fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
         status = deny.status.as_u16(),
         token_id = deny.token_id,
         node_id = deny.node_id,
+        requested = deny.requested,
+        allowed = deny.allowed,
         connection_id = %deny.connection_id,
-        "peer admission denied"
+        "{message}"
     );
     Box::new((deny.status, deny.reason.to_string()).into_response())
 }
