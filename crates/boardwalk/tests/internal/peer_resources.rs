@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 use crate::http::PeerStreamHub;
-use crate::peer::{PeerAdmissionConfig, PeerLinkConfig};
+use crate::peer::{PeerAdmission, PeerCapability, PeerLink};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -50,16 +50,19 @@ where
     let capability_names = capabilities.map(|names| {
         names
             .into_iter()
-            .map(|name| name.as_ref().to_string())
+            .map(|name| {
+                name.as_ref()
+                    .parse::<PeerCapability>()
+                    .expect("test capability name")
+            })
             .collect::<Vec<_>>()
     });
     let cloud = Boardwalk::new().name("cloud");
     let cloud = if let Some(capabilities) = capability_names.as_ref() {
-        let admission = PeerAdmissionConfig::shared_token("hub", "kid-1", "secret")
+        let admission = PeerAdmission::shared_token("hub", "kid-1", "secret")
             .unwrap()
-            .allow(capabilities)
-            .unwrap();
-        cloud.accept_peer_admission_config(admission)
+            .allow(capabilities.iter().copied());
+        cloud.accept_peer(admission)
     } else {
         cloud.allow_unauthenticated_local_peers()
     }
@@ -76,12 +79,11 @@ where
     let hub = Boardwalk::new().name("hub").use_actor(ActorLed::default());
     let hub = if let Some(capabilities) = capability_names.as_ref() {
         hub.link_peer(
-            PeerLinkConfig::new(format!("http://{cloud_addr}"), "hub")
+            PeerLink::new(format!("http://{cloud_addr}"), "hub")
                 .unwrap()
                 .token("kid-1", "secret")
                 .node_name("Kitchen Hub")
-                .request_capabilities(capabilities)
-                .unwrap(),
+                .request_capabilities(capabilities.iter().copied()),
         )
     } else {
         hub.link(format!("http://{cloud_addr}"))
@@ -605,4 +607,54 @@ async fn last_unsubscribe_tears_down_shared_upstream() {
         0,
         "upstream should be torn down after the last subscriber leaves"
     );
+}
+
+#[tokio::test]
+async fn gateway_capability_denial_emits_structured_event() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let (events, _guard) = super::peer_admission::capture_admission_events();
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/{id}/transitions/turn-on",
+            p.cloud_addr
+        ))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let denials = super::peer_admission::admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one denial event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "transition.invoke");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("reason"), "peer capability denied");
+}
+
+#[tokio::test]
+async fn ws_subscribe_capability_denial_emits_structured_event() {
+    let p = boot_pair_with_capabilities(Some(["resource.read"])).await;
+    let id = resource_id_via(p.cloud_addr).await;
+    let topic = format!("hub/led/{id}/state");
+    let mut ws = open_ws(p.cloud_addr).await;
+    let (events, _guard) = super::peer_admission::capture_admission_events();
+
+    send_json(&mut ws, json!({"type": "subscribe", "topic": topic})).await;
+    let denial_frame = recv_json(&mut ws, Duration::from_secs(2)).await;
+    assert_eq!(denial_frame["type"], "error");
+    assert_eq!(denial_frame["code"], 403);
+
+    let denials = super::peer_admission::admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one denial event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "capability");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("intent"), "stream.subscribe");
+    assert_eq!(denial.field("negotiated"), "resource.read");
+    assert_eq!(denial.field("topic"), topic);
 }

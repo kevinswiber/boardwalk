@@ -11,6 +11,10 @@
 //! `EventHistoryRepository` will subsume it; the eviction-driven
 //! cleanup contract should be preserved there.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 

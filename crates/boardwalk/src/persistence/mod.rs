@@ -144,9 +144,18 @@ pub(crate) trait ResourceSnapshotRepository {
     fn latest(&self, resource_id: &str) -> Result<Option<ResourceSnapshotRecord>, StorageError>;
 }
 
+/// Reserved key marking the local node's own config record. `\0` is
+/// never a valid node-id byte, so the sentinel cannot collide.
+pub(crate) const LOCAL_NODE_SENTINEL_KEY: &str = "\0local";
+
 pub(crate) trait NodeConfigRepository {
+    /// Store the local node's config: keyed by node id, plus the
+    /// [`LOCAL_NODE_SENTINEL_KEY`] row marking it as the local record.
     fn put(&self, record: NodeConfigRecord) -> Result<(), StorageError>;
     fn get(&self, node_id: &str) -> Result<Option<NodeConfigRecord>, StorageError>;
+    /// The local node's record: sentinel-first, with a legacy fallback
+    /// to the max-`updated_ms` scan for pre-sentinel files (the next
+    /// `put` writes the sentinel, self-healing them).
     fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError>;
 }
 
@@ -339,6 +348,9 @@ impl NodeConfigStore {
 impl NodeConfigRepository for NodeConfigStore {
     fn put(&self, record: NodeConfigRecord) -> Result<(), StorageError> {
         let mut state = lock_state(&self.state)?;
+        state
+            .node_configs
+            .insert(LOCAL_NODE_SENTINEL_KEY.to_string(), record.clone());
         state.node_configs.insert(record.node_id.clone(), record);
         Ok(())
     }
@@ -350,10 +362,14 @@ impl NodeConfigRepository for NodeConfigStore {
 
     fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError> {
         let state = lock_state(&self.state)?;
+        if let Some(record) = state.node_configs.get(LOCAL_NODE_SENTINEL_KEY) {
+            return Ok(Some(record.clone()));
+        }
         Ok(state
             .node_configs
-            .values()
-            .cloned()
+            .iter()
+            .filter(|(key, _)| key.as_str() != LOCAL_NODE_SENTINEL_KEY)
+            .map(|(_, record)| record.clone())
             .max_by_key(|record| record.updated_ms))
     }
 }
@@ -459,6 +475,45 @@ fn lock_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(node_id: &str, updated_ms: i64) -> NodeConfigRecord {
+        NodeConfigRecord {
+            node_id: node_id.into(),
+            display_name: node_id.into(),
+            route_name: node_id.into(),
+            updated_ms,
+        }
+    }
+
+    #[test]
+    fn get_local_prefers_the_sentinel_record() {
+        let repos = MemoryRepositories::default();
+        // Older timestamp on the most recent put: the sentinel must win
+        // where the legacy max-updated_ms heuristic would not.
+        repos.node_config().put(record("node-old", 100)).unwrap();
+        repos.node_config().put(record("node-new", 50)).unwrap();
+
+        let local = repos.node_config().get_local().unwrap().unwrap();
+        assert_eq!(local.node_id, "node-new");
+    }
+
+    #[test]
+    fn get_local_falls_back_to_legacy_scan_when_no_sentinel_exists() {
+        // Pre-sentinel file shape: rows keyed by node_id only.
+        let repos = MemoryRepositories::default();
+        {
+            let mut state = repos.node_config.state.lock().unwrap();
+            state
+                .node_configs
+                .insert("node-a".into(), record("node-a", 100));
+            state
+                .node_configs
+                .insert("node-b".into(), record("node-b", 200));
+        }
+
+        let local = repos.node_config().get_local().unwrap().unwrap();
+        assert_eq!(local.node_id, "node-b");
+    }
 
     #[test]
     fn event_history_repository_is_optional_and_not_runtime_source_of_truth() {

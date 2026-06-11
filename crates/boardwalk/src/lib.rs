@@ -26,6 +26,7 @@
 //! introduction.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod caql;
 pub mod events;
@@ -45,11 +46,13 @@ mod internal_runtime_tests;
 pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
 pub use crate::events::SlowConsumerPolicy;
+pub use crate::peer::{PeerAdmission, PeerCapability, PeerConfigError, PeerLink};
 pub use crate::runtime::{
-    AcceptedJob, Actor, ActorSpec, Effect, FieldSpec, Idempotency, Node, NodeBuilder, NodeHandle,
-    Resource, ResourceKind, ResourceSnapshot, ResourceSnapshotBuilder, ResourceSpec,
-    SnapshotStreamSpec, StateName, StreamKind, StreamSpec, TransitionAffordance, TransitionInput,
-    TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
+    AcceptedJob, Actor, ActorSpec, AdmittedPeer, CallerProvenance, Effect, FieldSpec, Idempotency,
+    Node, NodeBuilder, NodeHandle, Resource, ResourceKind, ResourceSnapshot,
+    ResourceSnapshotBuilder, ResourceSpec, SnapshotStreamSpec, StateName, StreamKind, StreamSpec,
+    TransitionAffordance, TransitionInput, TransitionName, TransitionOutcome, TransitionResultKind,
+    TransitionSpec,
 };
 pub use crate::server::Boardwalk;
 
@@ -59,10 +62,10 @@ pub mod prelude {
     pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
     pub use crate::runtime::{
-        AcceptedJob, Actor, ActorCtx, ActorError, ActorSpec, DynFuture, Effect, FieldSpec,
-        Idempotency, Resource, ResourceCtx, ResourceError, ResourceKind, ResourceSnapshot,
-        ResourceSnapshotBuilder, ResourceSpec, SnapshotStreamSpec, StateName, StreamKind,
-        StreamSpec, TransitionAffordance, TransitionCtx, TransitionError, TransitionInput,
-        TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
+        AcceptedJob, Actor, ActorCtx, ActorError, ActorSpec, AdmittedPeer, CallerProvenance,
+        DynFuture, Effect, FieldSpec, Idempotency, Resource, ResourceCtx, ResourceError,
+        ResourceKind, ResourceSnapshot, ResourceSnapshotBuilder, ResourceSpec, SnapshotStreamSpec,
+        StateName, StreamKind, StreamSpec, TransitionAffordance, TransitionCtx, TransitionError,
+        TransitionInput, TransitionName, TransitionOutcome, TransitionResultKind, TransitionSpec,
     };
 }

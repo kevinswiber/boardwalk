@@ -8,14 +8,16 @@ use axum::routing::get;
 use bytes::Bytes;
 use http::StatusCode;
 use http::header::{CONNECTION, HOST, HeaderName, HeaderValue, UPGRADE};
-use http_body_util::Empty;
+use http_body_util::{BodyExt, Empty};
 use hyper::Request;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use uuid::Uuid;
 
 use crate::Boardwalk;
-use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerConnectionStatus, PeerLinkConfig};
+use crate::peer::{
+    PeerAdmission, PeerCapabilities, PeerCapability, PeerConnectionStatus, PeerLink,
+};
 use crate::persistence::{PeerConfigRecord, PeerConnectionStatusRecord};
 use crate::server::Built;
 use crate::tunnel::SUBPROTOCOL;
@@ -28,11 +30,13 @@ async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_with_capabilities(
-                "hub",
-                "kid-1",
-                "secret",
-                ["resource.read", "stream.subscribe"],
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .allow([
+                        PeerCapability::ResourceRead,
+                        PeerCapability::StreamSubscribe,
+                    ]),
             ),
     )
     .await;
@@ -41,13 +45,15 @@ async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
         .name("hub")
         .node_id("node-hub-1")
         .link_peer(
-            PeerLinkConfig::new(format!("http://{}", cloud.addr), "hub")
+            PeerLink::new(format!("http://{}", cloud.addr), "hub")
                 .unwrap()
                 .token("kid-1", "secret")
                 .node_id("node-hub-1")
                 .node_name("Kitchen Hub")
-                .request_capabilities(["resource.read", "transition.invoke"])
-                .unwrap(),
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
         )
         .build()
         .unwrap();
@@ -84,7 +90,7 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -210,7 +216,7 @@ async fn opt_in_does_not_bypass_configured_token_admission() {
         Boardwalk::new()
             .name("cloud")
             .allow_unauthenticated_local_peers()
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -232,7 +238,7 @@ async fn peer_upgrade_with_wrong_bearer_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -255,7 +261,7 @@ async fn peer_upgrade_with_unknown_token_id_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -278,7 +284,7 @@ async fn token_configured_for_one_route_cannot_claim_another_route_name() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub-a", "kid-1", "secret"),
+            .accept_peer_token("hub-a", "kid-1", "secret"),
     )
     .await;
 
@@ -298,12 +304,14 @@ async fn token_configured_for_one_route_cannot_claim_another_route_name() {
 
 #[tokio::test]
 async fn expected_node_id_mismatch_is_rejected_before_upgrade() {
-    let cloud = serve(Boardwalk::new().name("cloud").expect_peer_token_for_node(
-        "hub",
-        "kid-1",
-        "secret",
-        "node-hub-1",
-    ))
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .expected_node_id("node-hub-1")
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
     .await;
 
     let upgrade = raw_peer_upgrade(
@@ -323,9 +331,11 @@ async fn expected_node_id_mismatch_is_rejected_before_upgrade() {
 #[tokio::test]
 async fn empty_capability_intersection_is_rejected_before_upgrade() {
     let cloud = serve(
-        Boardwalk::new()
-            .name("cloud")
-            .expect_peer_token_with_capabilities("hub", "kid-1", "secret", ["resource.read"]),
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
     )
     .await;
 
@@ -351,7 +361,12 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .expected_node_id("node-hub-1")
+                    .allow([PeerCapability::ResourceRead]),
+            ),
     )
     .await;
 
@@ -442,7 +457,12 @@ async fn failed_peer_confirmation_persists_failed_connection_status() {
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .expected_node_id("node-hub-1")
+                    .allow([PeerCapability::ResourceRead]),
+            ),
     )
     .await;
 
@@ -619,6 +639,8 @@ struct PeerUpgradeResult {
     status: StatusCode,
     headers: http::HeaderMap,
     upgraded: Option<hyper::upgrade::Upgraded>,
+    /// Response body for denied (non-101) attempts; empty for upgrades.
+    body: String,
 }
 
 async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> PeerUpgradeResult {
@@ -655,19 +677,19 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
         );
 
     if let Some(node_id) = attempt.node_id {
-        builder = builder.header("x-boardwalk-node-id", node_id);
+        builder = builder.header("boardwalk-node-id", node_id);
     }
     if let Some(node_name) = attempt.node_name {
-        builder = builder.header("x-boardwalk-node-name", node_name);
+        builder = builder.header("boardwalk-node-name", node_name);
     }
     if let Some(token_id) = attempt.token_id {
-        builder = builder.header("x-boardwalk-peer-token-id", token_id);
+        builder = builder.header("boardwalk-peer-token-id", token_id);
     }
     if let Some(secret) = attempt.secret {
         builder = builder.header("authorization", format!("Bearer {secret}"));
     }
     if let Some(capabilities) = attempt.requested_capabilities {
-        builder = builder.header("x-boardwalk-peer-capabilities", capabilities);
+        builder = builder.header("boardwalk-peer-capabilities", capabilities);
     }
 
     let response = sender
@@ -676,16 +698,21 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
         .unwrap();
     let status = response.status();
     let headers = response.headers().clone();
-    let upgraded = if status == StatusCode::SWITCHING_PROTOCOLS {
-        Some(hyper::upgrade::on(response).await.unwrap())
+    let (upgraded, body) = if status == StatusCode::SWITCHING_PROTOCOLS {
+        (
+            Some(hyper::upgrade::on(response).await.unwrap()),
+            String::new(),
+        )
     } else {
-        None
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (None, String::from_utf8_lossy(&bytes).into_owned())
     };
 
     PeerUpgradeResult {
         status,
         headers,
         upgraded,
+        body,
     }
 }
 
@@ -755,64 +782,320 @@ impl PeerUpgradeAttempt {
     }
 }
 
-trait PeerAdmissionConfigExt {
-    fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self;
-
-    fn expect_peer_token_with_capabilities<I, S>(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        allowed_capabilities: I,
-    ) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>;
-
-    fn expect_peer_token_for_node(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        expected_node_id: &str,
-    ) -> Self;
+/// One structured tracing event captured during a test, with fields
+/// flattened to display/debug strings.
+#[derive(Clone, Debug, Default)]
+pub(super) struct CapturedEvent {
+    target: String,
+    fields: std::collections::HashMap<String, String>,
 }
 
-impl PeerAdmissionConfigExt for Boardwalk {
-    fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self {
-        self.accept_peer_token(route_name, token_id, secret)
+impl CapturedEvent {
+    pub(super) fn field(&self, name: &str) -> &str {
+        self.fields
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or_else(|| panic!("event has no field `{name}`: {self:?}"))
     }
 
-    fn expect_peer_token_with_capabilities<I, S>(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        allowed_capabilities: I,
-    ) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
-            .unwrap()
-            .allow(allowed_capabilities)
-            .unwrap();
-        self.accept_peer_admission_config(config)
+    pub(super) fn has_field(&self, name: &str) -> bool {
+        self.fields.contains_key(name)
     }
+}
 
-    fn expect_peer_token_for_node(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        expected_node_id: &str,
-    ) -> Self {
-        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
-            .unwrap()
-            .expected_node_id(expected_node_id)
-            .allow(["resource.read"])
-            .unwrap();
-        self.accept_peer_admission_config(config)
+struct CaptureLayer {
+    events: std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct Visitor<'a>(&'a mut std::collections::HashMap<String, String>);
+        impl tracing::field::Visit for Visitor<'_> {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0
+                    .insert(field.name().to_string(), format!("{value:?}"));
+            }
+        }
+        let mut captured = CapturedEvent {
+            target: event.metadata().target().to_string(),
+            fields: std::collections::HashMap::new(),
+        };
+        event.record(&mut Visitor(&mut captured.fields));
+        self.events.lock().unwrap().push(captured);
     }
+}
+
+/// Install a thread-local capturing subscriber. Works because the test
+/// runtime is current-thread: server tasks emit on this thread while
+/// the guard is held.
+pub(super) fn capture_admission_events() -> (
+    std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+    tracing::subscriber::DefaultGuard,
+) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(CaptureLayer {
+        events: events.clone(),
+    });
+    let guard = tracing::subscriber::set_default(subscriber);
+    (events, guard)
+}
+
+pub(super) fn admission_denials(
+    events: &std::sync::Mutex<Vec<CapturedEvent>>,
+) -> Vec<CapturedEvent> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event.target == "boardwalk::admission")
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn admission_refusal_default_emits_structured_event() {
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(cloud.addr, PeerUpgradeAttempt::new("hub", Uuid::new_v4())).await;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one denial event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "admission");
+    assert_eq!(denial.field("route"), "hub");
+    assert_eq!(denial.field("reason"), "peer admission is not configured");
+    assert_eq!(denial.field("status"), "403");
+    assert!(denial.has_field("connection_id"));
+}
+
+#[tokio::test]
+async fn admission_denials_emit_structured_events_per_branch() {
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .expected_node_id("node-hub-1")
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+
+    struct Case {
+        name: &'static str,
+        attempt: PeerUpgradeAttempt,
+        status: StatusCode,
+        reason: String,
+        token_id: Option<&'static str>,
+        node_id: Option<&'static str>,
+    }
+    let mut missing_bearer = PeerUpgradeAttempt::new("hub", Uuid::new_v4());
+    missing_bearer.token_id = Some("kid-1");
+    let cases = vec![
+        Case {
+            name: "missing token id",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4()),
+            status: StatusCode::UNAUTHORIZED,
+            reason: "missing peer token id".into(),
+            token_id: None,
+            node_id: None,
+        },
+        Case {
+            name: "missing bearer",
+            attempt: missing_bearer,
+            status: StatusCode::UNAUTHORIZED,
+            reason: "missing bearer token".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "unknown token id",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4()).token("nope", "secret"),
+            status: StatusCode::UNAUTHORIZED,
+            reason: "unknown peer token id".into(),
+            token_id: Some("nope"),
+            node_id: None,
+        },
+        Case {
+            name: "invalid bearer",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4()).token("kid-1", "wrong"),
+            status: StatusCode::UNAUTHORIZED,
+            reason: "invalid bearer token".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "token not valid for route",
+            attempt: PeerUpgradeAttempt::new("other", Uuid::new_v4()).token("kid-1", "secret"),
+            status: StatusCode::FORBIDDEN,
+            reason: "peer token is not valid for route".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "missing node id",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4()).token("kid-1", "secret"),
+            status: StatusCode::BAD_REQUEST,
+            reason: "missing boardwalk-node-id".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "node id mismatch",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+                .token("kid-1", "secret")
+                .node_id("node-other"),
+            status: StatusCode::FORBIDDEN,
+            reason: "peer node id mismatch".into(),
+            token_id: Some("kid-1"),
+            node_id: Some("node-other"),
+        },
+        Case {
+            name: "missing capabilities",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+                .token("kid-1", "secret")
+                .node_id("node-hub-1"),
+            status: StatusCode::BAD_REQUEST,
+            reason: "missing boardwalk-peer-capabilities".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "unparsable capabilities",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+                .token("kid-1", "secret")
+                .node_id("node-hub-1")
+                .request_capabilities(["bogus"]),
+            status: StatusCode::BAD_REQUEST,
+            reason: "unknown peer capability `bogus`".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+        Case {
+            name: "empty negotiated set",
+            attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+                .token("kid-1", "secret")
+                .node_id("node-hub-1")
+                .request_capabilities(["transition.invoke"]),
+            status: StatusCode::FORBIDDEN,
+            reason: "peer capabilities are not allowed".into(),
+            token_id: Some("kid-1"),
+            node_id: None,
+        },
+    ];
+
+    for case in cases {
+        let (events, guard) = capture_admission_events();
+        let route = case.attempt.route_name.clone();
+        let result = raw_peer_upgrade(cloud.addr, case.attempt).await;
+        drop(guard);
+        assert_eq!(result.status, case.status, "case `{}`", case.name);
+
+        let denials = admission_denials(&events);
+        assert_eq!(
+            denials.len(),
+            1,
+            "case `{}` expected one denial event: {denials:?}",
+            case.name
+        );
+        let denial = &denials[0];
+        assert_eq!(denial.field("kind"), "admission", "case `{}`", case.name);
+        assert_eq!(denial.field("route"), route, "case `{}`", case.name);
+        assert_eq!(denial.field("reason"), case.reason, "case `{}`", case.name);
+        assert_eq!(
+            denial.field("status"),
+            case.status.as_u16().to_string(),
+            "case `{}`",
+            case.name
+        );
+        match case.token_id {
+            Some(expected) => {
+                assert_eq!(denial.field("token_id"), expected, "case `{}`", case.name);
+            }
+            None => assert!(
+                !denial.has_field("token_id"),
+                "case `{}` should not log a token id: {denial:?}",
+                case.name
+            ),
+        }
+        if let Some(expected) = case.node_id {
+            assert_eq!(denial.field("node_id"), expected, "case `{}`", case.name);
+        }
+        for value in denial.fields.values() {
+            assert!(
+                !value.contains("secret") && !value.contains("wrong"),
+                "case `{}` leaked secret material: {denial:?}",
+                case.name
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn successful_admission_emits_no_denial_event() {
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .token("kid-1", "secret")
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"]),
+    )
+    .await;
+    assert_eq!(result.status, StatusCode::SWITCHING_PROTOCOLS);
+
+    let denials = admission_denials(&events);
+    assert!(denials.is_empty(), "unexpected denial events: {denials:?}");
+}
+
+#[tokio::test]
+async fn empty_intersection_refusal_log_enumerates_requested_vs_allowed() {
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
+    .await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .token("kid-1", "secret")
+            .node_id("node-hub-1")
+            .request_capabilities(["transition.invoke"]),
+    )
+    .await;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+    // Generic body: no capability enumeration leaks to the dialer.
+    assert_eq!(result.body, "peer capabilities are not allowed");
+
+    let denials = admission_denials(&events);
+    let denial = denials
+        .iter()
+        .find(|event| event.field("reason") == "peer capabilities are not allowed")
+        .expect("refusal event");
+    assert_eq!(denial.field("requested"), "transition.invoke");
+    assert_eq!(denial.field("allowed"), "resource.read");
 }

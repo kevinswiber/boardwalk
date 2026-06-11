@@ -34,8 +34,8 @@ identity.
 2. The hub opens a WebSocket to `wss://cloud.example.com/peers/<route-name>`
    with the `boardwalk-peer/3` subprotocol token.
 3. Token-bound peer links send `Authorization: Bearer <token>`,
-   `X-Boardwalk-Peer-Token-Id`, `X-Boardwalk-Node-Id`,
-   `X-Boardwalk-Node-Name`, and `X-Boardwalk-Peer-Capabilities` before
+   `Boardwalk-Peer-Token-Id`, `Boardwalk-Node-Id`,
+   `Boardwalk-Node-Name`, and `Boardwalk-Peer-Capabilities` before
    the cloud returns `101 Switching Protocols`.
 4. Once the upgrade succeeds, both sides drop WebSocket framing and speak
    HTTP/2 prior-knowledge over the raw stream, with reversed roles: the
@@ -56,7 +56,10 @@ requests. A `Node` built directly with `NodeBuilder` is the lower-level
 in-process runtime; register actors through `Boardwalk` when they should
 be reachable through the supplied HTTP and peer routes.
 
-The cloud side can require a shared token for a route:
+The cloud side can require a shared token for a route.
+`accept_peer_token` admits its peer at the `resource.read` ceiling and
+panics if the route name is invalid — security configuration is never
+logged and skipped:
 
 ```rust,ignore
 Boardwalk::new()
@@ -66,10 +69,43 @@ Boardwalk::new()
     .await?
 ```
 
+The full admission config widens the ceiling and pins identity.
+`PeerAdmission::shared_token` validates at construction and returns
+`Result`, so a bad value fails at the line that contains it; the
+builder chain stays infallible:
+
+```rust,ignore
+use boardwalk::{Boardwalk, PeerAdmission, PeerCapability};
+
+Boardwalk::new()
+    .name("cloud")
+    .accept_peer(
+        PeerAdmission::shared_token("hub", "token-id", std::env::var("BOARDWALK_HUB_TOKEN")?)?
+            .expected_node_id("node-hub-7f3a")
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::StreamSubscribe,
+                PeerCapability::TransitionInvoke,
+            ]),
+    )
+    .listen("0.0.0.0:443".parse()?)
+    .await?
+```
+
+`.allow([...])` **replaces** the ceiling with exactly the set you pass —
+the default ceiling is `resource.read` only, and widening is always a
+visible act.
+
 Token secrets belong in runtime configuration or environment variables.
-They are used for admission checks and are not persisted into peer
-records. A token is bound to a route name; an admission policy can also
-require the expected node id presented during the upgrade.
+They are used for admission checks (constant-time comparison) and are
+not persisted into peer records. A token is bound to a route name.
+
+`expected_node_id` is an exact string match against the node id the
+connecting peer self-asserts during the upgrade, checked under token
+possession. It guards against the wrong legitimate node using a token —
+a misconfiguration guard, not identity proof: a token thief can present
+any node id. Cryptographic node identity is out of scope for this
+release.
 
 A cloud with no admission configuration refuses every peer upgrade with
 `403` and the body `peer admission is not configured`, before the
@@ -78,13 +114,46 @@ the explicit local-development opt-in: every admitted unauthenticated
 peer receives the local-development capability ceiling (currently the
 full capability set) as both its allowed and negotiated capabilities.
 The opt-in applies only while no token admission is configured; once any
-`accept_peer_token` entry exists, token-bound admission is required for
-all peers.
+`accept_peer_token` or `accept_peer` entry exists, token-bound admission
+is required for all peers.
+
+Known wrinkle: under `allow_unauthenticated_local_peers()`, a presented
+token is ignored and the peer is admitted at the local-development
+ceiling. Tokened links should target token-configured nodes.
+
+## Outbound Links
+
+Token-bound outbound links are configured with `link_peer`.
+`PeerLink::new` validates the gateway URL and route name at
+construction; the requested capability set defaults to `resource.read`
+only, and `.request_capabilities([...])` replaces it with exactly the
+set you pass. The acceptor intersects the request with its configured
+ceiling; an empty intersection is refused:
+
+```rust,ignore
+use boardwalk::{Boardwalk, PeerCapability, PeerLink};
+
+Boardwalk::new()
+    .name("hub")
+    .use_actor(Led::default())
+    .link_peer(
+        PeerLink::new("wss://cloud.example.com", "hub")?
+            .token("token-id", std::env::var("BOARDWALK_HUB_TOKEN")?)
+            .node_id("node-hub-7f3a")
+            .request_capabilities([
+                PeerCapability::ResourceRead,
+                PeerCapability::StreamSubscribe,
+            ]),
+    )
+    .listen("127.0.0.1:1338".parse()?)
+    .await?
+```
 
 The public `.link(...)` convenience is a trusted local-development peer
-initiator and pairs with an opted-in cloud. At present, public outbound token-bound links are not available yet;
-a cloud exposed beyond a trusted development environment should use token admission
-and TLS, and should reject unknown peers before the WebSocket upgrade completes.
+initiator and pairs with an opted-in cloud; it panics on an invalid
+URL. A cloud exposed beyond a trusted development environment should
+use token admission and TLS, and should reject unknown peers before the
+WebSocket upgrade completes.
 
 ```rust,ignore
 Boardwalk::new()
@@ -97,26 +166,81 @@ Boardwalk::new()
 
 ## Capabilities
 
-Peer admission negotiates coarse capabilities. The negotiated set is the
-ceiling for both gateway forwarding and rendered hypermedia:
+Peer admission negotiates coarse capabilities. Configuration uses the
+typed `PeerCapability` enum; the canonical dotted names remain the wire
+format and round-trip through `Display`/`FromStr`. The negotiated set
+(requested ∩ allowed) is the ceiling for both gateway forwarding and
+rendered hypermedia:
 
-- `resource.read` permits resource and metadata reads.
-- `resource.query` permits directed peer queries with `?ql=<caql>`.
-- `stream.subscribe` permits peer event streams and stream links.
-- `transition.invoke` permits transition POST forwarding and transition
-  actions in rendered resources.
-- `resource.register` is reserved for resource registration forwarding.
-- `peer.admin` is reserved for future peer administration surfaces.
+- `PeerCapability::ResourceRead` (`resource.read`) permits resource and
+  metadata reads.
+- `PeerCapability::ResourceQuery` (`resource.query`) permits directed
+  peer queries with `?ql=<caql>`.
+- `PeerCapability::StreamSubscribe` (`stream.subscribe`) permits peer
+  event streams and stream links.
+- `PeerCapability::TransitionInvoke` (`transition.invoke`) permits
+  transition POST forwarding and transition actions in rendered
+  resources.
+- `PeerCapability::ResourceRegister` (`resource.register`) is reserved
+  for resource registration forwarding.
+- `PeerCapability::PeerAdmin` (`peer.admin`) is reserved for future
+  peer administration surfaces.
+
+`.allow` and `.request_capabilities` replace the respective set with
+exactly what you pass — they never union with the default.
 
 If the requested and allowed capability sets have an empty intersection,
-admission fails with `403`.
+admission fails with `403`. The wire response stays generic; the
+server-side log enumerates the requested-vs-allowed names (see
+Observability below).
+
+## Caller Provenance
+
+Inside a transition handler, `TransitionCtx::provenance()` reports
+where the invocation came from, as far as the serving node can verify:
+
+- `is_local()` — direct local invocations and anonymous public HTTP
+  callers (the node saw no verifiable forwarding metadata).
+- `forwarded_by()` — the gateway route that forwarded the request over
+  the node's own authenticated tunnel leg.
+- `peer()` — the gateway-attested admitted caller, when one exists.
+  `None` means anonymous or local.
+
+The trust rule: forwarded/attested caller headers are honored only when
+the request arrived over a tunnel this node itself dialed. Forged
+headers on a public listener are ignored. Public HTTP callers reaching
+a gateway are anonymous today — the gateway has no admission state for
+them, so downstream nodes see `peer() == None`. Resource reads
+(`ResourceCtx`) do not carry provenance in this release.
+
+## Observability
+
+Every admission and capability deny decision emits one structured
+`tracing` event at the stable target `boardwalk::admission` (level
+`warn`). Stable fields: `kind` (`admission` | `capability`), `route`,
+`reason`, `status`, plus `token_id`, `node_id`, `connection_id`,
+`intent`, and `negotiated` where known. The empty-intersection refusal
+also logs `requested` and `allowed` capability names — log-side only;
+the wire body stays generic. Alert on repeated `unknown peer token id`
+(credential guessing), `peer node id mismatch` (token-theft signal),
+and denied `transition.invoke` intents (probing the operative path).
+
+## Node Identity
+
+On first persisted startup (persistence enabled, no persisted record,
+no explicit `.node_id()`), the node generates a UUID node id, persists
+it, and logs it at `info` so operators can write acceptor-side
+`expected_node_id` bindings. The id is sticky across renames as long as
+persistence stays enabled. Non-persisted nodes default the node id to
+the display name — renaming a non-persisted node changes its presented
+identity and rewrites its stream ids.
 
 ## Gateway Policy
 
 The gateway recognizes Boardwalk peer routes before forwarding. Unknown
 peer paths are rejected instead of being tunneled as raw HTTP. Forwarded
 requests strip inbound `Forwarded`, `X-Forwarded-*`,
-`X-Boardwalk-External-*`, `Proxy-*`, `Proxy-Connection`, credential,
+`Boardwalk-External-*`, `Proxy-*`, `Proxy-Connection`, credential,
 hop-by-hop, and WebSocket negotiation headers, then write fresh
 gateway-owned forwarding metadata for the peer.
 

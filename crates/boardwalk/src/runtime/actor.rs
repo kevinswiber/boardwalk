@@ -1,11 +1,17 @@
 //! The `Actor` trait, lifecycle hooks, and transition error model.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
 
-use super::context::{CommandId, EmissionContext, EnvelopePlan, Publisher, RequestCtx};
+use super::context::{
+    CallerProvenance, CommandId, EmissionContext, EnvelopePlan, Publisher, RequestCtx,
+};
 use super::node::Node;
 use super::resource::{DynFuture, Resource, ResourceError, ResourceSnapshot, TransitionOutcome};
 use super::transition::TransitionInput;
@@ -68,6 +74,13 @@ impl TransitionCtx {
     /// Test-only constructor used by trait-shape compile tests.
     pub fn new_test() -> Self {
         Self::new(RequestCtx::default(), "test")
+    }
+
+    /// Caller provenance for this invocation, as established by the
+    /// runtime: local/anonymous by default, forwarded-with-admitted-peer
+    /// when the request arrived over an authenticated peer tunnel.
+    pub fn provenance(&self) -> &CallerProvenance {
+        self.request.provenance()
     }
 
     /// Attach actor identity so `publish` can build envelopes addressed
@@ -372,7 +385,45 @@ pub trait Actor: Resource {
 
 #[cfg(test)]
 mod tests {
+    use super::super::context::AdmittedPeer;
     use super::*;
+
+    #[test]
+    fn transition_ctx_defaults_to_local_anonymous_provenance() {
+        let ctx = TransitionCtx::new_test();
+        let provenance = ctx.provenance();
+        assert!(provenance.is_local());
+        assert!(provenance.peer().is_none());
+        assert!(provenance.forwarded_by().is_none());
+    }
+
+    #[test]
+    fn request_ctx_carries_forwarded_provenance_into_transition_ctx() {
+        let peer = AdmittedPeer::new(
+            "reviewer-respond",
+            "peer-reviewer-respond-rs-1",
+            Some("rs-1".to_string()),
+            Some("node-reviewer-9".to_string()),
+            None,
+            vec![
+                crate::peer::PeerCapability::ResourceRead,
+                crate::peer::PeerCapability::TransitionInvoke,
+            ],
+            "00000000-0000-0000-0000-000000000001",
+        );
+        let request =
+            RequestCtx::default().with_provenance(CallerProvenance::forwarded("cloud", Some(peer)));
+        let ctx = TransitionCtx::new(request, "hub");
+
+        let provenance = ctx.provenance();
+        assert!(!provenance.is_local());
+        assert_eq!(provenance.forwarded_by(), Some("cloud"));
+        let peer = provenance.peer().expect("admitted caller");
+        assert_eq!(peer.peer_id(), "peer-reviewer-respond-rs-1");
+        assert_eq!(peer.node_id(), Some("node-reviewer-9"));
+        assert!(peer.has_capability(crate::peer::PeerCapability::TransitionInvoke));
+        assert_eq!(peer.connection_id(), "00000000-0000-0000-0000-000000000001");
+    }
 
     #[test]
     fn transition_error_internal_wraps_display() {

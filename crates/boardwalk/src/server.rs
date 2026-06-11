@@ -17,7 +17,8 @@ use crate::http::{
     ResourceRegistrationError, router_with,
 };
 use crate::peer::{
-    PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig, UnauthenticatedPeerPolicy,
+    PeerAcceptors, PeerAdmission, PeerAdmissionConfig, PeerClient, PeerLink, PeerLinkConfig,
+    UnauthenticatedPeerPolicy,
 };
 use crate::persistence::{
     DefaultRepositories, IdentityKey, NodeConfigRecord, NodeConfigRepository, Repositories,
@@ -29,6 +30,9 @@ use crate::runtime::{
     TransitionOutcome,
 };
 
+/// Top-level builder assembling a Boardwalk node: actors, peer
+/// admission and links, persistence, and the HTTP/WebSocket/peer route
+/// stack served by `listen`.
 pub struct Boardwalk {
     name: String,
     node_id: Option<String>,
@@ -129,6 +133,8 @@ impl Default for Boardwalk {
 }
 
 impl Boardwalk {
+    /// Start a builder with the default display name (`boardwalk`),
+    /// no peers, and no persistence.
     pub fn new() -> Self {
         Self {
             name: "boardwalk".to_string(),
@@ -143,11 +149,20 @@ impl Boardwalk {
         }
     }
 
+    /// Set the human-readable display name. Non-persisted nodes also
+    /// default their node id to this value.
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
         self
     }
 
+    /// Set this node's stable identity explicitly. The node id is the
+    /// stable prefix of every `StreamId` this node emits and the value
+    /// remote acceptors pin with [`PeerAdmission::expected_node_id`] —
+    /// changing it rewrites stream identities and breaks existing
+    /// bindings. Without this call, persisted nodes generate and keep a
+    /// UUID on first startup; non-persisted nodes default to the
+    /// display name.
     pub fn node_id(mut self, id: impl Into<String>) -> Self {
         self.node_id = Some(id.into());
         self
@@ -186,36 +201,53 @@ impl Boardwalk {
     /// admission token, so the accepting cloud must call
     /// [`Boardwalk::allow_unauthenticated_local_peers`] (or configure
     /// token admission) for the upgrade to be admitted.
+    ///
+    /// # Panics
+    /// Panics if `url` does not parse as a URL. Use [`PeerLink::new`]
+    /// with [`Boardwalk::link_peer`] to handle invalid input as an
+    /// error.
     pub fn link(mut self, url: impl AsRef<str>) -> Self {
         match Url::parse(url.as_ref()) {
             Ok(u) => self.peers.push(u),
-            Err(e) => tracing::warn!(?e, url = url.as_ref(), "ignoring invalid peer url"),
+            Err(e) => panic!("invalid peer url `{}`: {e}", url.as_ref()),
         }
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn link_peer(mut self, config: PeerLinkConfig) -> Self {
-        self.peer_links.push(config);
+    /// Dial a remote gateway as a peer using a validated link config:
+    /// token credentials, node identity, and a requested capability
+    /// set. Validation already happened at [`PeerLink`] construction,
+    /// so this method cannot fail.
+    pub fn link_peer(mut self, link: PeerLink) -> Self {
+        self.peer_links.push(link.into_inner());
         self
     }
 
+    /// Accept a shared-token peer on `/peers/{route_name}` at the
+    /// default `resource.read` ceiling. Chain richer config through
+    /// [`Boardwalk::accept_peer`] with [`PeerAdmission`] to widen the
+    /// ceiling or pin a node id.
+    ///
+    /// # Panics
+    /// Panics if `route_name` is not a valid route name. Use
+    /// [`PeerAdmission::shared_token`] to handle invalid input as an
+    /// error.
     pub fn accept_peer_token(
-        mut self,
+        self,
         route_name: impl Into<String>,
         token_id: impl Into<String>,
         token: impl Into<String>,
     ) -> Self {
-        match PeerAdmissionConfig::shared_token(route_name, token_id, token) {
-            Ok(config) => self.accepted_peer_tokens.push(config),
-            Err(err) => tracing::warn!(?err, "ignoring invalid peer admission config"),
-        }
-        self
+        let admission = PeerAdmission::shared_token(route_name, token_id, token)
+            .unwrap_or_else(|err| panic!("invalid peer admission config: {err}"));
+        self.accept_peer(admission)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn accept_peer_admission_config(mut self, config: PeerAdmissionConfig) -> Self {
-        self.accepted_peer_tokens.push(config);
+    /// Accept token-bound peer admission on `/peers/{route}` at the
+    /// config's capability ceiling. Validation already happened at
+    /// [`PeerAdmission`] construction, so this method cannot fail.
+    pub fn accept_peer(mut self, admission: PeerAdmission) -> Self {
+        self.accepted_peer_tokens.push(admission.into_inner());
         self
     }
 
@@ -311,15 +343,14 @@ impl Boardwalk {
             })
             .transpose()?
             .flatten();
-        let node_id = self
-            .node_id
-            .clone()
-            .or_else(|| {
-                persisted_node_config
-                    .as_ref()
-                    .map(|record| record.node_id.clone())
-            })
-            .unwrap_or_else(|| self.name.clone());
+        let node_id = resolve_node_id(
+            self.node_id.clone(),
+            persisted_node_config
+                .as_ref()
+                .map(|record| record.node_id.clone()),
+            repositories.is_some(),
+            &self.name,
+        );
         let local_display_name = self.name.clone();
         let accepted_peer_tokens = self.accepted_peer_tokens.clone();
         let mut node_builder = NodeBuilder::new(node_id.clone());
@@ -379,11 +410,18 @@ impl Boardwalk {
             resource_registrar: resource_registrar.clone(),
         };
         let router = router_with(state);
+        // The router served over tunnels this node dials carries the
+        // tunnel-leg marker; the public listener serves the unmarked
+        // `router`, so forwarded/attested caller headers are honored
+        // only on the authenticated tunnel leg.
+        let tunnel_router = router
+            .clone()
+            .layer(axum::Extension(crate::http::TunnelLeg));
 
         let mut peer_tasks = Vec::new();
         for url in self.peers {
             let local_name = self.name.clone();
-            let pc = PeerClient::new(url, local_name, router.clone(), peer_init.clone());
+            let pc = PeerClient::new(url, local_name, tunnel_router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
         for mut link in self.peer_links {
@@ -393,7 +431,7 @@ impl Boardwalk {
             if link.local_node_name.is_none() {
                 link = link.node_name(local_display_name.clone());
             }
-            let pc = PeerClient::from_link(link, router.clone(), peer_init.clone());
+            let pc = PeerClient::from_link(link, tunnel_router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
 
@@ -624,6 +662,31 @@ fn repository_ref(repositories: &Option<Arc<DefaultRepositories>>) -> Option<&dy
         .map(|repositories| repositories as &dyn Repositories)
 }
 
+/// Node-id precedence: explicit `.node_id()` > persisted record >
+/// generated UUID (persisted nodes only, first startup) > display
+/// name. A per-boot random id on non-persisted nodes would churn every
+/// `StreamId` across restarts, so the name default stays.
+fn resolve_node_id(
+    explicit: Option<String>,
+    persisted: Option<String>,
+    persistence_enabled: bool,
+    name: &str,
+) -> String {
+    explicit.or(persisted).unwrap_or_else(|| {
+        if persistence_enabled {
+            let generated = Uuid::new_v4().to_string();
+            tracing::info!(
+                node_id = %generated,
+                "generated persistent node id on first persisted startup; \
+                 use this value for expected_node_id bindings on accepting peers"
+            );
+            generated
+        } else {
+            name.to_string()
+        }
+    })
+}
+
 fn persist_local_node_config(
     repositories: Option<&dyn Repositories>,
     node_id: &str,
@@ -693,5 +756,42 @@ impl Built {
     #[cfg(test)]
     pub(crate) fn repositories(&self) -> Option<&dyn Repositories> {
         repository_ref(&self.repositories)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Precedence matrix (research 0002 q4): explicit > persisted >
+    // generated (persistence only) > display name.
+    #[test]
+    fn resolve_node_id_prefers_explicit_over_everything() {
+        let id = resolve_node_id(
+            Some("explicit".into()),
+            Some("persisted".into()),
+            true,
+            "name",
+        );
+        assert_eq!(id, "explicit");
+    }
+
+    #[test]
+    fn resolve_node_id_prefers_persisted_record_over_generation() {
+        let id = resolve_node_id(None, Some("persisted".into()), true, "name");
+        assert_eq!(id, "persisted");
+    }
+
+    #[test]
+    fn resolve_node_id_generates_uuid_on_first_persisted_startup() {
+        let id = resolve_node_id(None, None, true, "name");
+        assert_ne!(id, "name");
+        assert!(Uuid::parse_str(&id).is_ok(), "expected a UUID, got {id}");
+    }
+
+    #[test]
+    fn resolve_node_id_defaults_to_name_without_persistence() {
+        let id = resolve_node_id(None, None, false, "name");
+        assert_eq!(id, "name");
     }
 }

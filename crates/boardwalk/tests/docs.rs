@@ -479,9 +479,14 @@ fn peers_doc_describes_admission_capabilities_and_limits() {
     let s = read("docs/peers.md");
     for required in [
         "accept_peer_token",
+        "accept_peer",
+        "PeerAdmission",
+        "PeerLink",
+        "link_peer",
+        ".allow(",
+        "request_capabilities",
         "allow_unauthenticated_local_peers",
         "peer admission is not configured",
-        "public outbound token-bound links are not available yet",
         "route name",
         "expected node id",
         "resource.read",
@@ -500,6 +505,30 @@ fn peers_doc_describes_admission_capabilities_and_limits() {
             "peers.md should document peer boundary detail `{required}`"
         );
     }
+    let stale = "public outbound token-bound links are not available yet";
+    assert!(
+        !s.contains(stale),
+        "peers.md must not retain stale claim `{stale}`"
+    );
+}
+
+#[test]
+fn peers_doc_states_default_ceiling_and_widening() {
+    let s = read("docs/peers.md");
+    assert!(
+        s.contains("admits its peer at the `resource.read` ceiling")
+            || s.contains("default ceiling is `resource.read`"),
+        "peers.md must state accept_peer_token's default ceiling"
+    );
+}
+
+#[test]
+fn peers_doc_documents_the_admission_tracing_contract() {
+    let s = read("docs/peers.md");
+    assert!(
+        s.contains("boardwalk::admission"),
+        "peers.md must document the deny-decision tracing target"
+    );
 }
 
 #[test]

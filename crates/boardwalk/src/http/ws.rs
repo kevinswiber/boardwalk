@@ -192,6 +192,17 @@ pub(crate) async fn handle_socket(socket: WebSocket, state: AppState) {
                                 .negotiated_capabilities
                                 .contains(PeerCapabilities::stream_subscribe_capability())
                         {
+                            tracing::warn!(
+                                target: super::routes::ADMISSION_TRACING_TARGET,
+                                kind = "capability",
+                                route = %first,
+                                intent = "stream.subscribe",
+                                negotiated = %context.negotiated_capabilities,
+                                topic = %topic,
+                                reason = "peer capability denied",
+                                status = 403_u16,
+                                "peer capability denied"
+                            );
                             send_or_terminate(
                                 &out_tx,
                                 &terminal_tx,

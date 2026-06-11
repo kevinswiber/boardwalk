@@ -4,6 +4,10 @@
 //! HTTP renderers. The runtime owns them so in-process nodes and the
 //! reusable Boardwalk route stack use the same transition model.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

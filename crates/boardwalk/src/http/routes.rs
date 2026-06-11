@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
@@ -19,10 +19,79 @@ use crate::peer::{
     AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities, UnauthenticatedPeerPolicy,
 };
 use crate::query::QueryScope;
-use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
+use crate::runtime::{
+    AdmittedPeer, CallerProvenance, RequestCtx, TransitionInput, TransitionOutcome,
+};
 use crate::siren::SIREN_CONTENT_TYPE;
 
-const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
+const RENDER_CAPABILITIES_HEADER: &str = "boardwalk-render-capabilities";
+
+// Gateway-attested caller identity on the forwarding hop. Attached in
+// `build_peer_forward_request` after sanitization strips all inbound
+// `boardwalk-*` headers (and legacy `x-boardwalk-*`), so values are
+// unforgeable across the hop and derive only from the gateway's own
+// admission state. All boardwalk headers are unprefixed per RFC 6648.
+// (Tunnel admission headers — the dialer's self-asserted identity —
+// live in `tunnel.rs`.)
+const CALLER_PEER_ID_HEADER: &str = "boardwalk-caller-peer-id";
+const CALLER_ROUTE_HEADER: &str = "boardwalk-caller-route";
+const CALLER_TOKEN_ID_HEADER: &str = "boardwalk-caller-token-id";
+const CALLER_NODE_ID_HEADER: &str = "boardwalk-caller-node-id";
+const CALLER_NODE_NAME_HEADER: &str = "boardwalk-caller-node-name";
+const CALLER_CAPABILITIES_HEADER: &str = "boardwalk-caller-capabilities";
+const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
+
+/// Request-extension marker present only on the router clone a node
+/// serves over tunnels it dialed itself (`PeerClient`). Its presence is
+/// the trust boundary for honoring forwarded/attested caller headers;
+/// the public listener serves the unmarked router, so forged headers
+/// there are ignored.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TunnelLeg;
+
+/// Stable tracing target for every admission and capability deny
+/// decision. The target and its field names are a documented contract
+/// for log scraping and alerting (`docs/peers.md`).
+pub(super) const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
+
+/// Build caller provenance for a request: local/anonymous unless the
+/// request arrived over this node's own authenticated tunnel leg, in
+/// which case the gateway-owned forwarded/attested headers are honored.
+/// An unparsable attested capability list fails closed: the caller is
+/// treated as anonymous rather than guessed.
+fn caller_provenance(extensions: &Extensions, headers: &HeaderMap) -> CallerProvenance {
+    if extensions.get::<TunnelLeg>().is_none() {
+        return CallerProvenance::default();
+    }
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let Some(gateway) = header("boardwalk-forwarded-by") else {
+        return CallerProvenance::default();
+    };
+    let caller = header(CALLER_PEER_ID_HEADER).and_then(|peer_id| {
+        let capabilities = match header(CALLER_CAPABILITIES_HEADER) {
+            Some(raw) => match PeerCapabilities::parse_list(&raw) {
+                Ok(caps) => caps.to_capabilities(),
+                Err(_) => return None,
+            },
+            None => Vec::new(),
+        };
+        Some(AdmittedPeer::new(
+            header(CALLER_ROUTE_HEADER).unwrap_or_default(),
+            peer_id,
+            header(CALLER_TOKEN_ID_HEADER),
+            header(CALLER_NODE_ID_HEADER),
+            header(CALLER_NODE_NAME_HEADER),
+            capabilities,
+            header(CALLER_CONNECTION_ID_HEADER).unwrap_or_default(),
+        ))
+    });
+    CallerProvenance::forwarded(gateway, caller)
+}
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
@@ -186,19 +255,36 @@ async fn maybe_forward_or_404(
         .negotiated_capabilities
         .contains(intent.required_capability())
     {
+        tracing::warn!(
+            target: ADMISSION_TRACING_TARGET,
+            kind = "capability",
+            route = %target_name,
+            intent = %intent.required_capability(),
+            negotiated = %context.negotiated_capabilities,
+            reason = "peer capability denied",
+            status = StatusCode::FORBIDDEN.as_u16(),
+            "peer capability denied"
+        );
         return Some((StatusCode::FORBIDDEN, "peer capability denied").into_response());
     }
     let Some(mut sender) = senders.sender(target_name).await else {
         return Some(unknown_server_response());
     };
     let req = match build_peer_forward_request(
-        &state.core.name,
+        ForwardAttestation {
+            gateway_name: &state.core.name,
+            render_capabilities: context.negotiated_capabilities,
+            // Requests reaching the gateway's public listener carry no
+            // admission state today, so there is no caller to attest.
+            // Becomes `Some` when callers can present admission
+            // credentials at the gateway (M1.3 reviewer topology).
+            caller: None,
+        },
         target_name,
         method,
         uri,
         headers,
         body,
-        context.negotiated_capabilities,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -321,14 +407,22 @@ fn has_query_param(query: Option<&str>, key: &str) -> bool {
     })
 }
 
+/// Gateway-owned values stamped onto a forwarded request after
+/// sanitization: who is forwarding, the render-capability ceiling, and
+/// the attested caller identity (if the gateway admitted one).
+struct ForwardAttestation<'a> {
+    gateway_name: &'a str,
+    render_capabilities: PeerCapabilities,
+    caller: Option<&'a AdmittedPeerConnection>,
+}
+
 fn build_peer_forward_request(
-    gateway_name: &str,
+    attestation: ForwardAttestation<'_>,
     target_name: &str,
     method: Method,
     uri: &Uri,
     headers: &HeaderMap,
     body: Body,
-    render_capabilities: PeerCapabilities,
 ) -> Result<http::Request<Body>, http::Error> {
     let path_and_query = uri
         .path_and_query()
@@ -348,11 +442,36 @@ fn build_peer_forward_request(
     builder = builder
         .header("x-forwarded-host", bases.host)
         .header("x-forwarded-proto", bases.scheme)
-        .header("x-boardwalk-external-base", bases.http)
-        .header("x-boardwalk-external-ws-base", bases.ws)
-        .header("x-boardwalk-forwarded-by", gateway_name)
-        .header(RENDER_CAPABILITIES_HEADER, render_capabilities.to_string())
-        .header("x-boardwalk-correlation-id", Uuid::new_v4().to_string());
+        .header("boardwalk-external-base", bases.http)
+        .header("boardwalk-external-ws-base", bases.ws)
+        .header("boardwalk-forwarded-by", attestation.gateway_name)
+        .header(
+            RENDER_CAPABILITIES_HEADER,
+            attestation.render_capabilities.to_string(),
+        )
+        .header("boardwalk-correlation-id", Uuid::new_v4().to_string());
+    if let Some(caller) = attestation.caller {
+        builder = builder
+            .header(CALLER_PEER_ID_HEADER, caller.peer_id.as_str())
+            .header(CALLER_ROUTE_HEADER, caller.route_name.as_str())
+            .header(
+                CALLER_CAPABILITIES_HEADER,
+                caller.negotiated_capabilities.to_string(),
+            )
+            .header(
+                CALLER_CONNECTION_ID_HEADER,
+                caller.connection_id.to_string(),
+            );
+        if let Some(token_id) = caller.token_id.as_deref() {
+            builder = builder.header(CALLER_TOKEN_ID_HEADER, token_id);
+        }
+        if let Some(node_id) = caller.node_id.as_deref() {
+            builder = builder.header(CALLER_NODE_ID_HEADER, node_id);
+        }
+        if let Some(node_name) = caller.display_name.as_deref() {
+            builder = builder.header(CALLER_NODE_NAME_HEADER, node_name);
+        }
+    }
     builder.body(body)
 }
 
@@ -393,6 +512,7 @@ fn should_forward_header(name: &http::HeaderName, connection_headers: &HashSet<S
     if name.starts_with("proxy-")
         || name.starts_with("x-forwarded-")
         || name.starts_with("x-boardwalk-")
+        || name.starts_with("boardwalk-")
         || name.starts_with("sec-websocket-")
     {
         return false;
@@ -424,12 +544,12 @@ async fn maybe_forward_get_or_404(
 
 fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
     if let Some(http_base) = headers
-        .get("x-boardwalk-external-base")
+        .get("boardwalk-external-base")
         .and_then(|v| v.to_str().ok())
         .and_then(|base| base.parse::<url::Url>().ok())
     {
         let ws_base = headers
-            .get("x-boardwalk-external-ws-base")
+            .get("boardwalk-external-ws-base")
             .and_then(|v| v.to_str().ok())
             .and_then(|base| base.parse::<url::Url>().ok())
             .unwrap_or_else(|| {
@@ -674,6 +794,7 @@ async fn server_resource_transition_post(
     Path((name, id, transition)): Path<(String, String, String)>,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body_bytes: bytes::Bytes,
 ) -> Response {
     if name != state.core.name {
@@ -688,7 +809,16 @@ async fn server_resource_transition_post(
         .await
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
     }
-    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+    let provenance = caller_provenance(&extensions, &headers);
+    transition_response(
+        &state.core,
+        &headers,
+        provenance,
+        &id,
+        &transition,
+        body_bytes,
+    )
+    .await
 }
 
 async fn resources_get(
@@ -855,14 +985,25 @@ async fn resource_transition_post(
     State(state): State<AppState>,
     Path((id, transition)): Path<(String, String)>,
     headers: HeaderMap,
+    extensions: Extensions,
     body_bytes: bytes::Bytes,
 ) -> Response {
-    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+    let provenance = caller_provenance(&extensions, &headers);
+    transition_response(
+        &state.core,
+        &headers,
+        provenance,
+        &id,
+        &transition,
+        body_bytes,
+    )
+    .await
 }
 
 async fn transition_response(
     core: &Arc<Core>,
     headers: &HeaderMap,
+    provenance: CallerProvenance,
     id: &str,
     transition: &str,
     body_bytes: bytes::Bytes,
@@ -899,7 +1040,7 @@ async fn transition_response(
         }
     };
 
-    let request_ctx = RequestCtx::from_headers(headers);
+    let request_ctx = RequestCtx::from_headers(headers).with_provenance(provenance);
     match core
         .run_resource_transition(id, transition, TransitionInput { fields }, request_ctx)
         .await
@@ -1532,11 +1673,25 @@ fn admit_peer_connection(
     admissions: &[PeerAdmissionConfig],
     unauthenticated: Option<&UnauthenticatedPeerPolicy>,
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
+    let deny = |status: StatusCode, reason: &str, token_id: Option<&str>, node_id: Option<&str>| {
+        admission_denied(AdmissionDeny {
+            status,
+            reason,
+            route: peer_name,
+            token_id,
+            node_id,
+            requested: None,
+            allowed: None,
+            connection_id,
+        })
+    };
     if admissions.is_empty() {
         let Some(policy) = unauthenticated else {
-            return Err(admission_error(
+            return Err(deny(
                 StatusCode::FORBIDDEN,
                 "peer admission is not configured",
+                None,
+                None,
             ));
         };
         return Ok(AdmittedPeerConnection::unauthenticated(
@@ -1546,19 +1701,33 @@ fn admit_peer_connection(
         ));
     }
 
-    let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER)
-        .map_err(|_| admission_error(StatusCode::UNAUTHORIZED, "missing peer token id"))?;
-    let bearer = bearer_token(headers)
-        .ok_or_else(|| admission_error(StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+    let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER).map_err(|_| {
+        deny(
+            StatusCode::UNAUTHORIZED,
+            "missing peer token id",
+            None,
+            None,
+        )
+    })?;
+    let bearer = bearer_token(headers).ok_or_else(|| {
+        deny(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+            Some(token_id),
+            None,
+        )
+    })?;
 
     let token_matches = admissions
         .iter()
         .filter(|config| config.token_id == token_id)
         .collect::<Vec<_>>();
     if token_matches.is_empty() {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::UNAUTHORIZED,
             "unknown peer token id",
+            Some(token_id),
+            None,
         ));
     }
 
@@ -1567,9 +1736,11 @@ fn admit_peer_connection(
         .filter(|config| config.token_verifier.verify(bearer))
         .collect::<Vec<_>>();
     if verified.is_empty() {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::UNAUTHORIZED,
             "invalid bearer token",
+            Some(token_id),
+            None,
         ));
     }
 
@@ -1577,35 +1748,53 @@ fn admit_peer_connection(
         .into_iter()
         .find(|config| config.allowed_route_name.as_str() == peer_name)
     else {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::FORBIDDEN,
             "peer token is not valid for route",
+            Some(token_id),
+            None,
         ));
     };
 
     let node_id = required_header(headers, crate::tunnel::PEER_NODE_ID_HEADER)
-        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))?;
+        .map_err(|message| deny(StatusCode::BAD_REQUEST, &message, Some(token_id), None))?;
     if let Some(expected) = &config.expected_node_id
         && expected.as_str() != node_id
     {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::FORBIDDEN,
             "peer node id mismatch",
+            Some(token_id),
+            Some(node_id),
         ));
     }
 
     let requested_capabilities = required_header(headers, crate::tunnel::PEER_CAPABILITIES_HEADER)
-        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))
+        .map_err(|message| deny(StatusCode::BAD_REQUEST, &message, Some(token_id), None))
         .and_then(|raw| {
-            PeerCapabilities::parse_list(raw)
-                .map_err(|err| admission_error(StatusCode::BAD_REQUEST, err.to_string()))
+            PeerCapabilities::parse_list(raw).map_err(|err| {
+                deny(
+                    StatusCode::BAD_REQUEST,
+                    &err.to_string(),
+                    Some(token_id),
+                    None,
+                )
+            })
         })?;
     let negotiated_capabilities = requested_capabilities.intersection(config.allowed_capabilities);
     if negotiated_capabilities.is_empty() {
-        return Err(admission_error(
-            StatusCode::FORBIDDEN,
-            "peer capabilities are not allowed",
-        ));
+        let requested = requested_capabilities.to_string();
+        let allowed = config.allowed_capabilities.to_string();
+        return Err(admission_denied(AdmissionDeny {
+            status: StatusCode::FORBIDDEN,
+            reason: "peer capabilities are not allowed",
+            route: peer_name,
+            token_id: Some(token_id),
+            node_id: None,
+            requested: Some(&requested),
+            allowed: Some(&allowed),
+            connection_id,
+        }));
     }
 
     let display_name =
@@ -1621,8 +1810,49 @@ fn admit_peer_connection(
     ))
 }
 
-fn admission_error(status: StatusCode, message: impl Into<String>) -> Box<Response> {
-    Box::new((status, message.into()).into_response())
+/// One admission deny decision, traced and converted to a response in
+/// one place so the event can never drift from what the dialer saw.
+struct AdmissionDeny<'a> {
+    status: StatusCode,
+    reason: &'a str,
+    route: &'a str,
+    token_id: Option<&'a str>,
+    node_id: Option<&'a str>,
+    /// Requested-vs-allowed enumeration for the empty-intersection
+    /// refusal: logged server-side only, never in the response body.
+    requested: Option<&'a str>,
+    allowed: Option<&'a str>,
+    connection_id: Uuid,
+}
+
+/// Emit the structured deny event at the stable `boardwalk::admission`
+/// target and build the matching response. The target and field names
+/// (`kind`, `route`, `reason`, `status`, `token_id`, `node_id`,
+/// `connection_id`) are a documented contract for log scraping and
+/// alerting; `token_id` is a public identifier — bearer secrets are
+/// never logged.
+fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
+    // Stable, quotable hint only on the enumerating refusal — the one
+    // denial an operator fixes by widening the ceiling.
+    let message = if deny.requested.is_some() {
+        "peer admission denied; widen with PeerAdmission::allow(...) on the accepting node"
+    } else {
+        "peer admission denied"
+    };
+    tracing::warn!(
+        target: ADMISSION_TRACING_TARGET,
+        kind = "admission",
+        route = deny.route,
+        reason = deny.reason,
+        status = deny.status.as_u16(),
+        token_id = deny.token_id,
+        node_id = deny.node_id,
+        requested = deny.requested,
+        allowed = deny.allowed,
+        connection_id = %deny.connection_id,
+        "{message}"
+    );
+    Box::new((deny.status, deny.reason.to_string()).into_response())
 }
 
 fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, String> {
@@ -1699,7 +1929,145 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::peer::AdmittedPeerConnection;
     use crate::runtime::{AcceptedJob, NodeBuilder};
+
+    #[test]
+    fn provenance_is_local_without_tunnel_marker_even_with_attested_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert("boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
+        let provenance = caller_provenance(&Extensions::new(), &headers);
+        assert!(provenance.is_local());
+        assert!(provenance.peer().is_none());
+    }
+
+    #[test]
+    fn provenance_is_forwarded_with_tunnel_marker() {
+        let mut extensions = Extensions::new();
+        extensions.insert(TunnelLeg);
+        let mut headers = HeaderMap::new();
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
+        let provenance = caller_provenance(&extensions, &headers);
+        assert_eq!(provenance.forwarded_by(), Some("cloud"));
+        assert!(provenance.peer().is_none()); // anonymous caller
+    }
+
+    #[test]
+    fn provenance_carries_attested_caller_over_tunnel_leg() {
+        let mut extensions = Extensions::new();
+        extensions.insert(TunnelLeg);
+        let mut headers = HeaderMap::new();
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert(
+            "boardwalk-caller-peer-id",
+            "peer-reviewer-respond-rs-1".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-route",
+            "reviewer-respond".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-capabilities",
+            "resource.read,transition.invoke".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-connection-id",
+            "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+        );
+        let provenance = caller_provenance(&extensions, &headers);
+        let peer = provenance.peer().expect("attested caller");
+        assert_eq!(peer.peer_id(), "peer-reviewer-respond-rs-1");
+        assert!(peer.has_capability(crate::peer::PeerCapability::TransitionInvoke));
+    }
+
+    #[test]
+    fn forward_request_attaches_caller_headers_from_admission_state() {
+        let caller = AdmittedPeerConnection::token_bound(
+            "reviewer-respond",
+            "rs-1",
+            Uuid::nil(),
+            "node-reviewer-9",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        );
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let headers = HeaderMap::new();
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: Some(&caller),
+            },
+            "hub",
+            Method::POST,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        let h = req.headers();
+        assert_eq!(
+            h.get("boardwalk-caller-peer-id").unwrap(),
+            "peer-reviewer-respond-rs-1"
+        );
+        assert_eq!(
+            h.get("boardwalk-caller-node-id").unwrap(),
+            "node-reviewer-9"
+        );
+        assert_eq!(h.get("boardwalk-caller-route").unwrap(), "reviewer-respond");
+        assert_eq!(h.get("boardwalk-caller-token-id").unwrap(), "rs-1");
+        assert_eq!(
+            h.get("boardwalk-caller-capabilities").unwrap(),
+            "resource.read"
+        );
+        assert!(h.get("boardwalk-caller-connection-id").is_some());
+    }
+
+    #[test]
+    fn forward_request_attaches_no_caller_headers_for_anonymous_callers() {
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let headers = HeaderMap::new();
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
+            "hub",
+            Method::GET,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        assert!(req.headers().get("boardwalk-caller-peer-id").is_none());
+    }
+
+    #[test]
+    fn inbound_caller_headers_are_stripped_before_attestation() {
+        // A public caller trying to smuggle boardwalk-caller-* through
+        // the gateway must be stripped by the existing sanitization, and
+        // with an anonymous caller nothing is re-attached.
+        let uri: Uri = "/servers/hub/resources".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
+        let req = build_peer_forward_request(
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
+            "hub",
+            Method::GET,
+            &uri,
+            &headers,
+            Body::empty(),
+        )
+        .unwrap();
+        assert!(req.headers().get("boardwalk-caller-peer-id").is_none());
+    }
 
     #[tokio::test]
     async fn accepted_created_transition_sets_201_location_and_job_body() {
@@ -1807,7 +2175,7 @@ mod tests {
             );
         }
         assert_eq!(
-            headers.get("x-boardwalk-external-base"),
+            headers.get("boardwalk-external-base"),
             Some(&"http://external.example/servers/hub/".to_string())
         );
         assert_eq!(
@@ -1833,11 +2201,11 @@ mod tests {
             "gateway should only write fresh x-forwarded metadata: {headers:?}"
         );
         assert_eq!(
-            headers.get("x-boardwalk-forwarded-by"),
+            headers.get("boardwalk-forwarded-by"),
             Some(&"cloud".to_string())
         );
         assert!(
-            headers.contains_key("x-boardwalk-correlation-id"),
+            headers.contains_key("boardwalk-correlation-id"),
             "gateway should add a fresh correlation id: {headers:?}"
         );
     }
@@ -1845,13 +2213,16 @@ mod tests {
     #[test]
     fn peer_gateway_policy_strips_hop_by_hop_headers_before_h2_send() {
         let req = build_peer_forward_request(
-            "cloud",
+            ForwardAttestation {
+                gateway_name: "cloud",
+                render_capabilities: PeerCapabilities::resource_read(),
+                caller: None,
+            },
             "hub",
             Method::GET,
             &"/servers/hub/resources/resource-1".parse().unwrap(),
             &sensitive_gateway_headers(),
             Body::empty(),
-            PeerCapabilities::resource_read(),
         )
         .expect("forward request");
         let headers = req.headers();
@@ -1880,7 +2251,7 @@ mod tests {
         }
         assert_eq!(
             headers
-                .get("x-boardwalk-external-base")
+                .get("boardwalk-external-base")
                 .and_then(|value| value.to_str().ok()),
             Some("http://external.example/servers/hub/")
         );
@@ -1909,20 +2280,17 @@ mod tests {
         );
         assert_eq!(
             headers
-                .get("x-boardwalk-forwarded-by")
+                .get("boardwalk-forwarded-by")
                 .and_then(|value| value.to_str().ok()),
             Some("cloud")
         );
-        assert_eq!(
-            headers.get_all("x-boardwalk-forwarded-by").iter().count(),
-            1
-        );
+        assert_eq!(headers.get_all("boardwalk-forwarded-by").iter().count(), 1);
         assert!(
-            headers.contains_key("x-boardwalk-correlation-id"),
+            headers.contains_key("boardwalk-correlation-id"),
             "gateway should add a fresh correlation id: {headers:?}"
         );
         assert_eq!(
-            headers.get_all("x-boardwalk-correlation-id").iter().count(),
+            headers.get_all("boardwalk-correlation-id").iter().count(),
             1
         );
         assert_eq!(
@@ -2160,15 +2528,15 @@ mod tests {
             HeaderValue::from_static("443"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-external-base"),
+            HeaderName::from_static("boardwalk-external-base"),
             HeaderValue::from_static("https://spoofed.example/servers/hub/"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-forwarded-by"),
+            HeaderName::from_static("boardwalk-forwarded-by"),
             HeaderValue::from_static("attacker"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-correlation-id"),
+            HeaderName::from_static("boardwalk-correlation-id"),
             HeaderValue::from_static("attacker-correlation"),
         );
         headers.insert(

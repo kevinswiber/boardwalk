@@ -178,6 +178,12 @@ impl RedbNodeConfigRepository {
 
 impl NodeConfigRepository for RedbNodeConfigRepository {
     fn put(&self, record: NodeConfigRecord) -> Result<(), StorageError> {
+        put_json(
+            &self.db,
+            NODE_CONFIGS,
+            crate::persistence::LOCAL_NODE_SENTINEL_KEY,
+            &record,
+        )?;
         put_json(&self.db, NODE_CONFIGS, &record.node_id, &record)
     }
 
@@ -186,6 +192,13 @@ impl NodeConfigRepository for RedbNodeConfigRepository {
     }
 
     fn get_local(&self) -> Result<Option<NodeConfigRecord>, StorageError> {
+        if let Some(record) = get_json::<NodeConfigRecord>(
+            &self.db,
+            NODE_CONFIGS,
+            crate::persistence::LOCAL_NODE_SENTINEL_KEY,
+        )? {
+            return Ok(Some(record));
+        }
         Ok(list_json::<NodeConfigRecord>(&self.db, NODE_CONFIGS)?
             .into_iter()
             .max_by_key(|record| record.updated_ms))

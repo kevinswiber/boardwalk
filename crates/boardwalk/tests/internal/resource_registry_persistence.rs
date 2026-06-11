@@ -441,7 +441,7 @@ async fn factory_registration_persists_initial_latest_snapshot() {
         .unwrap();
 
     assert_eq!(latest.resource_id, id);
-    assert_eq!(latest.node_id, "hub");
+    assert_eq!(latest.node_id, built.node.id());
     assert_eq!(latest.snapshot.kind, "job");
     assert_eq!(latest.snapshot.name.as_deref(), Some("build-1"));
     assert_eq!(latest.snapshot.state.as_deref(), Some("queued"));
@@ -745,7 +745,10 @@ async fn failed_persistent_build_does_not_store_local_node_config() {
         .build()
         .unwrap();
 
-    assert_eq!(built.node.id(), "clean");
+    // Persisted node without explicit id: identity is generated, never
+    // the display name, and never the failed build's explicit id.
+    assert_ne!(built.node.id(), "clean");
+    assert_ne!(built.node.id(), "failed-node");
     assert!(
         built
             .repositories()

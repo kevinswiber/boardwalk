@@ -252,3 +252,50 @@ async fn response_bytes(response: Response) -> bytes::Bytes {
         .await
         .expect("body reads")
 }
+
+#[tokio::test]
+async fn first_persisted_startup_generates_a_stable_node_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("node.redb");
+
+    let first = Boardwalk::new().name("hub").persist(&path).build().unwrap();
+    let first_id = first.node.id().to_string();
+    assert_ne!(first_id, "hub", "generated id must not be the display name");
+    assert!(
+        uuid::Uuid::parse_str(&first_id).is_ok(),
+        "generated id is a UUID: {first_id}"
+    );
+    drop(first);
+
+    // Rename the node: identity must be sticky.
+    let second = Boardwalk::new()
+        .name("renamed-hub")
+        .persist(&path)
+        .build()
+        .unwrap();
+    assert_eq!(second.node.id().to_string(), first_id);
+}
+
+#[tokio::test]
+async fn explicit_node_id_and_existing_records_take_precedence_over_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("node.redb");
+    let built = Boardwalk::new()
+        .name("hub")
+        .node_id("node-hub-7f3a")
+        .persist(&path)
+        .build()
+        .unwrap();
+    assert_eq!(built.node.id().to_string(), "node-hub-7f3a");
+    drop(built);
+    // A pre-existing persisted record must win over generation on the
+    // next boot.
+    let again = Boardwalk::new().name("hub").persist(&path).build().unwrap();
+    assert_eq!(again.node.id().to_string(), "node-hub-7f3a");
+}
+
+#[test]
+fn non_persisted_nodes_keep_the_name_default() {
+    let built = Boardwalk::new().name("hub").build().unwrap();
+    assert_eq!(built.node.id().to_string(), "hub");
+}

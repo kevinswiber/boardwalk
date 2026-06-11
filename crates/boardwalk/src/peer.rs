@@ -144,6 +144,42 @@ impl NodeIdentity {
 #[serde(transparent)]
 pub(crate) struct PeerCapabilities(u8);
 
+/// Single source of truth for the capability axes: bit, typed variant,
+/// canonical dotted wire name. Adding an axis is one new row here plus
+/// the `PeerCapability` variant.
+const CAPABILITY_AXES: [(u8, PeerCapability, &str); 6] = [
+    (
+        PeerCapabilities::RESOURCE_READ,
+        PeerCapability::ResourceRead,
+        "resource.read",
+    ),
+    (
+        PeerCapabilities::RESOURCE_QUERY,
+        PeerCapability::ResourceQuery,
+        "resource.query",
+    ),
+    (
+        PeerCapabilities::STREAM_SUBSCRIBE,
+        PeerCapability::StreamSubscribe,
+        "stream.subscribe",
+    ),
+    (
+        PeerCapabilities::TRANSITION_INVOKE,
+        PeerCapability::TransitionInvoke,
+        "transition.invoke",
+    ),
+    (
+        PeerCapabilities::RESOURCE_REGISTER,
+        PeerCapability::ResourceRegister,
+        "resource.register",
+    ),
+    (
+        PeerCapabilities::PEER_ADMIN,
+        PeerCapability::PeerAdmin,
+        "peer.admin",
+    ),
+];
+
 #[allow(dead_code)]
 impl PeerCapabilities {
     const RESOURCE_READ: u8 = 1 << 0;
@@ -159,12 +195,9 @@ impl PeerCapabilities {
 
     pub(crate) fn all() -> Self {
         Self(
-            Self::RESOURCE_READ
-                | Self::RESOURCE_QUERY
-                | Self::STREAM_SUBSCRIBE
-                | Self::TRANSITION_INVOKE
-                | Self::RESOURCE_REGISTER
-                | Self::PEER_ADMIN,
+            CAPABILITY_AXES
+                .iter()
+                .fold(0, |bits, (bit, _, _)| bits | bit),
         )
     }
 
@@ -199,30 +232,27 @@ impl PeerCapabilities {
             if name.is_empty() {
                 continue;
             }
-            caps.0 |= match name {
-                "resource.read" => Self::RESOURCE_READ,
-                "resource.query" => Self::RESOURCE_QUERY,
-                "stream.subscribe" => Self::STREAM_SUBSCRIBE,
-                "transition.invoke" => Self::TRANSITION_INVOKE,
-                "resource.register" => Self::RESOURCE_REGISTER,
-                "peer.admin" => Self::PEER_ADMIN,
-                other => return Err(PeerModelError::UnknownCapability(other.to_string())),
+            caps.0 |= match CAPABILITY_AXES.iter().find(|(_, _, axis)| *axis == name) {
+                Some((bit, _, _)) => *bit,
+                None => return Err(PeerModelError::UnknownCapability(name.to_string())),
             };
         }
         Ok(caps)
     }
 
-    pub(crate) fn parse_names<I, S>(names: I) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut caps = Self::empty();
-        for name in names {
-            let one = Self::parse_list(name.as_ref())?;
-            caps.0 |= one.0;
+    pub(crate) fn from_capabilities(caps: impl IntoIterator<Item = PeerCapability>) -> Self {
+        let mut out = Self::empty();
+        for cap in caps {
+            out.0 |= cap.bit();
         }
-        Ok(caps)
+        out
+    }
+
+    pub(crate) fn to_capabilities(self) -> Vec<PeerCapability> {
+        CAPABILITY_AXES
+            .iter()
+            .filter_map(|(bit, cap, _)| (self.0 & bit != 0).then_some(*cap))
+            .collect()
     }
 
     pub(crate) fn intersection(self, other: Self) -> Self {
@@ -242,16 +272,9 @@ impl PeerCapabilities {
     }
 
     fn names(self) -> impl Iterator<Item = &'static str> {
-        [
-            (Self::RESOURCE_READ, "resource.read"),
-            (Self::RESOURCE_QUERY, "resource.query"),
-            (Self::STREAM_SUBSCRIBE, "stream.subscribe"),
-            (Self::TRANSITION_INVOKE, "transition.invoke"),
-            (Self::RESOURCE_REGISTER, "resource.register"),
-            (Self::PEER_ADMIN, "peer.admin"),
-        ]
-        .into_iter()
-        .filter_map(move |(bit, name)| (self.0 & bit != 0).then_some(name))
+        CAPABILITY_AXES
+            .into_iter()
+            .filter_map(move |(bit, _, name)| (self.0 & bit != 0).then_some(name))
     }
 }
 
@@ -266,6 +289,207 @@ impl fmt::Display for PeerCapabilities {
             }
         }
         Ok(())
+    }
+}
+
+/// One peer capability axis. Granting a capability on an admission
+/// ceiling (or requesting it on an outbound link) uses these typed
+/// values; the canonical dotted names (`resource.read`, ...) remain the
+/// wire format and round-trip through `Display`/`FromStr`.
+///
+/// `ResourceRegister` and `PeerAdmin` exist as axes but their remote
+/// semantics are reserved (not yet implemented end-to-end).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PeerCapability {
+    /// Resource and metadata reads (`resource.read`).
+    ResourceRead,
+    /// Directed peer queries with `?ql=<caql>` (`resource.query`).
+    ResourceQuery,
+    /// Peer event streams and stream links (`stream.subscribe`).
+    StreamSubscribe,
+    /// Transition POST forwarding and rendered transition actions
+    /// (`transition.invoke`).
+    TransitionInvoke,
+    /// Reserved: resource registration forwarding (`resource.register`).
+    ResourceRegister,
+    /// Reserved: future peer administration surfaces (`peer.admin`).
+    PeerAdmin,
+}
+
+impl PeerCapability {
+    fn axis(self) -> (u8, PeerCapability, &'static str) {
+        *CAPABILITY_AXES
+            .iter()
+            .find(|(_, cap, _)| *cap == self)
+            .expect("every PeerCapability variant has a CAPABILITY_AXES row")
+    }
+
+    fn as_dotted_name(self) -> &'static str {
+        self.axis().2
+    }
+
+    fn bit(self) -> u8 {
+        self.axis().0
+    }
+}
+
+impl fmt::Display for PeerCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_dotted_name())
+    }
+}
+
+impl std::str::FromStr for PeerCapability {
+    type Err = PeerConfigError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        CAPABILITY_AXES
+            .iter()
+            .find(|(_, _, name)| *name == s)
+            .map(|(_, cap, _)| *cap)
+            .ok_or_else(|| PeerConfigError::UnknownCapability(s.to_string()))
+    }
+}
+
+/// Errors surfaced when constructing peer admission or link
+/// configuration. Validation happens at config construction so a bad
+/// value fails at the line that contains it — never logged and skipped.
+#[non_exhaustive]
+#[derive(Debug, Clone, Error)]
+pub enum PeerConfigError {
+    /// The route name is empty or not a valid URL path segment.
+    #[error("invalid peer route name: `{0}`")]
+    InvalidRouteName(String),
+    /// The gateway URL did not parse.
+    #[error("invalid gateway url: {0}")]
+    InvalidUrl(String),
+    /// The capability name is not one of the canonical dotted names.
+    #[error("unknown peer capability: `{0}`")]
+    UnknownCapability(String),
+}
+
+impl From<PeerModelError> for PeerConfigError {
+    fn from(err: PeerModelError) -> Self {
+        match err {
+            // Reachable from `PeerAdmission::shared_token` / `PeerLink::new`.
+            PeerModelError::EmptyRouteName => Self::InvalidRouteName(String::new()),
+            PeerModelError::InvalidRouteName(name) => Self::InvalidRouteName(name),
+            PeerModelError::InvalidUrl(message) => Self::InvalidUrl(message),
+            PeerModelError::UnknownCapability(name) => Self::UnknownCapability(name),
+            // Node/peer ids never flow through the public config
+            // constructors; totality keeps this conversion honest.
+            other @ (PeerModelError::EmptyNodeId | PeerModelError::EmptyPeerId) => {
+                Self::InvalidRouteName(other.to_string())
+            }
+        }
+    }
+}
+
+/// Inbound peer admission: a shared token bound to one `/peers/{route}`
+/// route, with an explicit capability ceiling.
+///
+/// The default ceiling is [`PeerCapability::ResourceRead`] only.
+/// Widening is always a visible act: [`PeerAdmission::allow`]
+/// **replaces** the ceiling with exactly the set you pass.
+#[derive(Debug, Clone)]
+pub struct PeerAdmission {
+    inner: PeerAdmissionConfig,
+}
+
+impl PeerAdmission {
+    /// Admit peers that present this shared token on `/peers/{route_name}`.
+    ///
+    /// Fails if `route_name` is not a valid URL path segment.
+    pub fn shared_token(
+        route_name: impl Into<String>,
+        token_id: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Result<Self, PeerConfigError> {
+        let inner = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
+            .map_err(PeerConfigError::from)?;
+        Ok(Self { inner })
+    }
+
+    /// Pin this token to one expected node id: an exact string match
+    /// against the connecting peer's self-asserted node id header.
+    /// This is a misconfiguration guard under token possession, not
+    /// proof of node identity — a token holder can present any node id.
+    #[must_use]
+    pub fn expected_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.inner = self.inner.expected_node_id(node_id);
+        self
+    }
+
+    /// Replace the capability ceiling with exactly this set.
+    #[must_use]
+    pub fn allow(mut self, capabilities: impl IntoIterator<Item = PeerCapability>) -> Self {
+        self.inner.allowed_capabilities = PeerCapabilities::from_capabilities(capabilities);
+        self
+    }
+
+    pub(crate) fn into_inner(self) -> PeerAdmissionConfig {
+        self.inner
+    }
+}
+
+/// Outbound peer link: dial a gateway's `/peers/{route}` with optional
+/// token credentials, node identity, and a requested capability set
+/// (default: [`PeerCapability::ResourceRead`] only). The acceptor
+/// intersects the request with its configured ceiling; an empty
+/// intersection is refused.
+#[derive(Debug, Clone)]
+pub struct PeerLink {
+    inner: PeerLinkConfig,
+}
+
+impl PeerLink {
+    /// Link to the gateway at `gateway_url` as `/peers/{route_name}`.
+    ///
+    /// Fails if `gateway_url` does not parse as a URL or `route_name`
+    /// is not a valid URL path segment.
+    pub fn new(
+        gateway_url: impl AsRef<str>,
+        route_name: impl Into<String>,
+    ) -> Result<Self, PeerConfigError> {
+        let inner = PeerLinkConfig::new(gateway_url, route_name).map_err(PeerConfigError::from)?;
+        Ok(Self { inner })
+    }
+
+    /// Present this shared token when dialing.
+    #[must_use]
+    pub fn token(mut self, token_id: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.inner = self.inner.token(token_id, secret);
+        self
+    }
+
+    /// Present this stable node id to the acceptor (self-asserted; the
+    /// acceptor may pin it with [`PeerAdmission::expected_node_id`]).
+    #[must_use]
+    pub fn node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.inner = self.inner.node_id(node_id);
+        self
+    }
+
+    /// Present this human-readable display name to the acceptor.
+    #[must_use]
+    pub fn node_name(mut self, node_name: impl Into<String>) -> Self {
+        self.inner = self.inner.node_name(node_name);
+        self
+    }
+
+    /// Replace the requested capability set with exactly this set.
+    #[must_use]
+    pub fn request_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = PeerCapability>,
+    ) -> Self {
+        self.inner.requested_capabilities = PeerCapabilities::from_capabilities(capabilities);
+        self
+    }
+
+    pub(crate) fn into_inner(self) -> PeerLinkConfig {
+        self.inner
     }
 }
 
@@ -311,10 +535,29 @@ impl PeerTokenVerifier {
         }
     }
 
+    /// Verify a presented bearer secret using a constant-time
+    /// comparison: every byte of both inputs is examined when lengths
+    /// match. A length mismatch returns false without content
+    /// comparison — token length is not treated as secret.
     #[allow(dead_code)]
     pub(crate) fn verify(&self, candidate: &str) -> bool {
-        self.secret == candidate
+        constant_time_eq(self.secret.as_bytes(), candidate.as_bytes())
     }
+}
+
+/// Constant-time byte-slice equality via an xor-accumulate fold.
+/// Best-effort without a vetted crate: `black_box` on the accumulator
+/// resists the optimizer collapsing the fold into an early-exit
+/// compare, but offers no formal guarantee.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff = std::hint::black_box(diff | (x ^ y));
+    }
+    diff == 0
 }
 
 impl fmt::Debug for PeerTokenVerifier {
@@ -352,15 +595,6 @@ impl PeerAdmissionConfig {
     pub(crate) fn expected_node_id(mut self, node_id: impl Into<String>) -> Self {
         self.expected_node_id = Some(crate::events::NodeId::new(node_id));
         self
-    }
-
-    pub(crate) fn allow<I, S>(mut self, capabilities: I) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.allowed_capabilities = PeerCapabilities::parse_names(capabilities)?;
-        Ok(self)
     }
 }
 
@@ -425,18 +659,6 @@ impl PeerLinkConfig {
     pub(crate) fn node_name(mut self, node_name: impl Into<String>) -> Self {
         self.local_node_name = Some(node_name.into());
         self
-    }
-
-    pub(crate) fn request_capabilities<I, S>(
-        mut self,
-        capabilities: I,
-    ) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.requested_capabilities = PeerCapabilities::parse_names(capabilities)?;
-        Ok(self)
     }
 }
 
@@ -1008,33 +1230,150 @@ mod peer_model_tests {
     }
 
     #[test]
-    fn peer_admission_config_link_carries_route_token_and_requested_capabilities() {
-        let link = PeerLinkConfig::new("wss://cloud.example.com", "hub")
-            .unwrap()
-            .token("kid-1", "secret")
-            .node_id("node-hub-1")
-            .node_name("Kitchen Hub")
-            .request_capabilities(["resource.read", "stream.subscribe"])
-            .unwrap();
-
-        assert_eq!(link.route_name.as_str(), "hub");
-        assert_eq!(link.token_id.as_deref(), Some("kid-1"));
-        assert!(link.requested_capabilities.stream_subscribe());
+    fn peer_capability_display_round_trips_canonical_names() {
+        let all = [
+            (PeerCapability::ResourceRead, "resource.read"),
+            (PeerCapability::ResourceQuery, "resource.query"),
+            (PeerCapability::StreamSubscribe, "stream.subscribe"),
+            (PeerCapability::TransitionInvoke, "transition.invoke"),
+            (PeerCapability::ResourceRegister, "resource.register"),
+            (PeerCapability::PeerAdmin, "peer.admin"),
+        ];
+        for (cap, name) in all {
+            assert_eq!(cap.to_string(), name);
+            assert_eq!(name.parse::<PeerCapability>().unwrap(), cap);
+        }
+        assert!("resource.write".parse::<PeerCapability>().is_err());
     }
 
     #[test]
-    fn peer_admission_config_accepted_token_binds_route_name_and_optional_node_id() {
-        let policy = PeerAdmissionConfig::shared_token("hub", "kid-1", "secret")
-            .unwrap()
-            .expected_node_id("node-hub-1")
-            .allow(["resource.read"])
-            .unwrap();
+    fn peer_capability_converts_to_internal_bitset() {
+        let caps = PeerCapabilities::from_capabilities([
+            PeerCapability::ResourceRead,
+            PeerCapability::TransitionInvoke,
+        ]);
+        assert!(caps.contains(PeerCapabilities::resource_read()));
+        assert!(caps.contains(PeerCapabilities::transition_invoke()));
+        assert!(!caps.contains(PeerCapabilities::peer_admin()));
+    }
 
-        assert_eq!(policy.allowed_route_name.as_str(), "hub");
+    #[test]
+    fn internal_bitset_enumerates_back_to_capability_variants() {
+        let caps = PeerCapabilities::resource_read().intersection(PeerCapabilities::all());
+        assert_eq!(caps.to_capabilities(), vec![PeerCapability::ResourceRead]);
+    }
+
+    #[test]
+    fn peer_admission_defaults_to_resource_read_ceiling() {
+        let admission = PeerAdmission::shared_token("hub", "kid-1", "secret").unwrap();
+        let inner = admission.into_inner();
         assert_eq!(
-            policy.expected_node_id.as_ref().map(|node| node.as_str()),
-            Some("node-hub-1")
+            inner.allowed_capabilities,
+            PeerCapabilities::resource_read()
         );
-        assert_eq!(policy.token_id, "kid-1");
+        assert!(inner.expected_node_id.is_none());
+    }
+
+    #[test]
+    fn peer_admission_allow_replaces_the_ceiling() {
+        let admission = PeerAdmission::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .allow([
+                PeerCapability::StreamSubscribe,
+                PeerCapability::TransitionInvoke,
+            ]);
+        let inner = admission.into_inner();
+        assert!(
+            !inner
+                .allowed_capabilities
+                .contains(PeerCapabilities::resource_read())
+        );
+        assert!(
+            inner
+                .allowed_capabilities
+                .contains(PeerCapabilities::transition_invoke())
+        );
+    }
+
+    #[test]
+    fn peer_admission_rejects_invalid_route_name_at_construction() {
+        let err = PeerAdmission::shared_token("hub name", "kid-1", "secret").unwrap_err();
+        assert!(matches!(err, PeerConfigError::InvalidRouteName(_)));
+    }
+
+    #[test]
+    fn peer_admission_expected_node_id_pins_the_binding() {
+        let admission = PeerAdmission::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .expected_node_id("node-hub-7f3a");
+        assert_eq!(
+            admission
+                .into_inner()
+                .expected_node_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("node-hub-7f3a")
+        );
+    }
+
+    #[test]
+    fn peer_link_defaults_request_to_resource_read() {
+        let link = PeerLink::new("ws://127.0.0.1:4444", "hub").unwrap();
+        let inner = link.into_inner();
+        assert_eq!(
+            inner.requested_capabilities,
+            PeerCapabilities::resource_read()
+        );
+        assert!(inner.token_id.is_none());
+    }
+
+    #[test]
+    fn peer_link_rejects_invalid_url_at_construction() {
+        let err = PeerLink::new("not a url", "hub").unwrap_err();
+        assert!(matches!(err, PeerConfigError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn peer_link_carries_token_node_identity_and_request() {
+        let link = PeerLink::new("ws://127.0.0.1:4444", "hub")
+            .unwrap()
+            .token("kid-1", "secret")
+            .node_id("node-hub-7f3a")
+            .node_name("author-hub")
+            .request_capabilities([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]);
+        let inner = link.into_inner();
+        assert_eq!(inner.token_id.as_deref(), Some("kid-1"));
+        assert_eq!(
+            inner.local_node_id.as_ref().map(|id| id.as_str()),
+            Some("node-hub-7f3a")
+        );
+        assert_eq!(inner.local_node_name.as_deref(), Some("author-hub"));
+        assert!(
+            inner
+                .requested_capabilities
+                .contains(PeerCapabilities::transition_invoke())
+        );
+    }
+
+    #[test]
+    fn token_verifier_accepts_exact_match_and_rejects_everything_else() {
+        let verifier = PeerTokenVerifier::new("s3cret-token");
+        assert!(verifier.verify("s3cret-token"));
+        assert!(!verifier.verify("s3cret-tokeN")); // same length, last byte differs
+        assert!(!verifier.verify("s3cret-toke")); // shorter
+        assert!(!verifier.verify("s3cret-token2")); // longer
+        assert!(!verifier.verify(""));
+        let empty = PeerTokenVerifier::new("");
+        assert!(empty.verify(""));
+        assert!(!empty.verify("x"));
+    }
+
+    #[test]
+    fn peer_config_error_messages_name_the_bad_value() {
+        let err = PeerConfigError::InvalidRouteName("hub name".to_string());
+        assert!(err.to_string().contains("hub name"));
     }
 }

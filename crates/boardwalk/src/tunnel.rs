@@ -24,10 +24,10 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 
 pub const SUBPROTOCOL: &str = "boardwalk-peer/3";
-pub(crate) const PEER_TOKEN_ID_HEADER: &str = "x-boardwalk-peer-token-id";
-pub(crate) const PEER_NODE_ID_HEADER: &str = "x-boardwalk-node-id";
-pub(crate) const PEER_NODE_NAME_HEADER: &str = "x-boardwalk-node-name";
-pub(crate) const PEER_CAPABILITIES_HEADER: &str = "x-boardwalk-peer-capabilities";
+pub(crate) const PEER_TOKEN_ID_HEADER: &str = "boardwalk-peer-token-id";
+pub(crate) const PEER_NODE_ID_HEADER: &str = "boardwalk-node-id";
+pub(crate) const PEER_NODE_NAME_HEADER: &str = "boardwalk-node-name";
+pub(crate) const PEER_CAPABILITIES_HEADER: &str = "boardwalk-peer-capabilities";
 
 /// RFC 6455 GUID used in Sec-WebSocket-Accept derivation.
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

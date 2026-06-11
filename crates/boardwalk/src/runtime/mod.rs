@@ -15,7 +15,7 @@ mod resource;
 mod transition;
 
 pub use actor::{Actor, ActorCtx, ActorError, TransitionCtx, TransitionError};
-pub use context::{CommandId, RequestCtx};
+pub use context::{AdmittedPeer, CallerProvenance, CommandId, RequestCtx};
 pub use directory::ResourceDirectory;
 pub use executor::{ActorHandle, NodePolicy, PendingTransition};
 pub use handle::{ActorProxy, NodeHandle, NodeHandleError, ResourceProxy};
