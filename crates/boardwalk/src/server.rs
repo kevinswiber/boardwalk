@@ -17,7 +17,8 @@ use crate::http::{
     ResourceRegistrationError, router_with,
 };
 use crate::peer::{
-    PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig, UnauthenticatedPeerPolicy,
+    PeerAcceptors, PeerAdmission, PeerAdmissionConfig, PeerClient, PeerLink, PeerLinkConfig,
+    UnauthenticatedPeerPolicy,
 };
 use crate::persistence::{
     DefaultRepositories, IdentityKey, NodeConfigRecord, NodeConfigRepository, Repositories,
@@ -194,9 +195,12 @@ impl Boardwalk {
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn link_peer(mut self, config: PeerLinkConfig) -> Self {
-        self.peer_links.push(config);
+    /// Dial a remote gateway as a peer using a validated link config:
+    /// token credentials, node identity, and a requested capability
+    /// set. Validation already happened at [`PeerLink`] construction,
+    /// so this method cannot fail.
+    pub fn link_peer(mut self, link: PeerLink) -> Self {
+        self.peer_links.push(link.into_inner());
         self
     }
 
@@ -213,9 +217,11 @@ impl Boardwalk {
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn accept_peer_admission_config(mut self, config: PeerAdmissionConfig) -> Self {
-        self.accepted_peer_tokens.push(config);
+    /// Accept token-bound peer admission on `/peers/{route}` at the
+    /// config's capability ceiling. Validation already happened at
+    /// [`PeerAdmission`] construction, so this method cannot fail.
+    pub fn accept_peer(mut self, admission: PeerAdmission) -> Self {
+        self.accepted_peer_tokens.push(admission.into_inner());
         self
     }
 

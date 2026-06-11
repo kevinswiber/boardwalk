@@ -15,7 +15,9 @@ use hyper_util::rt::TokioIo;
 use uuid::Uuid;
 
 use crate::Boardwalk;
-use crate::peer::{PeerAdmissionConfig, PeerCapabilities, PeerConnectionStatus, PeerLinkConfig};
+use crate::peer::{
+    PeerAdmission, PeerCapabilities, PeerCapability, PeerConnectionStatus, PeerLink,
+};
 use crate::persistence::{PeerConfigRecord, PeerConnectionStatusRecord};
 use crate::server::Built;
 use crate::tunnel::SUBPROTOCOL;
@@ -41,13 +43,15 @@ async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
         .name("hub")
         .node_id("node-hub-1")
         .link_peer(
-            PeerLinkConfig::new(format!("http://{}", cloud.addr), "hub")
+            PeerLink::new(format!("http://{}", cloud.addr), "hub")
                 .unwrap()
                 .token("kid-1", "secret")
                 .node_id("node-hub-1")
                 .node_name("Kitchen Hub")
-                .request_capabilities(["resource.read", "transition.invoke"])
-                .unwrap(),
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
         )
         .build()
         .unwrap();
@@ -794,11 +798,18 @@ impl PeerAdmissionConfigExt for Boardwalk {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
+        let allowed = allowed_capabilities
+            .into_iter()
+            .map(|name| {
+                name.as_ref()
+                    .parse::<PeerCapability>()
+                    .expect("test capability name")
+            })
+            .collect::<Vec<_>>();
+        let config = PeerAdmission::shared_token(route_name, token_id, secret)
             .unwrap()
-            .allow(allowed_capabilities)
-            .unwrap();
-        self.accept_peer_admission_config(config)
+            .allow(allowed);
+        self.accept_peer(config)
     }
 
     fn expect_peer_token_for_node(
@@ -808,11 +819,10 @@ impl PeerAdmissionConfigExt for Boardwalk {
         secret: &str,
         expected_node_id: &str,
     ) -> Self {
-        let config = PeerAdmissionConfig::shared_token(route_name, token_id, secret)
+        let config = PeerAdmission::shared_token(route_name, token_id, secret)
             .unwrap()
             .expected_node_id(expected_node_id)
-            .allow(["resource.read"])
-            .unwrap();
-        self.accept_peer_admission_config(config)
+            .allow([PeerCapability::ResourceRead]);
+        self.accept_peer(config)
     }
 }

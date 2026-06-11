@@ -45,6 +45,7 @@ mod internal_runtime_tests;
 pub use boardwalk_macros::{actor, on_start, on_stop, transition};
 
 pub use crate::events::SlowConsumerPolicy;
+pub use crate::peer::{PeerAdmission, PeerCapability, PeerConfigError, PeerLink};
 pub use crate::runtime::{
     AcceptedJob, Actor, ActorSpec, Effect, FieldSpec, Idempotency, Node, NodeBuilder, NodeHandle,
     Resource, ResourceKind, ResourceSnapshot, ResourceSnapshotBuilder, ResourceSpec,

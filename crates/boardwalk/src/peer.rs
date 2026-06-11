@@ -361,9 +361,6 @@ impl std::str::FromStr for PeerCapability {
 /// Errors surfaced when constructing peer admission or link
 /// configuration. Validation happens at config construction so a bad
 /// value fails at the line that contains it — never logged and skipped.
-// dead_code: variants are constructed by the config structs (task 1.2)
-// and the enum leaves the crate via the root re-export (task 1.3).
-#[allow(dead_code)]
 #[non_exhaustive]
 #[derive(Debug, Clone, Error)]
 pub enum PeerConfigError {
@@ -398,15 +395,11 @@ impl From<PeerModelError> for PeerConfigError {
 /// The default ceiling is [`PeerCapability::ResourceRead`] only.
 /// Widening is always a visible act: [`PeerAdmission::allow`]
 /// **replaces** the ceiling with exactly the set you pass.
-// dead_code: reachable once the crate-root re-export and builder
-// methods land (task 1.3).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeerAdmission {
     inner: PeerAdmissionConfig,
 }
 
-#[allow(dead_code)]
 impl PeerAdmission {
     /// Admit peers that present this shared token on `/peers/{route_name}`.
     ///
@@ -448,15 +441,11 @@ impl PeerAdmission {
 /// (default: [`PeerCapability::ResourceRead`] only). The acceptor
 /// intersects the request with its configured ceiling; an empty
 /// intersection is refused.
-// dead_code: reachable once the crate-root re-export and builder
-// methods land (task 1.3).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeerLink {
     inner: PeerLinkConfig,
 }
 
-#[allow(dead_code)]
 impl PeerLink {
     /// Link to the gateway at `gateway_url` as `/peers/{route_name}`.
     ///
