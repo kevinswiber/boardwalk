@@ -149,6 +149,13 @@ impl Boardwalk {
         self
     }
 
+    /// Set this node's stable identity explicitly. The node id is the
+    /// stable prefix of every `StreamId` this node emits and the value
+    /// remote acceptors pin with [`PeerAdmission::expected_node_id`] —
+    /// changing it rewrites stream identities and breaks existing
+    /// bindings. Without this call, persisted nodes generate and keep a
+    /// UUID on first startup; non-persisted nodes default to the
+    /// display name.
     pub fn node_id(mut self, id: impl Into<String>) -> Self {
         self.node_id = Some(id.into());
         self
@@ -329,15 +336,14 @@ impl Boardwalk {
             })
             .transpose()?
             .flatten();
-        let node_id = self
-            .node_id
-            .clone()
-            .or_else(|| {
-                persisted_node_config
-                    .as_ref()
-                    .map(|record| record.node_id.clone())
-            })
-            .unwrap_or_else(|| self.name.clone());
+        let node_id = resolve_node_id(
+            self.node_id.clone(),
+            persisted_node_config
+                .as_ref()
+                .map(|record| record.node_id.clone()),
+            repositories.is_some(),
+            &self.name,
+        );
         let local_display_name = self.name.clone();
         let accepted_peer_tokens = self.accepted_peer_tokens.clone();
         let mut node_builder = NodeBuilder::new(node_id.clone());
@@ -649,6 +655,31 @@ fn repository_ref(repositories: &Option<Arc<DefaultRepositories>>) -> Option<&dy
         .map(|repositories| repositories as &dyn Repositories)
 }
 
+/// Node-id precedence: explicit `.node_id()` > persisted record >
+/// generated UUID (persisted nodes only, first startup) > display
+/// name. A per-boot random id on non-persisted nodes would churn every
+/// `StreamId` across restarts, so the name default stays.
+fn resolve_node_id(
+    explicit: Option<String>,
+    persisted: Option<String>,
+    persistence_enabled: bool,
+    name: &str,
+) -> String {
+    explicit.or(persisted).unwrap_or_else(|| {
+        if persistence_enabled {
+            let generated = Uuid::new_v4().to_string();
+            tracing::info!(
+                node_id = %generated,
+                "generated persistent node id on first persisted startup; \
+                 use this value for expected_node_id bindings on accepting peers"
+            );
+            generated
+        } else {
+            name.to_string()
+        }
+    })
+}
+
 fn persist_local_node_config(
     repositories: Option<&dyn Repositories>,
     node_id: &str,
@@ -718,5 +749,42 @@ impl Built {
     #[cfg(test)]
     pub(crate) fn repositories(&self) -> Option<&dyn Repositories> {
         repository_ref(&self.repositories)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Precedence matrix (research 0002 q4): explicit > persisted >
+    // generated (persistence only) > display name.
+    #[test]
+    fn resolve_node_id_prefers_explicit_over_everything() {
+        let id = resolve_node_id(
+            Some("explicit".into()),
+            Some("persisted".into()),
+            true,
+            "name",
+        );
+        assert_eq!(id, "explicit");
+    }
+
+    #[test]
+    fn resolve_node_id_prefers_persisted_record_over_generation() {
+        let id = resolve_node_id(None, Some("persisted".into()), true, "name");
+        assert_eq!(id, "persisted");
+    }
+
+    #[test]
+    fn resolve_node_id_generates_uuid_on_first_persisted_startup() {
+        let id = resolve_node_id(None, None, true, "name");
+        assert_ne!(id, "name");
+        assert!(Uuid::parse_str(&id).is_ok(), "expected a UUID, got {id}");
+    }
+
+    #[test]
+    fn resolve_node_id_defaults_to_name_without_persistence() {
+        let id = resolve_node_id(None, None, false, "name");
+        assert_eq!(id, "name");
     }
 }
