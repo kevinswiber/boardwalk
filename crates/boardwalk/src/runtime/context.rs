@@ -33,9 +33,6 @@ pub struct AdmittedPeer {
 }
 
 impl AdmittedPeer {
-    // dead_code: the real caller is the http layer's tunnel-leg
-    // provenance population (task 2.3); tests construct directly.
-    #[allow(dead_code)]
     pub(crate) fn new(
         route_name: impl Into<String>,
         peer_id: impl Into<String>,
@@ -119,9 +116,6 @@ pub struct CallerProvenance {
 }
 
 impl CallerProvenance {
-    // dead_code: the real caller is the http layer's tunnel-leg
-    // provenance population (task 2.3); tests construct directly.
-    #[allow(dead_code)]
     pub(crate) fn forwarded(gateway: impl Into<String>, peer: Option<AdmittedPeer>) -> Self {
         Self {
             forwarded_by: Some(gateway.into()),
@@ -198,9 +192,6 @@ impl RequestCtx {
     /// Attach caller provenance. Crate-private: only the http layer
     /// populates provenance, from admission state — never from
     /// client-supplied headers.
-    // dead_code: the real caller is the http layer's tunnel-leg
-    // provenance population (task 2.3); tests construct directly.
-    #[allow(dead_code)]
     pub(crate) fn with_provenance(mut self, provenance: CallerProvenance) -> Self {
         self.provenance = provenance;
         self

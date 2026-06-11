@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
@@ -19,7 +19,9 @@ use crate::peer::{
     AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities, UnauthenticatedPeerPolicy,
 };
 use crate::query::QueryScope;
-use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
+use crate::runtime::{
+    AdmittedPeer, CallerProvenance, RequestCtx, TransitionInput, TransitionOutcome,
+};
 use crate::siren::SIREN_CONTENT_TYPE;
 
 const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
@@ -39,6 +41,53 @@ const CALLER_NODE_ID_HEADER: &str = "boardwalk-caller-node-id";
 const CALLER_NODE_NAME_HEADER: &str = "boardwalk-caller-node-name";
 const CALLER_CAPABILITIES_HEADER: &str = "boardwalk-caller-capabilities";
 const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
+
+/// Request-extension marker present only on the router clone a node
+/// serves over tunnels it dialed itself (`PeerClient`). Its presence is
+/// the trust boundary for honoring forwarded/attested caller headers;
+/// the public listener serves the unmarked router, so forged headers
+/// there are ignored.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TunnelLeg;
+
+/// Build caller provenance for a request: local/anonymous unless the
+/// request arrived over this node's own authenticated tunnel leg, in
+/// which case the gateway-owned forwarded/attested headers are honored.
+/// An unparsable attested capability list fails closed: the caller is
+/// treated as anonymous rather than guessed.
+fn caller_provenance(extensions: &Extensions, headers: &HeaderMap) -> CallerProvenance {
+    if extensions.get::<TunnelLeg>().is_none() {
+        return CallerProvenance::default();
+    }
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let Some(gateway) = header("x-boardwalk-forwarded-by") else {
+        return CallerProvenance::default();
+    };
+    let caller = header(CALLER_PEER_ID_HEADER).and_then(|peer_id| {
+        let capabilities = match header(CALLER_CAPABILITIES_HEADER) {
+            Some(raw) => match PeerCapabilities::parse_list(&raw) {
+                Ok(caps) => caps.to_capabilities(),
+                Err(_) => return None,
+            },
+            None => Vec::new(),
+        };
+        Some(AdmittedPeer::new(
+            header(CALLER_ROUTE_HEADER).unwrap_or_default(),
+            peer_id,
+            header(CALLER_TOKEN_ID_HEADER),
+            header(CALLER_NODE_ID_HEADER),
+            header(CALLER_NODE_NAME_HEADER),
+            capabilities,
+            header(CALLER_CONNECTION_ID_HEADER).unwrap_or_default(),
+        ))
+    });
+    CallerProvenance::forwarded(gateway, caller)
+}
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
@@ -731,6 +780,7 @@ async fn server_resource_transition_post(
     Path((name, id, transition)): Path<(String, String, String)>,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body_bytes: bytes::Bytes,
 ) -> Response {
     if name != state.core.name {
@@ -745,7 +795,16 @@ async fn server_resource_transition_post(
         .await
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "unknown server").into_response());
     }
-    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+    let provenance = caller_provenance(&extensions, &headers);
+    transition_response(
+        &state.core,
+        &headers,
+        provenance,
+        &id,
+        &transition,
+        body_bytes,
+    )
+    .await
 }
 
 async fn resources_get(
@@ -912,14 +971,25 @@ async fn resource_transition_post(
     State(state): State<AppState>,
     Path((id, transition)): Path<(String, String)>,
     headers: HeaderMap,
+    extensions: Extensions,
     body_bytes: bytes::Bytes,
 ) -> Response {
-    transition_response(&state.core, &headers, &id, &transition, body_bytes).await
+    let provenance = caller_provenance(&extensions, &headers);
+    transition_response(
+        &state.core,
+        &headers,
+        provenance,
+        &id,
+        &transition,
+        body_bytes,
+    )
+    .await
 }
 
 async fn transition_response(
     core: &Arc<Core>,
     headers: &HeaderMap,
+    provenance: CallerProvenance,
     id: &str,
     transition: &str,
     body_bytes: bytes::Bytes,
@@ -956,7 +1026,7 @@ async fn transition_response(
         }
     };
 
-    let request_ctx = RequestCtx::from_headers(headers);
+    let request_ctx = RequestCtx::from_headers(headers).with_provenance(provenance);
     match core
         .run_resource_transition(id, transition, TransitionInput { fields }, request_ctx)
         .await
@@ -1843,10 +1913,7 @@ mod tests {
             h.get("boardwalk-caller-node-id").unwrap(),
             "node-reviewer-9"
         );
-        assert_eq!(
-            h.get("boardwalk-caller-route").unwrap(),
-            "reviewer-respond"
-        );
+        assert_eq!(h.get("boardwalk-caller-route").unwrap(), "reviewer-respond");
         assert_eq!(h.get("boardwalk-caller-token-id").unwrap(), "rs-1");
         assert_eq!(
             h.get("boardwalk-caller-capabilities").unwrap(),

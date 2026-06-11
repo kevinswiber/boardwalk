@@ -397,11 +397,18 @@ impl Boardwalk {
             resource_registrar: resource_registrar.clone(),
         };
         let router = router_with(state);
+        // The router served over tunnels this node dials carries the
+        // tunnel-leg marker; the public listener serves the unmarked
+        // `router`, so forwarded/attested caller headers are honored
+        // only on the authenticated tunnel leg.
+        let tunnel_router = router
+            .clone()
+            .layer(axum::Extension(crate::http::TunnelLeg));
 
         let mut peer_tasks = Vec::new();
         for url in self.peers {
             let local_name = self.name.clone();
-            let pc = PeerClient::new(url, local_name, router.clone(), peer_init.clone());
+            let pc = PeerClient::new(url, local_name, tunnel_router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
         for mut link in self.peer_links {
@@ -411,7 +418,7 @@ impl Boardwalk {
             if link.local_node_name.is_none() {
                 link = link.node_name(local_display_name.clone());
             }
-            let pc = PeerClient::from_link(link, router.clone(), peer_init.clone());
+            let pc = PeerClient::from_link(link, tunnel_router.clone(), peer_init.clone());
             peer_tasks.push(pc.spawn());
         }
 
