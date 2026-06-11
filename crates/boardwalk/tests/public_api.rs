@@ -722,3 +722,85 @@ fn peer_token_verify_is_not_plain_equality() {
         "verify should delegate to the constant-time helper"
     );
 }
+
+#[test]
+fn public_facade_exports_peer_admission_api() {
+    use boardwalk::{
+        AdmittedPeer, CallerProvenance, PeerAdmission, PeerCapability, PeerConfigError, PeerLink,
+    };
+    fn assert_public<T: ?Sized>() {}
+    assert_public::<PeerAdmission>();
+    assert_public::<PeerLink>();
+    assert_public::<PeerCapability>();
+    assert_public::<PeerConfigError>();
+    assert_public::<AdmittedPeer>();
+    assert_public::<CallerProvenance>();
+
+    // Pin WHERE they are exported, not just that they compile.
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+    for ident in [
+        "PeerAdmission",
+        "PeerCapability",
+        "PeerConfigError",
+        "PeerLink",
+    ] {
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b.starts_with("pub use crate::peer") && contains_ident(b, ident)),
+            "crate root must re-export `{ident}` from the private peer module"
+        );
+    }
+
+    let server = read("crates/boardwalk/src/server.rs");
+    assert!(
+        server.contains("pub fn accept_peer("),
+        "Boardwalk should expose accept_peer"
+    );
+    assert!(
+        server.contains("pub fn link_peer("),
+        "Boardwalk should expose link_peer"
+    );
+}
+
+#[test]
+fn peer_internals_extended_negative_list() {
+    let lib = read("crates/boardwalk/src/lib.rs");
+    let blocks = pub_use_blocks(&lib);
+    // Extends (does not replace) peer_policy_internals_are_not_crate_root_exports.
+    for ident in [
+        "AdmittedPeerConnection",
+        "PeerAcceptors",
+        "PeerClient",
+        "PeerId",
+        "PeerModelError",
+        "Peer",
+        "PeerConnectionStatus",
+        "UnauthenticatedPeerPolicy",
+    ] {
+        let offenders: Vec<_> = blocks
+            .iter()
+            .filter(|b| contains_ident(b, ident))
+            .cloned()
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "crate root must not re-export peer internal `{ident}`; found {offenders:#?}"
+        );
+    }
+}
+
+#[test]
+fn security_config_is_never_warn_and_continue() {
+    let server = read("crates/boardwalk/src/server.rs");
+    for stale in [
+        "ignoring invalid peer admission config",
+        "ignoring invalid peer url",
+    ] {
+        assert!(
+            !server.contains(stale),
+            "security/link config errors must fail loudly, not `{stale}`"
+        );
+    }
+}
