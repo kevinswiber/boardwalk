@@ -461,10 +461,26 @@ fn peers_doc_matches_current_peer_subprotocol() {
 }
 
 #[test]
+fn peers_doc_does_not_claim_implicit_local_peer_admission() {
+    let s = read("docs/peers.md");
+    for stale in [
+        "remains a trusted local-development peer initiator",
+        "remains a trusted local-development",
+    ] {
+        assert!(
+            !s.contains(stale),
+            "peers.md must not claim unconfigured clouds accept local peers implicitly: `{stale}`"
+        );
+    }
+}
+
+#[test]
 fn peers_doc_describes_admission_capabilities_and_limits() {
     let s = read("docs/peers.md");
     for required in [
         "accept_peer_token",
+        "allow_unauthenticated_local_peers",
+        "peer admission is not configured",
         "public outbound token-bound links are not available yet",
         "route name",
         "expected node id",

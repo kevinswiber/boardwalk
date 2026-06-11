@@ -182,6 +182,10 @@ impl Boardwalk {
         self
     }
 
+    /// Dial a cloud as a local-development peer. The link sends no
+    /// admission token, so the accepting cloud must call
+    /// [`Boardwalk::allow_unauthenticated_local_peers`] (or configure
+    /// token admission) for the upgrade to be admitted.
     pub fn link(mut self, url: impl AsRef<str>) -> Self {
         match Url::parse(url.as_ref()) {
             Ok(u) => self.peers.push(u),
@@ -217,8 +221,13 @@ impl Boardwalk {
 
     /// Accept peers on `/peers/{name}` without token-bound admission.
     /// Local development only: every admitted peer receives the
-    /// local-development capability ceiling. This opt-in applies only
-    /// while no `accept_peer_token` admission is configured.
+    /// local-development capability ceiling as its allowed and
+    /// negotiated capabilities. Without this call (and with no
+    /// `accept_peer_token` config), peer upgrades are refused with
+    /// `403` before the WebSocket upgrade. The opt-in applies only
+    /// while no token admission is configured; once any
+    /// `accept_peer_token` entry exists, token-bound admission is
+    /// required for all peers.
     pub fn allow_unauthenticated_local_peers(mut self) -> Self {
         self.unauthenticated_local_peers = Some(UnauthenticatedPeerPolicy::local_development());
         self

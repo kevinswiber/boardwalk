@@ -441,6 +441,7 @@ fn peer_policy_internals_are_not_crate_root_exports() {
         "PeerConnection",
         "PeerLinkConfig",
         "PeerTokenVerifier",
+        "UnauthenticatedPeerPolicy",
     ] {
         let offenders: Vec<_> = blocks
             .iter()
@@ -557,6 +558,10 @@ fn boardwalk_builder_does_not_expose_private_adapter_surface() {
     assert!(
         server.contains("pub fn use_actor<A: Actor>"),
         "Boardwalk should expose actor-native registration"
+    );
+    assert!(
+        server.contains("pub fn allow_unauthenticated_local_peers"),
+        "Boardwalk should expose the explicit unauthenticated local-peer opt-in"
     );
     assert!(
         server.contains("pub async fn listen_on"),
