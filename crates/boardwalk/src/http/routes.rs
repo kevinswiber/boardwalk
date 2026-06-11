@@ -105,7 +105,6 @@ pub(crate) struct AppState {
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: super::peer_streams::PeerStreamHub,
     pub peer_admission: Arc<Vec<PeerAdmissionConfig>>,
-    #[allow(dead_code)] // read by admission wiring in plan 0009 task 2.2
     pub unauthenticated_local_peers: Option<UnauthenticatedPeerPolicy>,
     pub resource_registrar: Option<ResourceRegistrar>,
 }
@@ -1491,6 +1490,7 @@ async fn peers_upgrade(
         connection_id,
         req.headers(),
         &state.peer_admission,
+        state.unauthenticated_local_peers.as_ref(),
     ) {
         Ok(admitted) => admitted,
         Err(response) => return *response,
@@ -1530,11 +1530,19 @@ fn admit_peer_connection(
     connection_id: Uuid,
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
+    unauthenticated: Option<&UnauthenticatedPeerPolicy>,
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
     if admissions.is_empty() {
-        return Ok(AdmittedPeerConnection::local_development(
+        let Some(policy) = unauthenticated else {
+            return Err(admission_error(
+                StatusCode::FORBIDDEN,
+                "peer admission is not configured",
+            ));
+        };
+        return Ok(AdmittedPeerConnection::unauthenticated(
             peer_name.to_string(),
             connection_id,
+            policy.allowed_capabilities,
         ));
     }
 
@@ -2012,7 +2020,9 @@ mod tests {
         }
 
         async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
-            (name == "hub").then(|| AdmittedPeerConnection::local_development("hub", Uuid::nil()))
+            (name == "hub").then(|| {
+                AdmittedPeerConnection::unauthenticated("hub", Uuid::nil(), PeerCapabilities::all())
+            })
         }
     }
 

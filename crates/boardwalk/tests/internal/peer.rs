@@ -13,7 +13,11 @@ use crate::Boardwalk;
 #[tokio::test]
 async fn hub_links_to_cloud_and_cloud_forwards_queries() {
     // Boot cloud.
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
@@ -117,7 +121,11 @@ async fn hub_links_to_cloud_and_cloud_forwards_queries() {
 
 #[tokio::test]
 async fn cloud_dedups_peer_subscriptions() {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
@@ -218,7 +226,11 @@ async fn cloud_dedups_peer_subscriptions() {
 
 #[tokio::test]
 async fn unsubscribe_tears_down_forwarded_stream() {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
@@ -301,7 +313,11 @@ async fn unsubscribe_tears_down_forwarded_stream() {
 
 #[tokio::test]
 async fn cloud_ws_forwards_peer_events() {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();

@@ -61,7 +61,7 @@ where
             .unwrap();
         cloud.accept_peer_admission_config(admission)
     } else {
-        cloud
+        cloud.allow_unauthenticated_local_peers()
     }
     .build()
     .unwrap();

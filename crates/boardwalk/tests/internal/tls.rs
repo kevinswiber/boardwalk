@@ -66,7 +66,11 @@ async fn serve_tls(router: axum::Router) -> SocketAddr {
 
 #[tokio::test]
 async fn hub_links_to_cloud_over_tls() {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
     let tls_addr = serve_tls(cloud.router).await;
 

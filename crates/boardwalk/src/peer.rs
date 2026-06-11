@@ -367,7 +367,6 @@ impl PeerAdmissionConfig {
 /// Explicit opt-in policy for admitting peers without token-bound
 /// admission. Local development only; the capability ceiling is the
 /// allowed and negotiated set for every unauthenticated peer.
-#[allow(dead_code)] // read by admission wiring in plan 0009 task 2.2
 #[derive(Debug, Clone)]
 pub(crate) struct UnauthenticatedPeerPolicy {
     pub allowed_capabilities: PeerCapabilities,
@@ -409,21 +408,6 @@ impl PeerLinkConfig {
             local_node_id: None,
             local_node_name: None,
             requested_capabilities: PeerCapabilities::resource_read(),
-        })
-    }
-
-    pub(crate) fn local_development(
-        gateway_url: Url,
-        route_name: impl Into<String>,
-    ) -> Result<Self, PeerModelError> {
-        Ok(Self {
-            gateway_url,
-            route_name: RouteName::new(route_name)?,
-            token_id: None,
-            token_secret: None,
-            local_node_id: None,
-            local_node_name: None,
-            requested_capabilities: PeerCapabilities::all(),
         })
     }
 
@@ -471,7 +455,11 @@ pub(crate) struct AdmittedPeerConnection {
 
 #[allow(dead_code)]
 impl AdmittedPeerConnection {
-    pub(crate) fn local_development(route_name: impl Into<String>, connection_id: Uuid) -> Self {
+    pub(crate) fn unauthenticated(
+        route_name: impl Into<String>,
+        connection_id: Uuid,
+        allowed_capabilities: PeerCapabilities,
+    ) -> Self {
         let route_name = route_name.into();
         Self {
             peer_id: format!("peer-{route_name}"),
@@ -480,8 +468,8 @@ impl AdmittedPeerConnection {
             connection_id,
             node_id: None,
             display_name: None,
-            allowed_capabilities: PeerCapabilities::all(),
-            negotiated_capabilities: PeerCapabilities::all(),
+            allowed_capabilities,
+            negotiated_capabilities: allowed_capabilities,
         }
     }
 
