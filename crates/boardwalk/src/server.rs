@@ -16,7 +16,9 @@ use crate::http::{
     AppState, Core, PeerHandler, PeerInitState, ResourceRegistrar, ResourceRegistration,
     ResourceRegistrationError, router_with,
 };
-use crate::peer::{PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig};
+use crate::peer::{
+    PeerAcceptors, PeerAdmissionConfig, PeerClient, PeerLinkConfig, UnauthenticatedPeerPolicy,
+};
 use crate::persistence::{
     DefaultRepositories, IdentityKey, NodeConfigRecord, NodeConfigRepository, Repositories,
     ResourceIdentityRecord, ResourceSnapshotRecord, StorageError,
@@ -33,6 +35,7 @@ pub struct Boardwalk {
     peers: Vec<Url>,
     peer_links: Vec<PeerLinkConfig>,
     accepted_peer_tokens: Vec<PeerAdmissionConfig>,
+    unauthenticated_local_peers: Option<UnauthenticatedPeerPolicy>,
     actors: Vec<PendingActor>,
     actor_factories: HashMap<String, ActorFactory>,
     persist_path: Option<PathBuf>,
@@ -133,6 +136,7 @@ impl Boardwalk {
             peers: Vec::new(),
             peer_links: Vec::new(),
             accepted_peer_tokens: Vec::new(),
+            unauthenticated_local_peers: None,
             actors: Vec::new(),
             actor_factories: HashMap::new(),
             persist_path: None,
@@ -208,6 +212,15 @@ impl Boardwalk {
     #[allow(dead_code)]
     pub(crate) fn accept_peer_admission_config(mut self, config: PeerAdmissionConfig) -> Self {
         self.accepted_peer_tokens.push(config);
+        self
+    }
+
+    /// Accept peers on `/peers/{name}` without token-bound admission.
+    /// Local development only: every admitted peer receives the
+    /// local-development capability ceiling. This opt-in applies only
+    /// while no `accept_peer_token` admission is configured.
+    pub fn allow_unauthenticated_local_peers(mut self) -> Self {
+        self.unauthenticated_local_peers = Some(UnauthenticatedPeerPolicy::local_development());
         self
     }
 
@@ -353,6 +366,7 @@ impl Boardwalk {
             peer_senders: Some(peer_senders),
             peer_streams: peer_streams.clone(),
             peer_admission: Arc::new(accepted_peer_tokens),
+            unauthenticated_local_peers: self.unauthenticated_local_peers.clone(),
             resource_registrar: resource_registrar.clone(),
         };
         let router = router_with(state);
@@ -382,6 +396,7 @@ impl Boardwalk {
             acceptors,
             peer_streams,
             peer_admission: self.accepted_peer_tokens,
+            unauthenticated_local_peers: self.unauthenticated_local_peers,
             resource_registrar,
             repositories,
         })
@@ -660,6 +675,7 @@ pub(crate) struct Built {
     pub(crate) acceptors: PeerAcceptors,
     pub(crate) peer_streams: crate::http::PeerStreamHub,
     pub(crate) peer_admission: Vec<PeerAdmissionConfig>,
+    pub(crate) unauthenticated_local_peers: Option<UnauthenticatedPeerPolicy>,
     pub(crate) resource_registrar: Option<ResourceRegistrar>,
     pub(crate) repositories: Option<Arc<DefaultRepositories>>,
 }

@@ -364,6 +364,23 @@ impl PeerAdmissionConfig {
     }
 }
 
+/// Explicit opt-in policy for admitting peers without token-bound
+/// admission. Local development only; the capability ceiling is the
+/// allowed and negotiated set for every unauthenticated peer.
+#[allow(dead_code)] // read by admission wiring in plan 0009 task 2.2
+#[derive(Debug, Clone)]
+pub(crate) struct UnauthenticatedPeerPolicy {
+    pub allowed_capabilities: PeerCapabilities,
+}
+
+impl UnauthenticatedPeerPolicy {
+    pub(crate) fn local_development() -> Self {
+        Self {
+            allowed_capabilities: PeerCapabilities::all(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct PeerLinkConfig {
@@ -963,6 +980,12 @@ mod peer_model_tests {
                 "route name {name:?} should be accepted"
             );
         }
+    }
+
+    #[test]
+    fn unauthenticated_peer_policy_local_development_ceiling_is_explicit_full_set() {
+        let policy = UnauthenticatedPeerPolicy::local_development();
+        assert_eq!(policy.allowed_capabilities, PeerCapabilities::all());
     }
 
     #[test]

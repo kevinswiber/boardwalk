@@ -15,7 +15,9 @@ use uuid::Uuid;
 use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
-use crate::peer::{AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities};
+use crate::peer::{
+    AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities, UnauthenticatedPeerPolicy,
+};
 use crate::query::QueryScope;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
@@ -103,6 +105,8 @@ pub(crate) struct AppState {
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: super::peer_streams::PeerStreamHub,
     pub peer_admission: Arc<Vec<PeerAdmissionConfig>>,
+    #[allow(dead_code)] // read by admission wiring in plan 0009 task 2.2
+    pub unauthenticated_local_peers: Option<UnauthenticatedPeerPolicy>,
     pub resource_registrar: Option<ResourceRegistrar>,
 }
 
@@ -115,6 +119,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_senders: None,
         peer_streams: super::peer_streams::PeerStreamHub::new(),
         peer_admission: Arc::new(Vec::new()),
+        unauthenticated_local_peers: None,
         resource_registrar: None,
     })
 }
@@ -2065,6 +2070,7 @@ mod tests {
             peer_senders: Some(peer_senders),
             peer_streams: super::super::peer_streams::PeerStreamHub::new(),
             peer_admission: Arc::new(Vec::new()),
+            unauthenticated_local_peers: None,
             resource_registrar: None,
         }
     }

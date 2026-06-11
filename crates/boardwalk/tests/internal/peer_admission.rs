@@ -103,6 +103,24 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
 }
 
 #[tokio::test]
+async fn builder_opt_in_carries_unauthenticated_policy_into_built_state() {
+    let built = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
+
+    let policy = built
+        .unauthenticated_local_peers
+        .as_ref()
+        .expect("opt-in stores the unauthenticated peer policy");
+    assert_eq!(policy.allowed_capabilities, PeerCapabilities::all());
+
+    let default_built = Boardwalk::new().name("cloud").build().unwrap();
+    assert!(default_built.unauthenticated_local_peers.is_none());
+}
+
+#[tokio::test]
 async fn peer_upgrade_without_admission_config_is_refused_before_upgrade() {
     // Cloud with no admission config and no unauthenticated opt-in:
     // every peer upgrade must be refused before 101 (plan 0009).
