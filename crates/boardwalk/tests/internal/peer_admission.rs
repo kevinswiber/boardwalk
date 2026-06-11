@@ -123,7 +123,7 @@ async fn builder_opt_in_carries_unauthenticated_policy_into_built_state() {
 #[tokio::test]
 async fn peer_upgrade_without_admission_config_is_refused_before_upgrade() {
     // Cloud with no admission config and no unauthenticated opt-in:
-    // every peer upgrade must be refused before 101 (plan 0009).
+    // every peer upgrade must be refused before 101.
     let cloud = serve(Boardwalk::new().name("cloud")).await;
 
     let upgrade = raw_peer_upgrade(
