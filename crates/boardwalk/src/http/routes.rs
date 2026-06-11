@@ -24,16 +24,15 @@ use crate::runtime::{
 };
 use crate::siren::SIREN_CONTENT_TYPE;
 
-const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
+const RENDER_CAPABILITIES_HEADER: &str = "boardwalk-render-capabilities";
 
 // Gateway-attested caller identity on the forwarding hop. Attached in
 // `build_peer_forward_request` after sanitization strips all inbound
-// `x-boardwalk-*`/`boardwalk-*` headers, so values are unforgeable
-// across the hop and derive only from the gateway's own admission
-// state. New headers are unprefixed per RFC 6648; the shipped
-// `x-boardwalk-*` names predate it and keep their wire format. (Tunnel
-// admission headers — the dialer's self-asserted identity — live in
-// `tunnel.rs`.)
+// `boardwalk-*` headers (and legacy `x-boardwalk-*`), so values are
+// unforgeable across the hop and derive only from the gateway's own
+// admission state. All boardwalk headers are unprefixed per RFC 6648.
+// (Tunnel admission headers — the dialer's self-asserted identity —
+// live in `tunnel.rs`.)
 const CALLER_PEER_ID_HEADER: &str = "boardwalk-caller-peer-id";
 const CALLER_ROUTE_HEADER: &str = "boardwalk-caller-route";
 const CALLER_TOKEN_ID_HEADER: &str = "boardwalk-caller-token-id";
@@ -70,7 +69,7 @@ fn caller_provenance(extensions: &Extensions, headers: &HeaderMap) -> CallerProv
             .and_then(|value| value.to_str().ok())
             .map(str::to_string)
     };
-    let Some(gateway) = header("x-boardwalk-forwarded-by") else {
+    let Some(gateway) = header("boardwalk-forwarded-by") else {
         return CallerProvenance::default();
     };
     let caller = header(CALLER_PEER_ID_HEADER).and_then(|peer_id| {
@@ -443,14 +442,14 @@ fn build_peer_forward_request(
     builder = builder
         .header("x-forwarded-host", bases.host)
         .header("x-forwarded-proto", bases.scheme)
-        .header("x-boardwalk-external-base", bases.http)
-        .header("x-boardwalk-external-ws-base", bases.ws)
-        .header("x-boardwalk-forwarded-by", attestation.gateway_name)
+        .header("boardwalk-external-base", bases.http)
+        .header("boardwalk-external-ws-base", bases.ws)
+        .header("boardwalk-forwarded-by", attestation.gateway_name)
         .header(
             RENDER_CAPABILITIES_HEADER,
             attestation.render_capabilities.to_string(),
         )
-        .header("x-boardwalk-correlation-id", Uuid::new_v4().to_string());
+        .header("boardwalk-correlation-id", Uuid::new_v4().to_string());
     if let Some(caller) = attestation.caller {
         builder = builder
             .header(CALLER_PEER_ID_HEADER, caller.peer_id.as_str())
@@ -545,12 +544,12 @@ async fn maybe_forward_get_or_404(
 
 fn build_hrefs(headers: &HeaderMap, uri: &Uri, server: &str) -> Hrefs {
     if let Some(http_base) = headers
-        .get("x-boardwalk-external-base")
+        .get("boardwalk-external-base")
         .and_then(|v| v.to_str().ok())
         .and_then(|base| base.parse::<url::Url>().ok())
     {
         let ws_base = headers
-            .get("x-boardwalk-external-ws-base")
+            .get("boardwalk-external-ws-base")
             .and_then(|v| v.to_str().ok())
             .and_then(|base| base.parse::<url::Url>().ok())
             .unwrap_or_else(|| {
@@ -1936,7 +1935,7 @@ mod tests {
     #[test]
     fn provenance_is_local_without_tunnel_marker_even_with_attested_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
         headers.insert("boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
         let provenance = caller_provenance(&Extensions::new(), &headers);
         assert!(provenance.is_local());
@@ -1948,7 +1947,7 @@ mod tests {
         let mut extensions = Extensions::new();
         extensions.insert(TunnelLeg);
         let mut headers = HeaderMap::new();
-        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
         let provenance = caller_provenance(&extensions, &headers);
         assert_eq!(provenance.forwarded_by(), Some("cloud"));
         assert!(provenance.peer().is_none()); // anonymous caller
@@ -1959,7 +1958,7 @@ mod tests {
         let mut extensions = Extensions::new();
         extensions.insert(TunnelLeg);
         let mut headers = HeaderMap::new();
-        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert("boardwalk-forwarded-by", "cloud".parse().unwrap());
         headers.insert(
             "boardwalk-caller-peer-id",
             "peer-reviewer-respond-rs-1".parse().unwrap(),
@@ -2176,7 +2175,7 @@ mod tests {
             );
         }
         assert_eq!(
-            headers.get("x-boardwalk-external-base"),
+            headers.get("boardwalk-external-base"),
             Some(&"http://external.example/servers/hub/".to_string())
         );
         assert_eq!(
@@ -2202,11 +2201,11 @@ mod tests {
             "gateway should only write fresh x-forwarded metadata: {headers:?}"
         );
         assert_eq!(
-            headers.get("x-boardwalk-forwarded-by"),
+            headers.get("boardwalk-forwarded-by"),
             Some(&"cloud".to_string())
         );
         assert!(
-            headers.contains_key("x-boardwalk-correlation-id"),
+            headers.contains_key("boardwalk-correlation-id"),
             "gateway should add a fresh correlation id: {headers:?}"
         );
     }
@@ -2252,7 +2251,7 @@ mod tests {
         }
         assert_eq!(
             headers
-                .get("x-boardwalk-external-base")
+                .get("boardwalk-external-base")
                 .and_then(|value| value.to_str().ok()),
             Some("http://external.example/servers/hub/")
         );
@@ -2281,20 +2280,17 @@ mod tests {
         );
         assert_eq!(
             headers
-                .get("x-boardwalk-forwarded-by")
+                .get("boardwalk-forwarded-by")
                 .and_then(|value| value.to_str().ok()),
             Some("cloud")
         );
-        assert_eq!(
-            headers.get_all("x-boardwalk-forwarded-by").iter().count(),
-            1
-        );
+        assert_eq!(headers.get_all("boardwalk-forwarded-by").iter().count(), 1);
         assert!(
-            headers.contains_key("x-boardwalk-correlation-id"),
+            headers.contains_key("boardwalk-correlation-id"),
             "gateway should add a fresh correlation id: {headers:?}"
         );
         assert_eq!(
-            headers.get_all("x-boardwalk-correlation-id").iter().count(),
+            headers.get_all("boardwalk-correlation-id").iter().count(),
             1
         );
         assert_eq!(
@@ -2532,15 +2528,15 @@ mod tests {
             HeaderValue::from_static("443"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-external-base"),
+            HeaderName::from_static("boardwalk-external-base"),
             HeaderValue::from_static("https://spoofed.example/servers/hub/"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-forwarded-by"),
+            HeaderName::from_static("boardwalk-forwarded-by"),
             HeaderValue::from_static("attacker"),
         );
         headers.insert(
-            HeaderName::from_static("x-boardwalk-correlation-id"),
+            HeaderName::from_static("boardwalk-correlation-id"),
             HeaderValue::from_static("attacker-correlation"),
         );
         headers.insert(

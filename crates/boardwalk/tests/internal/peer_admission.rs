@@ -677,19 +677,19 @@ async fn raw_peer_upgrade(addr: SocketAddr, attempt: PeerUpgradeAttempt) -> Peer
         );
 
     if let Some(node_id) = attempt.node_id {
-        builder = builder.header("x-boardwalk-node-id", node_id);
+        builder = builder.header("boardwalk-node-id", node_id);
     }
     if let Some(node_name) = attempt.node_name {
-        builder = builder.header("x-boardwalk-node-name", node_name);
+        builder = builder.header("boardwalk-node-name", node_name);
     }
     if let Some(token_id) = attempt.token_id {
-        builder = builder.header("x-boardwalk-peer-token-id", token_id);
+        builder = builder.header("boardwalk-peer-token-id", token_id);
     }
     if let Some(secret) = attempt.secret {
         builder = builder.header("authorization", format!("Bearer {secret}"));
     }
     if let Some(capabilities) = attempt.requested_capabilities {
-        builder = builder.header("x-boardwalk-peer-capabilities", capabilities);
+        builder = builder.header("boardwalk-peer-capabilities", capabilities);
     }
 
     let response = sender
@@ -946,7 +946,7 @@ async fn admission_denials_emit_structured_events_per_branch() {
             name: "missing node id",
             attempt: PeerUpgradeAttempt::new("hub", Uuid::new_v4()).token("kid-1", "secret"),
             status: StatusCode::BAD_REQUEST,
-            reason: "missing x-boardwalk-node-id".into(),
+            reason: "missing boardwalk-node-id".into(),
             token_id: Some("kid-1"),
             node_id: None,
         },
@@ -966,7 +966,7 @@ async fn admission_denials_emit_structured_events_per_branch() {
                 .token("kid-1", "secret")
                 .node_id("node-hub-1"),
             status: StatusCode::BAD_REQUEST,
-            reason: "missing x-boardwalk-peer-capabilities".into(),
+            reason: "missing boardwalk-peer-capabilities".into(),
             token_id: Some("kid-1"),
             node_id: None,
         },

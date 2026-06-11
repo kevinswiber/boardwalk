@@ -292,7 +292,7 @@ async fn forged_provenance_headers_on_public_listener_are_ignored() {
         .post(format!(
             "http://{hub_addr}/resources/{id}/transitions/report"
         ))
-        .header("x-boardwalk-forwarded-by", "cloud")
+        .header("boardwalk-forwarded-by", "cloud")
         .header("boardwalk-caller-peer-id", "peer-fake")
         .json(&serde_json::json!({}))
         .send()

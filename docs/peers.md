@@ -34,8 +34,8 @@ identity.
 2. The hub opens a WebSocket to `wss://cloud.example.com/peers/<route-name>`
    with the `boardwalk-peer/3` subprotocol token.
 3. Token-bound peer links send `Authorization: Bearer <token>`,
-   `X-Boardwalk-Peer-Token-Id`, `X-Boardwalk-Node-Id`,
-   `X-Boardwalk-Node-Name`, and `X-Boardwalk-Peer-Capabilities` before
+   `Boardwalk-Peer-Token-Id`, `Boardwalk-Node-Id`,
+   `Boardwalk-Node-Name`, and `Boardwalk-Peer-Capabilities` before
    the cloud returns `101 Switching Protocols`.
 4. Once the upgrade succeeds, both sides drop WebSocket framing and speak
    HTTP/2 prior-knowledge over the raw stream, with reversed roles: the
@@ -240,7 +240,7 @@ identity and rewrites its stream ids.
 The gateway recognizes Boardwalk peer routes before forwarding. Unknown
 peer paths are rejected instead of being tunneled as raw HTTP. Forwarded
 requests strip inbound `Forwarded`, `X-Forwarded-*`,
-`X-Boardwalk-External-*`, `Proxy-*`, `Proxy-Connection`, credential,
+`Boardwalk-External-*`, `Proxy-*`, `Proxy-Connection`, credential,
 hop-by-hop, and WebSocket negotiation headers, then write fresh
 gateway-owned forwarding metadata for the peer.
 
