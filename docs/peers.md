@@ -251,7 +251,10 @@ unchanged behavior.
 The live-tunnel requirement is what keeps the attestation honest:
 negotiated capabilities are a handshake product (requested ∩ allowed)
 and the connection identity is real, so nothing is synthesized
-per-request. A configured-but-disconnected peer is refused.
+per-request. A configured-but-disconnected peer is refused, and a
+tunnel counts as live only once the gateway has confirmed its HTTP/2
+channel — a half-open upgrade (admitted but never confirmed) is
+refused the same way.
 
 Capability composition: a forwarded request passes two ceilings — the
 caller's negotiated set and the target link's negotiated set — enforced

@@ -1858,8 +1858,10 @@ fn verified_admissions<'a>(
 /// `Ok(None)` (anonymous; unchanged behavior). Present → fail-closed:
 /// the credentials must verify against a configured admission AND the
 /// matching route must hold a live admitted tunnel under the same token
-/// id. Negotiated capabilities and connection identity come from that
-/// live handshake — nothing is synthesized per-request.
+/// id — live meaning the H2 channel was confirmed and its sender
+/// registered, not merely that an upgrade recorded a context.
+/// Negotiated capabilities and connection identity come from that live
+/// handshake — nothing is synthesized per-request.
 pub(crate) async fn resolve_caller_ingress(
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
@@ -1905,16 +1907,18 @@ pub(crate) async fn resolve_caller_ingress(
     let mut live = Vec::new();
     let mut mismatched_connection = None;
     for config in &verified {
-        if let Some(context) = senders
-            .peer_context(config.allowed_route_name.as_str())
-            .await
-        {
-            if context.token_id.as_deref() == Some(token_id) {
-                live.push(context);
-            } else {
+        let route = config.allowed_route_name.as_str();
+        if let Some(context) = senders.peer_context(route).await {
+            if context.token_id.as_deref() != Some(token_id) {
                 // The route is live, but under a different token id —
                 // recorded for the deny event, never attested.
                 mismatched_connection = Some(context.connection_id);
+            } else if senders.sender(route).await.is_some() {
+                // The context alone can be a half-open upgrade: it is
+                // recorded before the H2 handshake confirms the tunnel
+                // and registers the sender. Only the confirmed sender
+                // makes the tunnel live enough to attest.
+                live.push(context);
             }
         }
     }
@@ -2648,7 +2652,9 @@ mod tests {
             &self,
             name: &str,
         ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
-            (name == "hub").then(|| self.sender.clone())
+            // Both routes are "live": the recorder is the forward target
+            // for "hub" and the sender-presence proof for "reviewer".
+            matches!(name, "hub" | "reviewer").then(|| self.sender.clone())
         }
 
         async fn names(&self) -> Vec<String> {
@@ -2834,25 +2840,74 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    /// `PeerSenders` stub serving a static route-name → live-context map
-    /// for ingress resolution tests.
-    struct StaticContexts(HashMap<String, AdmittedPeerConnection>);
+    /// `PeerSenders` stub serving a static route-name → context map for
+    /// ingress resolution tests. `sender: None` models the half-open
+    /// window where a context exists but the H2 channel was never
+    /// confirmed; `live` wires a real (stub) sender for every route.
+    struct StaticContexts {
+        contexts: HashMap<String, AdmittedPeerConnection>,
+        sender: Option<hyper::client::conn::http2::SendRequest<Body>>,
+    }
+
+    impl StaticContexts {
+        fn disconnected() -> Self {
+            Self {
+                contexts: HashMap::new(),
+                sender: None,
+            }
+        }
+
+        async fn live(contexts: HashMap<String, AdmittedPeerConnection>) -> Self {
+            Self {
+                contexts,
+                sender: Some(stub_h2_sender().await),
+            }
+        }
+    }
+
+    /// A real HTTP/2 `SendRequest` over an in-memory duplex, backed by a
+    /// trivial server task — enough for sender-presence checks.
+    async fn stub_h2_sender() -> hyper::client::conn::http2::SendRequest<Body> {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, Body>(TokioIo::new(client_io))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        tokio::spawn(async move {
+            let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(
+                    TokioIo::new(server_io),
+                    service_fn(|_req: http::Request<hyper::body::Incoming>| async {
+                        Ok::<_, Infallible>(http::Response::new(Full::new(Bytes::new())))
+                    }),
+                )
+                .await;
+        });
+        sender
+    }
 
     #[async_trait::async_trait]
     impl PeerSenders for StaticContexts {
         async fn sender(
             &self,
-            _name: &str,
+            name: &str,
         ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
-            None
+            if self.contexts.contains_key(name) {
+                self.sender.clone()
+            } else {
+                None
+            }
         }
 
         async fn names(&self) -> Vec<String> {
-            self.0.keys().cloned().collect()
+            self.contexts.keys().cloned().collect()
         }
 
         async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
-            self.0.get(name).cloned()
+            self.contexts.get(name).cloned()
         }
     }
 
@@ -2897,7 +2952,7 @@ mod tests {
             http::header::AUTHORIZATION,
             "Bearer anything".parse().unwrap(),
         );
-        let senders = StaticContexts(HashMap::new());
+        let senders = StaticContexts::disconnected();
         let caller = resolve_caller_ingress(&headers, &[], &senders)
             .await
             .unwrap();
@@ -2906,10 +2961,11 @@ mod tests {
 
     #[tokio::test]
     async fn ingress_resolves_live_admitted_caller() {
-        let senders = StaticContexts(HashMap::from([(
+        let senders = StaticContexts::live(HashMap::from([(
             "reviewer".into(),
             live_reviewer_context(),
-        )]));
+        )]))
+        .await;
         let caller = resolve_caller_ingress(
             &ingress_headers("kid-2", "reviewer-secret"),
             &[reviewer_admission()],
@@ -2928,7 +2984,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingress_with_unknown_token_id_is_401() {
-        let senders = StaticContexts(HashMap::new());
+        let senders = StaticContexts::disconnected();
         let err = resolve_caller_ingress(
             &ingress_headers("kid-unknown", "reviewer-secret"),
             &[reviewer_admission()],
@@ -2941,10 +2997,11 @@ mod tests {
 
     #[tokio::test]
     async fn ingress_with_invalid_bearer_is_401() {
-        let senders = StaticContexts(HashMap::from([(
+        let senders = StaticContexts::live(HashMap::from([(
             "reviewer".into(),
             live_reviewer_context(),
-        )]));
+        )]))
+        .await;
         let err = resolve_caller_ingress(
             &ingress_headers("kid-2", "wrong-secret"),
             &[reviewer_admission()],
@@ -2962,7 +3019,7 @@ mod tests {
             crate::tunnel::PEER_TOKEN_ID_HEADER,
             "kid-2".parse().unwrap(),
         );
-        let senders = StaticContexts(HashMap::new());
+        let senders = StaticContexts::disconnected();
         let err = resolve_caller_ingress(&headers, &[reviewer_admission()], &senders)
             .await
             .unwrap_err();
@@ -2971,7 +3028,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingress_without_admission_config_is_403() {
-        let senders = StaticContexts(HashMap::new());
+        let senders = StaticContexts::disconnected();
         let err =
             resolve_caller_ingress(&ingress_headers("kid-2", "reviewer-secret"), &[], &senders)
                 .await
@@ -2980,9 +3037,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ingress_for_half_open_upgrade_without_sender_is_403() {
+        // `PeerAcceptors` inserts the admitted context before the H2
+        // handshake completes and registers the sender; a dialer that
+        // stalls after the WS upgrade leaves a context with no sender.
+        // That half-open state must not satisfy the live-caller check.
+        let senders = StaticContexts {
+            contexts: HashMap::from([("reviewer".into(), live_reviewer_context())]),
+            sender: None,
+        };
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn ingress_for_disconnected_peer_is_403() {
         // Valid credentials, no live context at the config's route.
-        let senders = StaticContexts(HashMap::new());
+        let senders = StaticContexts::disconnected();
         let err = resolve_caller_ingress(
             &ingress_headers("kid-2", "reviewer-secret"),
             &[reviewer_admission()],
@@ -3001,7 +3078,7 @@ mod tests {
         let mut live = live_reviewer_context();
         live.token_id = Some("kid-other".into());
         live.peer_id = "peer-reviewer-kid-other".into();
-        let senders = StaticContexts(HashMap::from([("reviewer".into(), live)]));
+        let senders = StaticContexts::live(HashMap::from([("reviewer".into(), live)])).await;
         let err = resolve_caller_ingress(
             &ingress_headers("kid-2", "reviewer-secret"),
             &[reviewer_admission()],
@@ -3032,10 +3109,11 @@ mod tests {
             PeerCapabilities::all(),
             PeerCapabilities::resource_read(),
         );
-        let senders = StaticContexts(HashMap::from([
+        let senders = StaticContexts::live(HashMap::from([
             ("reviewer".into(), live_reviewer_context()),
             ("reviewer-b".into(), second_live),
-        ]));
+        ]))
+        .await;
         let err = resolve_caller_ingress(
             &ingress_headers("kid-2", "reviewer-secret"),
             &[reviewer_admission(), second_admission],

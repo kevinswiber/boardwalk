@@ -1179,6 +1179,74 @@ async fn disconnected_caller_denial_traces_route_and_token() {
 }
 
 #[tokio::test]
+async fn stalled_peer_upgrade_does_not_satisfy_caller_ingress() {
+    // `PeerAcceptors` records the admitted context as soon as the WS
+    // upgrade completes, before the H2 handshake confirms the tunnel
+    // and registers the sender. A dialer with valid credentials that
+    // stalls right after the upgrade must not count as a live caller
+    // for separate gateway requests: ingress requires the confirmed
+    // sender, not just the context.
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("reviewer", "kid-2", "reviewer-secret")
+                .unwrap()
+                .allow([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        ),
+    )
+    .await;
+
+    let stalled = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("reviewer", Uuid::new_v4())
+            .token("kid-2", "reviewer-secret")
+            .node_id("node-reviewer-9")
+            .request_capabilities(["resource.read", "transition.invoke"]),
+    )
+    .await;
+    assert_eq!(stalled.status, StatusCode::SWITCHING_PROTOCOLS);
+    // Hold the upgraded stream without ever speaking HTTP/2.
+    let _stalled_tunnel = stalled.upgraded;
+
+    // Wait until the half-open context is recorded, so the assertion
+    // below races nothing.
+    use crate::http::PeerSenders as _;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while cloud
+        .built
+        .acceptors
+        .peer_context("reviewer")
+        .await
+        .is_none()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cloud never recorded the half-open reviewer context"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{}/servers/hub/resources/r-1/transitions/report",
+            cloud.addr
+        ))
+        .header(crate::tunnel::PEER_TOKEN_ID_HEADER, "kid-2")
+        .bearer_auth("reviewer-secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "caller peer is not connected"
+    );
+}
+
+#[tokio::test]
 async fn caller_capability_denial_traces_kind_capability_with_caller_field() {
     // A live read-only reviewer invoking a transition through the
     // gateway: credential resolution succeeds, so the denial is a
