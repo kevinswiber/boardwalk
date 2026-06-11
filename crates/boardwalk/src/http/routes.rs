@@ -49,9 +49,10 @@ const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TunnelLeg;
 
-/// Stable tracing target for every admission and capability deny
-/// decision. The target and its field names are a documented contract
-/// for log scraping and alerting (`docs/peers.md`).
+/// Stable tracing target for every admission, capability, and caller
+/// ingress deny decision. The target and its field names are a
+/// documented contract for log scraping and alerting (`docs/peers.md`);
+/// `kind` is `admission` | `capability` | `ingress`.
 pub(super) const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
 
 /// Build caller provenance for a request: local/anonymous unless the
@@ -1675,14 +1676,15 @@ fn admit_peer_connection(
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
     let deny = |status: StatusCode, reason: &str, token_id: Option<&str>, node_id: Option<&str>| {
         admission_denied(AdmissionDeny {
+            kind: "admission",
             status,
             reason,
-            route: peer_name,
+            route: Some(peer_name),
             token_id,
             node_id,
             requested: None,
             allowed: None,
-            connection_id,
+            connection_id: Some(connection_id),
         })
     };
     if admissions.is_empty() {
@@ -1763,14 +1765,15 @@ fn admit_peer_connection(
         let requested = requested_capabilities.to_string();
         let allowed = config.allowed_capabilities.to_string();
         return Err(admission_denied(AdmissionDeny {
+            kind: "admission",
             status: StatusCode::FORBIDDEN,
             reason: "peer capabilities are not allowed",
-            route: peer_name,
+            route: Some(peer_name),
             token_id: Some(token_id),
             node_id: None,
             requested: Some(&requested),
             allowed: Some(&allowed),
-            connection_id,
+            connection_id: Some(connection_id),
         }));
     }
 
@@ -1823,7 +1826,7 @@ fn verified_admissions<'a>(
 /// id. Negotiated capabilities and connection identity come from that
 /// live handshake — nothing is synthesized per-request.
 #[allow(dead_code)] // wired into the forwarding path by the caller-ingress population
-async fn resolve_caller_ingress(
+pub(crate) async fn resolve_caller_ingress(
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
     senders: &dyn PeerSenders,
@@ -1831,52 +1834,93 @@ async fn resolve_caller_ingress(
     let Some(token_id) = optional_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER) else {
         return Ok(None);
     };
+    // Ingress denials never enumerate capabilities; `token_id` is the
+    // engagement signal so it is always present on the event.
     let refuse =
-        |status: StatusCode, reason: &str| Box::new((status, reason.to_string()).into_response());
+        |status: StatusCode, reason: &str, route: Option<&str>, connection_id: Option<Uuid>| {
+            admission_denied(AdmissionDeny {
+                kind: "ingress",
+                status,
+                reason,
+                route,
+                token_id: Some(token_id),
+                node_id: None,
+                requested: None,
+                allowed: None,
+                connection_id,
+            })
+        };
     if admissions.is_empty() {
         return Err(refuse(
             StatusCode::FORBIDDEN,
             "peer admission is not configured",
+            None,
+            None,
         ));
     }
     let Some(bearer) = bearer_token(headers) else {
-        return Err(refuse(StatusCode::UNAUTHORIZED, "missing bearer token"));
+        return Err(refuse(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+            None,
+            None,
+        ));
     };
     let verified = verified_admissions(admissions, token_id, bearer)
-        .map_err(|reason| refuse(StatusCode::UNAUTHORIZED, reason))?;
+        .map_err(|reason| refuse(StatusCode::UNAUTHORIZED, reason, None, None))?;
     let mut live = Vec::new();
+    let mut mismatched_connection = None;
     for config in &verified {
         if let Some(context) = senders
             .peer_context(config.allowed_route_name.as_str())
             .await
-            && context.token_id.as_deref() == Some(token_id)
         {
-            live.push(context);
+            if context.token_id.as_deref() == Some(token_id) {
+                live.push(context);
+            } else {
+                // The route is live, but under a different token id —
+                // recorded for the deny event, never attested.
+                mismatched_connection = Some(context.connection_id);
+            }
         }
     }
+    let verified_route = (verified.len() == 1).then(|| verified[0].allowed_route_name.as_str());
     match live.len() {
         0 => Err(refuse(
             StatusCode::FORBIDDEN,
             "caller peer is not connected",
+            verified_route,
+            mismatched_connection,
         )),
         1 => Ok(Some(live.remove(0))),
-        _ => Err(refuse(StatusCode::FORBIDDEN, "ambiguous caller admission")),
+        _ => Err(refuse(
+            StatusCode::FORBIDDEN,
+            "ambiguous caller admission",
+            None,
+            None,
+        )),
     }
 }
 
 /// One admission deny decision, traced and converted to a response in
 /// one place so the event can never drift from what the dialer saw.
 struct AdmissionDeny<'a> {
+    /// Decision class: `admission` (handshake) or `ingress`
+    /// (per-request caller credentials). The target-side capability
+    /// denial logs `kind = "capability"` inline.
+    kind: &'a str,
     status: StatusCode,
     reason: &'a str,
-    route: &'a str,
+    route: Option<&'a str>,
     token_id: Option<&'a str>,
     node_id: Option<&'a str>,
     /// Requested-vs-allowed enumeration for the empty-intersection
     /// refusal: logged server-side only, never in the response body.
     requested: Option<&'a str>,
     allowed: Option<&'a str>,
-    connection_id: Uuid,
+    /// Handshake denials always carry the connection id; ingress
+    /// denials only when a live context exists (token mismatch).
+    connection_id: Option<Uuid>,
 }
 
 /// Emit the structured deny event at the stable `boardwalk::admission`
@@ -1893,9 +1937,10 @@ fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
     } else {
         "peer admission denied"
     };
+    let connection_id = deny.connection_id.map(|id| id.to_string());
     tracing::warn!(
         target: ADMISSION_TRACING_TARGET,
-        kind = "admission",
+        kind = deny.kind,
         route = deny.route,
         reason = deny.reason,
         status = deny.status.as_u16(),
@@ -1903,7 +1948,7 @@ fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
         node_id = deny.node_id,
         requested = deny.requested,
         allowed = deny.allowed,
-        connection_id = %deny.connection_id,
+        connection_id = connection_id.as_deref(),
         "{message}"
     );
     Box::new((deny.status, deny.reason.to_string()).into_response())

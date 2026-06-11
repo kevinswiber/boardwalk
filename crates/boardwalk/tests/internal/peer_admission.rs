@@ -1099,3 +1099,97 @@ async fn empty_intersection_refusal_log_enumerates_requested_vs_allowed() {
     assert_eq!(denial.field("requested"), "transition.invoke");
     assert_eq!(denial.field("allowed"), "resource.read");
 }
+
+/// `PeerSenders` stub with no live contexts, for exercising
+/// `resolve_caller_ingress` denial tracing directly.
+struct NoLivePeers;
+
+#[async_trait::async_trait]
+impl crate::http::PeerSenders for NoLivePeers {
+    async fn sender(
+        &self,
+        _name: &str,
+    ) -> Option<hyper::client::conn::http2::SendRequest<axum::body::Body>> {
+        None
+    }
+
+    async fn names(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+fn ingress_credential_headers(token_id: &str, bearer: &str) -> http::HeaderMap {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        crate::tunnel::PEER_TOKEN_ID_HEADER,
+        token_id.parse().unwrap(),
+    );
+    headers.insert(
+        http::header::AUTHORIZATION,
+        format!("Bearer {bearer}").parse().unwrap(),
+    );
+    headers
+}
+
+fn reviewer_ingress_admission() -> crate::peer::PeerAdmissionConfig {
+    crate::peer::PeerAdmissionConfig::shared_token("reviewer", "kid-2", "reviewer-secret").unwrap()
+}
+
+#[tokio::test]
+async fn ingress_denial_emits_structured_admission_event() {
+    let (events, _guard) = capture_admission_events();
+
+    crate::http::resolve_caller_ingress(
+        &ingress_credential_headers("kid-2", "reviewer-secret"),
+        &[crate::peer::PeerAdmissionConfig::shared_token("hub", "kid-1", "secret").unwrap()],
+        &NoLivePeers,
+    )
+    .await
+    .unwrap_err();
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "ingress");
+    assert_eq!(denial.field("reason"), "unknown peer token id");
+    assert_eq!(denial.field("status"), "401");
+    assert_eq!(denial.field("token_id"), "kid-2");
+}
+
+#[tokio::test]
+async fn disconnected_caller_denial_traces_route_and_token() {
+    let (events, _guard) = capture_admission_events();
+
+    crate::http::resolve_caller_ingress(
+        &ingress_credential_headers("kid-2", "reviewer-secret"),
+        &[reviewer_ingress_admission()],
+        &NoLivePeers,
+    )
+    .await
+    .unwrap_err();
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    let denial = &denials[0];
+    assert_eq!(denial.field("kind"), "ingress");
+    assert_eq!(denial.field("reason"), "caller peer is not connected");
+    assert_eq!(denial.field("status"), "403");
+    assert_eq!(denial.field("route"), "reviewer");
+    assert_eq!(denial.field("token_id"), "kid-2");
+}
+
+#[tokio::test]
+async fn handshake_denials_still_trace_kind_admission() {
+    // Regression pin: admit_peer_connection denials keep
+    // `kind = "admission"` after the kind field is threaded through
+    // `AdmissionDeny`.
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+    let (events, _guard) = capture_admission_events();
+
+    let result = raw_peer_upgrade(cloud.addr, PeerUpgradeAttempt::new("hub", Uuid::new_v4())).await;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+
+    let denials = admission_denials(&events);
+    assert_eq!(denials.len(), 1, "expected one deny event: {denials:?}");
+    assert_eq!(denials[0].field("kind"), "admission");
+}
