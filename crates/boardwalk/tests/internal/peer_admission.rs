@@ -103,6 +103,48 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
 }
 
 #[tokio::test]
+async fn peer_upgrade_without_admission_config_is_refused_before_upgrade() {
+    // Cloud with no admission config and no unauthenticated opt-in:
+    // every peer upgrade must be refused before 101 (plan 0009).
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .without_token(),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::FORBIDDEN);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn linked_hub_is_not_confirmed_by_cloud_without_admission_config() {
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+
+    // End-to-end `.link()` flow: the hub dials, the cloud must refuse.
+    let _hub = Boardwalk::new()
+        .name("hub")
+        .link(format!("http://{}", cloud.addr))
+        .build()
+        .unwrap();
+
+    assert!(
+        !cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_millis(750))
+            .await,
+        "cloud must not confirm an unauthenticated peer without explicit opt-in"
+    );
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
 async fn peer_upgrade_with_wrong_bearer_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
