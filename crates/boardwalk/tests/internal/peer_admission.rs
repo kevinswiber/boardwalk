@@ -30,11 +30,13 @@ async fn admitted_peer_sends_identity_and_gets_negotiated_capabilities() {
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_with_capabilities(
-                "hub",
-                "kid-1",
-                "secret",
-                ["resource.read", "stream.subscribe"],
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .allow([
+                        PeerCapability::ResourceRead,
+                        PeerCapability::StreamSubscribe,
+                    ]),
             ),
     )
     .await;
@@ -88,7 +90,7 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -214,7 +216,7 @@ async fn opt_in_does_not_bypass_configured_token_admission() {
         Boardwalk::new()
             .name("cloud")
             .allow_unauthenticated_local_peers()
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -236,7 +238,7 @@ async fn peer_upgrade_with_wrong_bearer_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -259,7 +261,7 @@ async fn peer_upgrade_with_unknown_token_id_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub", "kid-1", "secret"),
+            .accept_peer_token("hub", "kid-1", "secret"),
     )
     .await;
 
@@ -282,7 +284,7 @@ async fn token_configured_for_one_route_cannot_claim_another_route_name() {
     let cloud = serve(
         Boardwalk::new()
             .name("cloud")
-            .expect_peer_token("hub-a", "kid-1", "secret"),
+            .accept_peer_token("hub-a", "kid-1", "secret"),
     )
     .await;
 
@@ -302,12 +304,14 @@ async fn token_configured_for_one_route_cannot_claim_another_route_name() {
 
 #[tokio::test]
 async fn expected_node_id_mismatch_is_rejected_before_upgrade() {
-    let cloud = serve(Boardwalk::new().name("cloud").expect_peer_token_for_node(
-        "hub",
-        "kid-1",
-        "secret",
-        "node-hub-1",
-    ))
+    let cloud = serve(
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .expected_node_id("node-hub-1")
+                .allow([PeerCapability::ResourceRead]),
+        ),
+    )
     .await;
 
     let upgrade = raw_peer_upgrade(
@@ -327,9 +331,11 @@ async fn expected_node_id_mismatch_is_rejected_before_upgrade() {
 #[tokio::test]
 async fn empty_capability_intersection_is_rejected_before_upgrade() {
     let cloud = serve(
-        Boardwalk::new()
-            .name("cloud")
-            .expect_peer_token_with_capabilities("hub", "kid-1", "secret", ["resource.read"]),
+        Boardwalk::new().name("cloud").accept_peer(
+            PeerAdmission::shared_token("hub", "kid-1", "secret")
+                .unwrap()
+                .allow([PeerCapability::ResourceRead]),
+        ),
     )
     .await;
 
@@ -355,7 +361,12 @@ async fn admitted_peer_identity_survives_reconnects_without_using_connection_id_
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .expected_node_id("node-hub-1")
+                    .allow([PeerCapability::ResourceRead]),
+            ),
     )
     .await;
 
@@ -446,7 +457,12 @@ async fn failed_peer_confirmation_persists_failed_connection_status() {
         Boardwalk::new()
             .name("cloud")
             .persist(&registry_path)
-            .expect_peer_token_for_node("hub", "kid-1", "secret", "node-hub-1"),
+            .accept_peer(
+                PeerAdmission::shared_token("hub", "kid-1", "secret")
+                    .unwrap()
+                    .expected_node_id("node-hub-1")
+                    .allow([PeerCapability::ResourceRead]),
+            ),
     )
     .await;
 
@@ -756,73 +772,5 @@ impl PeerUpgradeAttempt {
         self.token_id = None;
         self.secret = None;
         self
-    }
-}
-
-trait PeerAdmissionConfigExt {
-    fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self;
-
-    fn expect_peer_token_with_capabilities<I, S>(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        allowed_capabilities: I,
-    ) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>;
-
-    fn expect_peer_token_for_node(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        expected_node_id: &str,
-    ) -> Self;
-}
-
-impl PeerAdmissionConfigExt for Boardwalk {
-    fn expect_peer_token(self, route_name: &str, token_id: &str, secret: &str) -> Self {
-        self.accept_peer_token(route_name, token_id, secret)
-    }
-
-    fn expect_peer_token_with_capabilities<I, S>(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        allowed_capabilities: I,
-    ) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let allowed = allowed_capabilities
-            .into_iter()
-            .map(|name| {
-                name.as_ref()
-                    .parse::<PeerCapability>()
-                    .expect("test capability name")
-            })
-            .collect::<Vec<_>>();
-        let config = PeerAdmission::shared_token(route_name, token_id, secret)
-            .unwrap()
-            .allow(allowed);
-        self.accept_peer(config)
-    }
-
-    fn expect_peer_token_for_node(
-        self,
-        route_name: &str,
-        token_id: &str,
-        secret: &str,
-        expected_node_id: &str,
-    ) -> Self {
-        let config = PeerAdmission::shared_token(route_name, token_id, secret)
-            .unwrap()
-            .expected_node_id(expected_node_id)
-            .allow([PeerCapability::ResourceRead]);
-        self.accept_peer(config)
     }
 }

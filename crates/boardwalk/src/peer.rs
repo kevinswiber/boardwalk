@@ -240,19 +240,6 @@ impl PeerCapabilities {
         Ok(caps)
     }
 
-    pub(crate) fn parse_names<I, S>(names: I) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut caps = Self::empty();
-        for name in names {
-            let one = Self::parse_list(name.as_ref())?;
-            caps.0 |= one.0;
-        }
-        Ok(caps)
-    }
-
     pub(crate) fn from_capabilities(caps: impl IntoIterator<Item = PeerCapability>) -> Self {
         let mut out = Self::empty();
         for cap in caps {
@@ -580,15 +567,6 @@ impl PeerAdmissionConfig {
         self.expected_node_id = Some(crate::events::NodeId::new(node_id));
         self
     }
-
-    pub(crate) fn allow<I, S>(mut self, capabilities: I) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.allowed_capabilities = PeerCapabilities::parse_names(capabilities)?;
-        Ok(self)
-    }
 }
 
 /// Explicit opt-in policy for admitting peers without token-bound
@@ -652,18 +630,6 @@ impl PeerLinkConfig {
     pub(crate) fn node_name(mut self, node_name: impl Into<String>) -> Self {
         self.local_node_name = Some(node_name.into());
         self
-    }
-
-    pub(crate) fn request_capabilities<I, S>(
-        mut self,
-        capabilities: I,
-    ) -> Result<Self, PeerModelError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.requested_capabilities = PeerCapabilities::parse_names(capabilities)?;
-        Ok(self)
     }
 }
 
@@ -1235,21 +1201,6 @@ mod peer_model_tests {
     }
 
     #[test]
-    fn peer_admission_config_link_carries_route_token_and_requested_capabilities() {
-        let link = PeerLinkConfig::new("wss://cloud.example.com", "hub")
-            .unwrap()
-            .token("kid-1", "secret")
-            .node_id("node-hub-1")
-            .node_name("Kitchen Hub")
-            .request_capabilities(["resource.read", "stream.subscribe"])
-            .unwrap();
-
-        assert_eq!(link.route_name.as_str(), "hub");
-        assert_eq!(link.token_id.as_deref(), Some("kid-1"));
-        assert!(link.requested_capabilities.stream_subscribe());
-    }
-
-    #[test]
     fn peer_capability_display_round_trips_canonical_names() {
         let all = [
             (PeerCapability::ResourceRead, "resource.read"),
@@ -1382,21 +1333,5 @@ mod peer_model_tests {
     fn peer_config_error_messages_name_the_bad_value() {
         let err = PeerConfigError::InvalidRouteName("hub name".to_string());
         assert!(err.to_string().contains("hub name"));
-    }
-
-    #[test]
-    fn peer_admission_config_accepted_token_binds_route_name_and_optional_node_id() {
-        let policy = PeerAdmissionConfig::shared_token("hub", "kid-1", "secret")
-            .unwrap()
-            .expected_node_id("node-hub-1")
-            .allow(["resource.read"])
-            .unwrap();
-
-        assert_eq!(policy.allowed_route_name.as_str(), "hub");
-        assert_eq!(
-            policy.expected_node_id.as_ref().map(|node| node.as_str()),
-            Some("node-hub-1")
-        );
-        assert_eq!(policy.token_id, "kid-1");
     }
 }
