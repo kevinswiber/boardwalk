@@ -15,6 +15,139 @@ use crate::events::{
     CausationId, CorrelationId, ENVELOPE_VERSION, EventBus, EventEnvelope, NodeId, PublishError,
     StreamId, StreamRegistry, TraceContext,
 };
+use crate::peer::PeerCapability;
+
+/// Read-only identity of an admitted peer caller, as established at
+/// admission time on the gateway. Populated exclusively by the runtime
+/// from admission state — never from client-supplied headers; public
+/// code cannot construct or forge one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedPeer {
+    route_name: String,
+    peer_id: String,
+    token_id: Option<String>,
+    node_id: Option<String>,
+    display_name: Option<String>,
+    capabilities: Vec<PeerCapability>,
+    connection_id: String,
+}
+
+impl AdmittedPeer {
+    // dead_code: the real caller is the http layer's tunnel-leg
+    // provenance population (task 2.3); tests construct directly.
+    #[allow(dead_code)]
+    pub(crate) fn new(
+        route_name: impl Into<String>,
+        peer_id: impl Into<String>,
+        token_id: Option<String>,
+        node_id: Option<String>,
+        display_name: Option<String>,
+        capabilities: Vec<PeerCapability>,
+        connection_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            route_name: route_name.into(),
+            peer_id: peer_id.into(),
+            token_id,
+            node_id,
+            display_name,
+            capabilities,
+            connection_id: connection_id.into(),
+        }
+    }
+
+    /// Peer route this caller was admitted on (`/peers/{route}`).
+    pub fn route_name(&self) -> &str {
+        &self.route_name
+    }
+
+    /// Durable peer identity. Derived as `peer-{route}` (unauthenticated)
+    /// or `peer-{route}-{token_id}` (token-bound): stable across
+    /// reconnects of the same configured link; token rotation yields a
+    /// new peer id.
+    pub fn peer_id(&self) -> &str {
+        &self.peer_id
+    }
+
+    /// Token id the peer presented at admission, if token-bound.
+    pub fn token_id(&self) -> Option<&str> {
+        self.token_id.as_deref()
+    }
+
+    /// Self-asserted node id, pinned only if the admission config set
+    /// `expected_node_id`. Not cryptographic identity.
+    pub fn node_id(&self) -> Option<&str> {
+        self.node_id.as_deref()
+    }
+
+    /// Human-readable display name the peer presented, if any.
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
+    }
+
+    /// The negotiated capability set (requested ∩ allowed) — the live
+    /// grant for this connection, not the configured ceiling.
+    pub fn capabilities(&self) -> &[PeerCapability] {
+        &self.capabilities
+    }
+
+    /// Whether the negotiated set includes `capability`.
+    pub fn has_capability(&self, capability: PeerCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+
+    /// Connection id of the admitted tunnel, for audit correlation
+    /// with peer connection-status records.
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+}
+
+/// Where a transition invocation came from, as far as this node can
+/// verify: local/direct ([`CallerProvenance::is_local`]), or forwarded
+/// over an authenticated peer tunnel by a gateway
+/// ([`CallerProvenance::forwarded_by`]), optionally with the
+/// gateway-attested admitted caller ([`CallerProvenance::peer`]).
+///
+/// Provenance is populated only by the runtime. `ResourceCtx` does not
+/// carry provenance in this release — no caller-identity-bearing path
+/// reaches resource reads yet.
+#[derive(Debug, Clone, Default)]
+pub struct CallerProvenance {
+    forwarded_by: Option<String>,
+    peer: Option<AdmittedPeer>,
+}
+
+impl CallerProvenance {
+    // dead_code: the real caller is the http layer's tunnel-leg
+    // provenance population (task 2.3); tests construct directly.
+    #[allow(dead_code)]
+    pub(crate) fn forwarded(gateway: impl Into<String>, peer: Option<AdmittedPeer>) -> Self {
+        Self {
+            forwarded_by: Some(gateway.into()),
+            peer,
+        }
+    }
+
+    /// True for direct local invocations (no authenticated peer-tunnel
+    /// hop). Anonymous public HTTP callers are also local: this node
+    /// saw no verifiable forwarding metadata.
+    pub fn is_local(&self) -> bool {
+        self.forwarded_by.is_none()
+    }
+
+    /// Route name of the gateway that forwarded this request over its
+    /// authenticated tunnel leg, if any.
+    pub fn forwarded_by(&self) -> Option<&str> {
+        self.forwarded_by.as_deref()
+    }
+
+    /// Admitted caller identity; `None` means the caller is anonymous
+    /// or the invocation is local.
+    pub fn peer(&self) -> Option<&AdmittedPeer> {
+        self.peer.as_ref()
+    }
+}
 
 /// Opaque, stable string identifier for one in-flight transition
 /// invocation. Used as `causationId` on emitted envelopes.
@@ -43,6 +176,7 @@ pub struct RequestCtx {
     traceparent: Option<String>,
     tracestate: Option<String>,
     request_id: Option<String>,
+    provenance: CallerProvenance,
 }
 
 impl RequestCtx {
@@ -57,7 +191,19 @@ impl RequestCtx {
             traceparent: pick("traceparent"),
             tracestate: pick("tracestate"),
             request_id: pick("x-request-id"),
+            provenance: CallerProvenance::default(),
         }
+    }
+
+    /// Attach caller provenance. Crate-private: only the http layer
+    /// populates provenance, from admission state — never from
+    /// client-supplied headers.
+    // dead_code: the real caller is the http layer's tunnel-leg
+    // provenance population (task 2.3); tests construct directly.
+    #[allow(dead_code)]
+    pub(crate) fn with_provenance(mut self, provenance: CallerProvenance) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     pub fn traceparent(&self) -> Option<&str> {
@@ -68,6 +214,11 @@ impl RequestCtx {
     }
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
+    }
+    /// Caller provenance as established by the runtime (default:
+    /// local/anonymous).
+    pub fn provenance(&self) -> &CallerProvenance {
+        &self.provenance
     }
 }
 
