@@ -50,6 +50,11 @@ const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TunnelLeg;
 
+/// Stable tracing target for every admission and capability deny
+/// decision. The target and its field names are a documented contract
+/// for log scraping and alerting (`docs/peers.md`).
+const ADMISSION_TRACING_TARGET: &str = "boardwalk::admission";
+
 /// Build caller provenance for a request: local/anonymous unless the
 /// request arrived over this node's own authenticated tunnel leg, in
 /// which case the gateway-owned forwarded/attested headers are honored.
@@ -1659,11 +1664,23 @@ fn admit_peer_connection(
     admissions: &[PeerAdmissionConfig],
     unauthenticated: Option<&UnauthenticatedPeerPolicy>,
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
+    let deny = |status: StatusCode, reason: &str, token_id: Option<&str>, node_id: Option<&str>| {
+        admission_denied(AdmissionDeny {
+            status,
+            reason,
+            route: peer_name,
+            token_id,
+            node_id,
+            connection_id,
+        })
+    };
     if admissions.is_empty() {
         let Some(policy) = unauthenticated else {
-            return Err(admission_error(
+            return Err(deny(
                 StatusCode::FORBIDDEN,
                 "peer admission is not configured",
+                None,
+                None,
             ));
         };
         return Ok(AdmittedPeerConnection::unauthenticated(
@@ -1673,19 +1690,33 @@ fn admit_peer_connection(
         ));
     }
 
-    let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER)
-        .map_err(|_| admission_error(StatusCode::UNAUTHORIZED, "missing peer token id"))?;
-    let bearer = bearer_token(headers)
-        .ok_or_else(|| admission_error(StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+    let token_id = required_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER).map_err(|_| {
+        deny(
+            StatusCode::UNAUTHORIZED,
+            "missing peer token id",
+            None,
+            None,
+        )
+    })?;
+    let bearer = bearer_token(headers).ok_or_else(|| {
+        deny(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+            Some(token_id),
+            None,
+        )
+    })?;
 
     let token_matches = admissions
         .iter()
         .filter(|config| config.token_id == token_id)
         .collect::<Vec<_>>();
     if token_matches.is_empty() {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::UNAUTHORIZED,
             "unknown peer token id",
+            Some(token_id),
+            None,
         ));
     }
 
@@ -1694,9 +1725,11 @@ fn admit_peer_connection(
         .filter(|config| config.token_verifier.verify(bearer))
         .collect::<Vec<_>>();
     if verified.is_empty() {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::UNAUTHORIZED,
             "invalid bearer token",
+            Some(token_id),
+            None,
         ));
     }
 
@@ -1704,34 +1737,46 @@ fn admit_peer_connection(
         .into_iter()
         .find(|config| config.allowed_route_name.as_str() == peer_name)
     else {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::FORBIDDEN,
             "peer token is not valid for route",
+            Some(token_id),
+            None,
         ));
     };
 
     let node_id = required_header(headers, crate::tunnel::PEER_NODE_ID_HEADER)
-        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))?;
+        .map_err(|message| deny(StatusCode::BAD_REQUEST, &message, Some(token_id), None))?;
     if let Some(expected) = &config.expected_node_id
         && expected.as_str() != node_id
     {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::FORBIDDEN,
             "peer node id mismatch",
+            Some(token_id),
+            Some(node_id),
         ));
     }
 
     let requested_capabilities = required_header(headers, crate::tunnel::PEER_CAPABILITIES_HEADER)
-        .map_err(|message| admission_error(StatusCode::BAD_REQUEST, message))
+        .map_err(|message| deny(StatusCode::BAD_REQUEST, &message, Some(token_id), None))
         .and_then(|raw| {
-            PeerCapabilities::parse_list(raw)
-                .map_err(|err| admission_error(StatusCode::BAD_REQUEST, err.to_string()))
+            PeerCapabilities::parse_list(raw).map_err(|err| {
+                deny(
+                    StatusCode::BAD_REQUEST,
+                    &err.to_string(),
+                    Some(token_id),
+                    None,
+                )
+            })
         })?;
     let negotiated_capabilities = requested_capabilities.intersection(config.allowed_capabilities);
     if negotiated_capabilities.is_empty() {
-        return Err(admission_error(
+        return Err(deny(
             StatusCode::FORBIDDEN,
             "peer capabilities are not allowed",
+            Some(token_id),
+            None,
         ));
     }
 
@@ -1748,8 +1793,36 @@ fn admit_peer_connection(
     ))
 }
 
-fn admission_error(status: StatusCode, message: impl Into<String>) -> Box<Response> {
-    Box::new((status, message.into()).into_response())
+/// One admission deny decision, traced and converted to a response in
+/// one place so the event can never drift from what the dialer saw.
+struct AdmissionDeny<'a> {
+    status: StatusCode,
+    reason: &'a str,
+    route: &'a str,
+    token_id: Option<&'a str>,
+    node_id: Option<&'a str>,
+    connection_id: Uuid,
+}
+
+/// Emit the structured deny event at the stable `boardwalk::admission`
+/// target and build the matching response. The target and field names
+/// (`kind`, `route`, `reason`, `status`, `token_id`, `node_id`,
+/// `connection_id`) are a documented contract for log scraping and
+/// alerting; `token_id` is a public identifier — bearer secrets are
+/// never logged.
+fn admission_denied(deny: AdmissionDeny<'_>) -> Box<Response> {
+    tracing::warn!(
+        target: ADMISSION_TRACING_TARGET,
+        kind = "admission",
+        route = deny.route,
+        reason = deny.reason,
+        status = deny.status.as_u16(),
+        token_id = deny.token_id,
+        node_id = deny.node_id,
+        connection_id = %deny.connection_id,
+        "peer admission denied"
+    );
+    Box::new((deny.status, deny.reason.to_string()).into_response())
 }
 
 fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, String> {
