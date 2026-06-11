@@ -1,5 +1,9 @@
 //! Canonical runtime envelope for events fanned out by the event bus.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use serde::{Deserialize, Serialize};
 
 pub const ENVELOPE_VERSION: u8 = 1;

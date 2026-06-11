@@ -1,5 +1,9 @@
 //! Typed link builders for Boardwalk HTTP affordances.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use crate::events::{DEFAULT_OUTBOUND_CAPACITY, SlowConsumerPolicy};
 use crate::runtime::{AcceptedJob, ResourceKind};
 

@@ -30,6 +30,9 @@ use crate::runtime::{
     TransitionOutcome,
 };
 
+/// Top-level builder assembling a Boardwalk node: actors, peer
+/// admission and links, persistence, and the HTTP/WebSocket/peer route
+/// stack served by `listen`.
 pub struct Boardwalk {
     name: String,
     node_id: Option<String>,
@@ -130,6 +133,8 @@ impl Default for Boardwalk {
 }
 
 impl Boardwalk {
+    /// Start a builder with the default display name (`boardwalk`),
+    /// no peers, and no persistence.
     pub fn new() -> Self {
         Self {
             name: "boardwalk".to_string(),
@@ -144,6 +149,8 @@ impl Boardwalk {
         }
     }
 
+    /// Set the human-readable display name. Non-persisted nodes also
+    /// default their node id to this value.
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
         self

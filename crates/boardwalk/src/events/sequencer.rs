@@ -8,6 +8,10 @@
 //! grows with distinct stream cardinality, which is itself bounded by
 //! the resource registry.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

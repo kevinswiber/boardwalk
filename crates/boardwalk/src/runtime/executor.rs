@@ -5,6 +5,10 @@
 //! whose `try_transition` rejects with `TransitionError::Busy` when
 //! the pending queue is full.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::time::Duration;
 
 use tokio::sync::mpsc::error::TrySendError;

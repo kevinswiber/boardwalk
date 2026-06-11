@@ -26,6 +26,7 @@
 //! introduction.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod caql;
 pub mod events;

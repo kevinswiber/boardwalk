@@ -149,9 +149,12 @@ impl CallerProvenance {
 pub struct CommandId(String);
 
 impl CommandId {
+    /// Mint a fresh command id for one transition invocation.
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
+
+    /// The id as its stable string form.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -174,6 +177,8 @@ pub struct RequestCtx {
 }
 
 impl RequestCtx {
+    /// Lift `traceparent`, `tracestate`, and `x-request-id` from the
+    /// inbound HTTP headers, verbatim.
     pub fn from_headers(headers: &HeaderMap) -> Self {
         let pick = |name: &str| {
             headers
@@ -197,12 +202,15 @@ impl RequestCtx {
         self
     }
 
+    /// W3C `traceparent` header value, if the request carried one.
     pub fn traceparent(&self) -> Option<&str> {
         self.traceparent.as_deref()
     }
+    /// W3C `tracestate` header value, if the request carried one.
     pub fn tracestate(&self) -> Option<&str> {
         self.tracestate.as_deref()
     }
+    /// `x-request-id` header value, if the request carried one.
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
     }

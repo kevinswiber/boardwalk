@@ -302,11 +302,18 @@ impl fmt::Display for PeerCapabilities {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PeerCapability {
+    /// Resource and metadata reads (`resource.read`).
     ResourceRead,
+    /// Directed peer queries with `?ql=<caql>` (`resource.query`).
     ResourceQuery,
+    /// Peer event streams and stream links (`stream.subscribe`).
     StreamSubscribe,
+    /// Transition POST forwarding and rendered transition actions
+    /// (`transition.invoke`).
     TransitionInvoke,
+    /// Reserved: resource registration forwarding (`resource.register`).
     ResourceRegister,
+    /// Reserved: future peer administration surfaces (`peer.admin`).
     PeerAdmin,
 }
 
@@ -351,10 +358,13 @@ impl std::str::FromStr for PeerCapability {
 #[non_exhaustive]
 #[derive(Debug, Clone, Error)]
 pub enum PeerConfigError {
+    /// The route name is empty or not a valid URL path segment.
     #[error("invalid peer route name: `{0}`")]
     InvalidRouteName(String),
+    /// The gateway URL did not parse.
     #[error("invalid gateway url: {0}")]
     InvalidUrl(String),
+    /// The capability name is not one of the canonical dotted names.
     #[error("unknown peer capability: `{0}`")]
     UnknownCapability(String),
 }

@@ -5,6 +5,10 @@
 //! references, and other read-only entities implement only this
 //! trait. The executable variant lives in `Actor`.
 
+// missing_docs: this module predates the crate-wide gate; its public
+// items still need a documentation sweep (tracked follow-up). New code
+// here should be documented anyway.
+#![allow(missing_docs)]
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
