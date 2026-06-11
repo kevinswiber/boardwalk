@@ -144,6 +144,42 @@ impl NodeIdentity {
 #[serde(transparent)]
 pub(crate) struct PeerCapabilities(u8);
 
+/// Single source of truth for the capability axes: bit, typed variant,
+/// canonical dotted wire name. Adding an axis is one new row here plus
+/// the `PeerCapability` variant.
+const CAPABILITY_AXES: [(u8, PeerCapability, &str); 6] = [
+    (
+        PeerCapabilities::RESOURCE_READ,
+        PeerCapability::ResourceRead,
+        "resource.read",
+    ),
+    (
+        PeerCapabilities::RESOURCE_QUERY,
+        PeerCapability::ResourceQuery,
+        "resource.query",
+    ),
+    (
+        PeerCapabilities::STREAM_SUBSCRIBE,
+        PeerCapability::StreamSubscribe,
+        "stream.subscribe",
+    ),
+    (
+        PeerCapabilities::TRANSITION_INVOKE,
+        PeerCapability::TransitionInvoke,
+        "transition.invoke",
+    ),
+    (
+        PeerCapabilities::RESOURCE_REGISTER,
+        PeerCapability::ResourceRegister,
+        "resource.register",
+    ),
+    (
+        PeerCapabilities::PEER_ADMIN,
+        PeerCapability::PeerAdmin,
+        "peer.admin",
+    ),
+];
+
 #[allow(dead_code)]
 impl PeerCapabilities {
     const RESOURCE_READ: u8 = 1 << 0;
@@ -159,12 +195,9 @@ impl PeerCapabilities {
 
     pub(crate) fn all() -> Self {
         Self(
-            Self::RESOURCE_READ
-                | Self::RESOURCE_QUERY
-                | Self::STREAM_SUBSCRIBE
-                | Self::TRANSITION_INVOKE
-                | Self::RESOURCE_REGISTER
-                | Self::PEER_ADMIN,
+            CAPABILITY_AXES
+                .iter()
+                .fold(0, |bits, (bit, _, _)| bits | bit),
         )
     }
 
@@ -199,14 +232,9 @@ impl PeerCapabilities {
             if name.is_empty() {
                 continue;
             }
-            caps.0 |= match name {
-                "resource.read" => Self::RESOURCE_READ,
-                "resource.query" => Self::RESOURCE_QUERY,
-                "stream.subscribe" => Self::STREAM_SUBSCRIBE,
-                "transition.invoke" => Self::TRANSITION_INVOKE,
-                "resource.register" => Self::RESOURCE_REGISTER,
-                "peer.admin" => Self::PEER_ADMIN,
-                other => return Err(PeerModelError::UnknownCapability(other.to_string())),
+            caps.0 |= match CAPABILITY_AXES.iter().find(|(_, _, axis)| *axis == name) {
+                Some((bit, _, _)) => *bit,
+                None => return Err(PeerModelError::UnknownCapability(name.to_string())),
             };
         }
         Ok(caps)
@@ -223,6 +251,21 @@ impl PeerCapabilities {
             caps.0 |= one.0;
         }
         Ok(caps)
+    }
+
+    pub(crate) fn from_capabilities(caps: impl IntoIterator<Item = PeerCapability>) -> Self {
+        let mut out = Self::empty();
+        for cap in caps {
+            out.0 |= cap.bit();
+        }
+        out
+    }
+
+    pub(crate) fn to_capabilities(self) -> Vec<PeerCapability> {
+        CAPABILITY_AXES
+            .iter()
+            .filter_map(|(bit, cap, _)| (self.0 & bit != 0).then_some(*cap))
+            .collect()
     }
 
     pub(crate) fn intersection(self, other: Self) -> Self {
@@ -242,16 +285,9 @@ impl PeerCapabilities {
     }
 
     fn names(self) -> impl Iterator<Item = &'static str> {
-        [
-            (Self::RESOURCE_READ, "resource.read"),
-            (Self::RESOURCE_QUERY, "resource.query"),
-            (Self::STREAM_SUBSCRIBE, "stream.subscribe"),
-            (Self::TRANSITION_INVOKE, "transition.invoke"),
-            (Self::RESOURCE_REGISTER, "resource.register"),
-            (Self::PEER_ADMIN, "peer.admin"),
-        ]
-        .into_iter()
-        .filter_map(move |(bit, name)| (self.0 & bit != 0).then_some(name))
+        CAPABILITY_AXES
+            .into_iter()
+            .filter_map(move |(bit, _, name)| (self.0 & bit != 0).then_some(name))
     }
 }
 
@@ -267,6 +303,76 @@ impl fmt::Display for PeerCapabilities {
         }
         Ok(())
     }
+}
+
+/// One peer capability axis. Granting a capability on an admission
+/// ceiling (or requesting it on an outbound link) uses these typed
+/// values; the canonical dotted names (`resource.read`, ...) remain the
+/// wire format and round-trip through `Display`/`FromStr`.
+///
+/// `ResourceRegister` and `PeerAdmin` exist as axes but their remote
+/// semantics are reserved (not yet implemented end-to-end).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PeerCapability {
+    ResourceRead,
+    ResourceQuery,
+    StreamSubscribe,
+    TransitionInvoke,
+    ResourceRegister,
+    PeerAdmin,
+}
+
+impl PeerCapability {
+    fn axis(self) -> (u8, PeerCapability, &'static str) {
+        *CAPABILITY_AXES
+            .iter()
+            .find(|(_, cap, _)| *cap == self)
+            .expect("every PeerCapability variant has a CAPABILITY_AXES row")
+    }
+
+    fn as_dotted_name(self) -> &'static str {
+        self.axis().2
+    }
+
+    fn bit(self) -> u8 {
+        self.axis().0
+    }
+}
+
+impl fmt::Display for PeerCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_dotted_name())
+    }
+}
+
+impl std::str::FromStr for PeerCapability {
+    type Err = PeerConfigError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        CAPABILITY_AXES
+            .iter()
+            .find(|(_, _, name)| *name == s)
+            .map(|(_, cap, _)| *cap)
+            .ok_or_else(|| PeerConfigError::UnknownCapability(s.to_string()))
+    }
+}
+
+/// Errors surfaced when constructing peer admission or link
+/// configuration. Validation happens at config construction so a bad
+/// value fails at the line that contains it — never logged and skipped.
+// dead_code: variants are constructed by the config structs (task 1.2)
+// and the enum leaves the crate via the root re-export (task 1.3).
+#[allow(dead_code)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Error)]
+pub enum PeerConfigError {
+    #[error("invalid peer route name: `{0}`")]
+    InvalidRouteName(String),
+    #[error("invalid gateway url: {0}")]
+    InvalidUrl(String),
+    #[error("unknown peer capability: `{0}`")]
+    UnknownCapability(String),
 }
 
 #[allow(dead_code)]
@@ -1020,6 +1126,46 @@ mod peer_model_tests {
         assert_eq!(link.route_name.as_str(), "hub");
         assert_eq!(link.token_id.as_deref(), Some("kid-1"));
         assert!(link.requested_capabilities.stream_subscribe());
+    }
+
+    #[test]
+    fn peer_capability_display_round_trips_canonical_names() {
+        let all = [
+            (PeerCapability::ResourceRead, "resource.read"),
+            (PeerCapability::ResourceQuery, "resource.query"),
+            (PeerCapability::StreamSubscribe, "stream.subscribe"),
+            (PeerCapability::TransitionInvoke, "transition.invoke"),
+            (PeerCapability::ResourceRegister, "resource.register"),
+            (PeerCapability::PeerAdmin, "peer.admin"),
+        ];
+        for (cap, name) in all {
+            assert_eq!(cap.to_string(), name);
+            assert_eq!(name.parse::<PeerCapability>().unwrap(), cap);
+        }
+        assert!("resource.write".parse::<PeerCapability>().is_err());
+    }
+
+    #[test]
+    fn peer_capability_converts_to_internal_bitset() {
+        let caps = PeerCapabilities::from_capabilities([
+            PeerCapability::ResourceRead,
+            PeerCapability::TransitionInvoke,
+        ]);
+        assert!(caps.contains(PeerCapabilities::resource_read()));
+        assert!(caps.contains(PeerCapabilities::transition_invoke()));
+        assert!(!caps.contains(PeerCapabilities::peer_admin()));
+    }
+
+    #[test]
+    fn internal_bitset_enumerates_back_to_capability_variants() {
+        let caps = PeerCapabilities::resource_read().intersection(PeerCapabilities::all());
+        assert_eq!(caps.to_capabilities(), vec![PeerCapability::ResourceRead]);
+    }
+
+    #[test]
+    fn peer_config_error_messages_name_the_bad_value() {
+        let err = PeerConfigError::InvalidRouteName("hub name".to_string());
+        assert!(err.to_string().contains("hub name"));
     }
 
     #[test]
