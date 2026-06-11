@@ -1718,31 +1718,8 @@ fn admit_peer_connection(
         )
     })?;
 
-    let token_matches = admissions
-        .iter()
-        .filter(|config| config.token_id == token_id)
-        .collect::<Vec<_>>();
-    if token_matches.is_empty() {
-        return Err(deny(
-            StatusCode::UNAUTHORIZED,
-            "unknown peer token id",
-            Some(token_id),
-            None,
-        ));
-    }
-
-    let verified = token_matches
-        .into_iter()
-        .filter(|config| config.token_verifier.verify(bearer))
-        .collect::<Vec<_>>();
-    if verified.is_empty() {
-        return Err(deny(
-            StatusCode::UNAUTHORIZED,
-            "invalid bearer token",
-            Some(token_id),
-            None,
-        ));
-    }
+    let verified = verified_admissions(admissions, token_id, bearer)
+        .map_err(|reason| deny(StatusCode::UNAUTHORIZED, reason, Some(token_id), None))?;
 
     let Some(config) = verified
         .into_iter()
@@ -1808,6 +1785,83 @@ fn admit_peer_connection(
         config.allowed_capabilities,
         negotiated_capabilities,
     ))
+}
+
+/// Token-id filter plus constant-time secret verification, shared by
+/// handshake admission (`admit_peer_connection`) and per-request caller
+/// ingress (`resolve_caller_ingress`) so the two paths cannot drift.
+/// Returns the verified configs or the denial reason; callers attach
+/// their own status and deny machinery.
+fn verified_admissions<'a>(
+    admissions: &'a [PeerAdmissionConfig],
+    token_id: &str,
+    bearer: &str,
+) -> Result<Vec<&'a PeerAdmissionConfig>, &'static str> {
+    let token_matches = admissions
+        .iter()
+        .filter(|config| config.token_id == token_id)
+        .collect::<Vec<_>>();
+    if token_matches.is_empty() {
+        return Err("unknown peer token id");
+    }
+    let verified = token_matches
+        .into_iter()
+        .filter(|config| config.token_verifier.verify(bearer))
+        .collect::<Vec<_>>();
+    if verified.is_empty() {
+        return Err("invalid bearer token");
+    }
+    Ok(verified)
+}
+
+/// Resolve an admitted caller from per-request ingress credentials.
+///
+/// Engagement signal: the `boardwalk-peer-token-id` header. Absent →
+/// `Ok(None)` (anonymous; unchanged behavior). Present → fail-closed:
+/// the credentials must verify against a configured admission AND the
+/// matching route must hold a live admitted tunnel under the same token
+/// id. Negotiated capabilities and connection identity come from that
+/// live handshake — nothing is synthesized per-request.
+#[allow(dead_code)] // wired into the forwarding path by the caller-ingress population
+async fn resolve_caller_ingress(
+    headers: &HeaderMap,
+    admissions: &[PeerAdmissionConfig],
+    senders: &dyn PeerSenders,
+) -> Result<Option<AdmittedPeerConnection>, Box<Response>> {
+    let Some(token_id) = optional_header(headers, crate::tunnel::PEER_TOKEN_ID_HEADER) else {
+        return Ok(None);
+    };
+    let refuse =
+        |status: StatusCode, reason: &str| Box::new((status, reason.to_string()).into_response());
+    if admissions.is_empty() {
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "peer admission is not configured",
+        ));
+    }
+    let Some(bearer) = bearer_token(headers) else {
+        return Err(refuse(StatusCode::UNAUTHORIZED, "missing bearer token"));
+    };
+    let verified = verified_admissions(admissions, token_id, bearer)
+        .map_err(|reason| refuse(StatusCode::UNAUTHORIZED, reason))?;
+    let mut live = Vec::new();
+    for config in &verified {
+        if let Some(context) = senders
+            .peer_context(config.allowed_route_name.as_str())
+            .await
+            && context.token_id.as_deref() == Some(token_id)
+        {
+            live.push(context);
+        }
+    }
+    match live.len() {
+        0 => Err(refuse(
+            StatusCode::FORBIDDEN,
+            "caller peer is not connected",
+        )),
+        1 => Ok(Some(live.remove(0))),
+        _ => Err(refuse(StatusCode::FORBIDDEN, "ambiguous caller admission")),
+    }
 }
 
 /// One admission deny decision, traced and converted to a response in
@@ -2551,5 +2605,217 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// `PeerSenders` stub serving a static route-name → live-context map
+    /// for ingress resolution tests.
+    struct StaticContexts(HashMap<String, AdmittedPeerConnection>);
+
+    #[async_trait::async_trait]
+    impl PeerSenders for StaticContexts {
+        async fn sender(
+            &self,
+            _name: &str,
+        ) -> Option<hyper::client::conn::http2::SendRequest<Body>> {
+            None
+        }
+
+        async fn names(&self) -> Vec<String> {
+            self.0.keys().cloned().collect()
+        }
+
+        async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
+            self.0.get(name).cloned()
+        }
+    }
+
+    fn ingress_headers(token_id: &str, bearer: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::tunnel::PEER_TOKEN_ID_HEADER,
+            token_id.parse().unwrap(),
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        headers
+    }
+
+    fn reviewer_admission() -> PeerAdmissionConfig {
+        let mut config =
+            PeerAdmissionConfig::shared_token("reviewer", "kid-2", "reviewer-secret").unwrap();
+        config.allowed_capabilities =
+            PeerCapabilities::parse_list("resource.read,transition.invoke").unwrap();
+        config
+    }
+
+    fn live_reviewer_context() -> AdmittedPeerConnection {
+        AdmittedPeerConnection::token_bound(
+            "reviewer",
+            "kid-2",
+            Uuid::new_v4(),
+            "node-reviewer-9",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        )
+    }
+
+    #[tokio::test]
+    async fn ingress_without_token_id_header_is_anonymous() {
+        // Authorization alone never engages ingress.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer anything".parse().unwrap(),
+        );
+        let senders = StaticContexts(HashMap::new());
+        let caller = resolve_caller_ingress(&headers, &[], &senders)
+            .await
+            .unwrap();
+        assert!(caller.is_none());
+    }
+
+    #[tokio::test]
+    async fn ingress_resolves_live_admitted_caller() {
+        let senders = StaticContexts(HashMap::from([(
+            "reviewer".into(),
+            live_reviewer_context(),
+        )]));
+        let caller = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap()
+        .expect("admitted caller");
+        assert_eq!(caller.peer_id, "peer-reviewer-kid-2");
+        assert_eq!(caller.token_id.as_deref(), Some("kid-2"));
+        assert_eq!(
+            caller.negotiated_capabilities,
+            PeerCapabilities::resource_read()
+        );
+    }
+
+    #[tokio::test]
+    async fn ingress_with_unknown_token_id_is_401() {
+        let senders = StaticContexts(HashMap::new());
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-unknown", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_with_invalid_bearer_is_401() {
+        let senders = StaticContexts(HashMap::from([(
+            "reviewer".into(),
+            live_reviewer_context(),
+        )]));
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "wrong-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_with_missing_bearer_is_401() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::tunnel::PEER_TOKEN_ID_HEADER,
+            "kid-2".parse().unwrap(),
+        );
+        let senders = StaticContexts(HashMap::new());
+        let err = resolve_caller_ingress(&headers, &[reviewer_admission()], &senders)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ingress_without_admission_config_is_403() {
+        let senders = StaticContexts(HashMap::new());
+        let err =
+            resolve_caller_ingress(&ingress_headers("kid-2", "reviewer-secret"), &[], &senders)
+                .await
+                .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_for_disconnected_peer_is_403() {
+        // Valid credentials, no live context at the config's route.
+        let senders = StaticContexts(HashMap::new());
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_token_mismatch_with_live_context_is_403() {
+        // Route is connected, but under a different token id: a second
+        // token valid for the same route must not be attested as the
+        // live principal.
+        let mut live = live_reviewer_context();
+        live.token_id = Some("kid-other".into());
+        live.peer_id = "peer-reviewer-kid-other".into();
+        let senders = StaticContexts(HashMap::from([("reviewer".into(), live)]));
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission()],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingress_ambiguous_across_routes_is_403() {
+        // One token id verified for two configs whose routes are both
+        // live under that token id → refuse rather than guess.
+        let second_admission = {
+            let mut config =
+                PeerAdmissionConfig::shared_token("reviewer-b", "kid-2", "reviewer-secret")
+                    .unwrap();
+            config.allowed_capabilities = PeerCapabilities::resource_read();
+            config
+        };
+        let second_live = AdmittedPeerConnection::token_bound(
+            "reviewer-b",
+            "kid-2",
+            Uuid::new_v4(),
+            "node-reviewer-10",
+            None,
+            PeerCapabilities::all(),
+            PeerCapabilities::resource_read(),
+        );
+        let senders = StaticContexts(HashMap::from([
+            ("reviewer".into(), live_reviewer_context()),
+            ("reviewer-b".into(), second_live),
+        ]));
+        let err = resolve_caller_ingress(
+            &ingress_headers("kid-2", "reviewer-secret"),
+            &[reviewer_admission(), second_admission],
+            &senders,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 }

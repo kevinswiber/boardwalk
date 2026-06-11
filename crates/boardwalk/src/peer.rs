@@ -999,11 +999,6 @@ impl PeerAcceptors {
     pub async fn active(&self) -> Vec<String> {
         self.inner.lock().await.keys().cloned().collect()
     }
-
-    #[allow(dead_code)]
-    pub(crate) async fn peer_context(&self, route_name: &str) -> Option<AdmittedPeerConnection> {
-        self.contexts.lock().await.get(route_name).cloned()
-    }
 }
 
 /// Cloud-side query forwarder. Implements `crate::http::PeerSenders` so
