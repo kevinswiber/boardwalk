@@ -55,6 +55,7 @@ pub use crate::runtime::{
     TransitionSpec,
 };
 pub use crate::server::Boardwalk;
+pub use crate::tunnel::PEER_TOKEN_ID_HEADER;
 
 pub mod prelude {
     //! One-stop authoring import for `Resource`/`Actor` implementors.

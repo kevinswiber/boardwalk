@@ -765,6 +765,14 @@ fn public_facade_exports_peer_admission_api() {
 }
 
 #[test]
+fn peer_token_id_header_is_a_crate_root_export() {
+    // Compile-time pin: the per-request ingress wire contract is
+    // spellable without hardcoding the header string, and its value is
+    // the same header the tunnel handshake already uses.
+    assert_eq!(boardwalk::PEER_TOKEN_ID_HEADER, "boardwalk-peer-token-id");
+}
+
+#[test]
 fn peer_internals_extended_negative_list() {
     let lib = read("crates/boardwalk/src/lib.rs");
     let blocks = pub_use_blocks(&lib);
