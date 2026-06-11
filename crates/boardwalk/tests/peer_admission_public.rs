@@ -64,6 +64,82 @@ impl Actor for Counter {
     }
 }
 
+/// Probe actor whose `report` transition echoes the caller provenance
+/// it observed, so end-to-end tests can assert what an embedded actor
+/// sees.
+#[derive(Default)]
+struct ProvenanceProbe;
+
+impl Resource for ProvenanceProbe {
+    fn spec(&self) -> ResourceSpec {
+        ResourceSpec {
+            kind: "provenance-probe".into(),
+            name: None,
+            labels: BTreeMap::new(),
+            property_schema: None,
+            streams: vec![],
+        }
+    }
+
+    fn snapshot<'a>(
+        &'a self,
+        _ctx: ResourceCtx,
+    ) -> DynFuture<'a, Result<ResourceSnapshot, ResourceError>> {
+        Box::pin(async move {
+            Ok(ResourceSnapshot {
+                id: "ignored".into(),
+                kind: "provenance-probe".into(),
+                name: None,
+                state: Some("ready".into()),
+                node: "test".into(),
+                properties: serde_json::Map::new(),
+                labels: BTreeMap::new(),
+                transitions: vec![],
+                streams: vec![],
+                revision: None,
+                metadata: serde_json::Map::new(),
+            })
+        })
+    }
+}
+
+impl Actor for ProvenanceProbe {
+    fn transition<'a>(
+        &'a mut self,
+        ctx: TransitionCtx,
+        name: &'a str,
+        _input: TransitionInput,
+    ) -> DynFuture<'a, Result<TransitionOutcome, TransitionError>> {
+        Box::pin(async move {
+            if name != "report" {
+                return Err(TransitionError::NotAllowed("unknown transition".into()));
+            }
+            let provenance = ctx.provenance();
+            let output = serde_json::json!({
+                "is_local": provenance.is_local(),
+                "forwarded_by": provenance.forwarded_by(),
+                "peer_is_some": provenance.peer().is_some(),
+            });
+            Ok(TransitionOutcome::Completed {
+                output: Some(output),
+                snapshot: ResourceSnapshot {
+                    id: "ignored".into(),
+                    kind: "provenance-probe".into(),
+                    name: None,
+                    state: Some("ready".into()),
+                    node: "test".into(),
+                    properties: serde_json::Map::new(),
+                    labels: BTreeMap::new(),
+                    transitions: vec![],
+                    streams: vec![],
+                    revision: None,
+                    metadata: serde_json::Map::new(),
+                },
+            })
+        })
+    }
+}
+
 #[test]
 fn admission_surface_is_spellable_from_the_crate_root() -> Result<(), PeerConfigError> {
     // The full consumer spelling from research 0002 q2's contract.
@@ -108,6 +184,115 @@ fn accept_peer_token_still_admits_at_resource_read_ceiling() {
     let _ = Boardwalk::new()
         .name("cloud")
         .accept_peer_token("hub", "kid-1", "secret");
+}
+
+/// Boots a cloud (token admission at `allow`) and a hub running the
+/// provenance probe (link requesting read + invoke). Returns
+/// `(cloud_addr, hub_addr, probe_resource_id)` once the link is live.
+async fn boot_probe_pair() -> (std::net::SocketAddr, std::net::SocketAddr, String) {
+    let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud_addr = cloud_listener.local_addr().unwrap();
+    let cloud = Boardwalk::new().name("cloud").accept_peer(
+        PeerAdmission::shared_token("hub", "kid-1", "secret")
+            .unwrap()
+            .allow([
+                PeerCapability::ResourceRead,
+                PeerCapability::TransitionInvoke,
+            ]),
+    );
+    tokio::spawn(cloud.listen_until_on(cloud_listener, std::future::pending()));
+
+    let hub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub_addr = hub_listener.local_addr().unwrap();
+    let hub = Boardwalk::new()
+        .name("hub")
+        .use_actor(ProvenanceProbe)
+        .link_peer(
+            PeerLink::new(format!("http://{cloud_addr}"), "hub")
+                .unwrap()
+                .token("kid-1", "secret")
+                .request_capabilities([
+                    PeerCapability::ResourceRead,
+                    PeerCapability::TransitionInvoke,
+                ]),
+        );
+    tokio::spawn(hub.listen_until_on(hub_listener, std::future::pending()));
+
+    // Poll until the cloud serves the hub's probe resource (no public
+    // link-established observation API), then return its id.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(response) =
+            reqwest::get(format!("http://{cloud_addr}/servers/hub/resources")).await
+            && response.status() == reqwest::StatusCode::OK
+        {
+            let body: serde_json::Value = response.json().await.unwrap();
+            if let Some(id) = body
+                .get("entities")
+                .and_then(|e| e.as_array())
+                .and_then(|entities| {
+                    entities.iter().find_map(|entity| {
+                        (entity.pointer("/properties/kind").and_then(|k| k.as_str())
+                            == Some("provenance-probe"))
+                        .then(|| entity.pointer("/properties/id")?.as_str())
+                        .flatten()
+                        .map(str::to_string)
+                    })
+                })
+            {
+                return (cloud_addr, hub_addr, id);
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cloud did not serve the hub probe resource within 10s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn forwarded_invoke_carries_gateway_provenance() {
+    let (cloud_addr, _hub_addr, id) = boot_probe_pair().await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{cloud_addr}/servers/hub/resources/{id}/transitions/report"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let output = body.get("output").expect("transition output");
+    assert_eq!(output["is_local"], serde_json::json!(false));
+    assert_eq!(output["forwarded_by"], serde_json::json!("cloud"));
+    // Anonymous public caller: the gateway has no admission state to
+    // attest, so the hub sees no admitted caller. This is the honest
+    // permanent outcome of this plan; populating the caller requires
+    // the M1.3 caller-ingress follow-on.
+    assert_eq!(output["peer_is_some"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn forged_provenance_headers_on_public_listener_are_ignored() {
+    let (_cloud_addr, hub_addr, id) = boot_probe_pair().await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{hub_addr}/resources/{id}/transitions/report"
+        ))
+        .header("x-boardwalk-forwarded-by", "cloud")
+        .header("boardwalk-caller-peer-id", "peer-fake")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let output = body.get("output").expect("transition output");
+    assert_eq!(output["is_local"], serde_json::json!(true));
+    assert_eq!(output["forwarded_by"], serde_json::Value::Null);
+    assert_eq!(output["peer_is_some"], serde_json::json!(false));
 }
 
 #[tokio::test]

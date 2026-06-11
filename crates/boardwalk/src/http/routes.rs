@@ -26,16 +26,19 @@ const RENDER_CAPABILITIES_HEADER: &str = "x-boardwalk-render-capabilities";
 
 // Gateway-attested caller identity on the forwarding hop. Attached in
 // `build_peer_forward_request` after sanitization strips all inbound
-// `x-boardwalk-*` headers, so values are unforgeable across the hop and
-// derive only from the gateway's own admission state. (Tunnel admission
-// headers — the dialer's self-asserted identity — live in `tunnel.rs`.)
-const CALLER_PEER_ID_HEADER: &str = "x-boardwalk-caller-peer-id";
-const CALLER_ROUTE_HEADER: &str = "x-boardwalk-caller-route";
-const CALLER_TOKEN_ID_HEADER: &str = "x-boardwalk-caller-token-id";
-const CALLER_NODE_ID_HEADER: &str = "x-boardwalk-caller-node-id";
-const CALLER_NODE_NAME_HEADER: &str = "x-boardwalk-caller-node-name";
-const CALLER_CAPABILITIES_HEADER: &str = "x-boardwalk-caller-capabilities";
-const CALLER_CONNECTION_ID_HEADER: &str = "x-boardwalk-caller-connection-id";
+// `x-boardwalk-*`/`boardwalk-*` headers, so values are unforgeable
+// across the hop and derive only from the gateway's own admission
+// state. New headers are unprefixed per RFC 6648; the shipped
+// `x-boardwalk-*` names predate it and keep their wire format. (Tunnel
+// admission headers — the dialer's self-asserted identity — live in
+// `tunnel.rs`.)
+const CALLER_PEER_ID_HEADER: &str = "boardwalk-caller-peer-id";
+const CALLER_ROUTE_HEADER: &str = "boardwalk-caller-route";
+const CALLER_TOKEN_ID_HEADER: &str = "boardwalk-caller-token-id";
+const CALLER_NODE_ID_HEADER: &str = "boardwalk-caller-node-id";
+const CALLER_NODE_NAME_HEADER: &str = "boardwalk-caller-node-name";
+const CALLER_CAPABILITIES_HEADER: &str = "boardwalk-caller-capabilities";
+const CALLER_CONNECTION_ID_HEADER: &str = "boardwalk-caller-connection-id";
 
 /// Callback invoked after a successful peer WS upgrade. The runtime
 /// supplies this when peering is enabled.
@@ -446,6 +449,7 @@ fn should_forward_header(name: &http::HeaderName, connection_headers: &HashSet<S
     if name.starts_with("proxy-")
         || name.starts_with("x-forwarded-")
         || name.starts_with("x-boardwalk-")
+        || name.starts_with("boardwalk-")
         || name.starts_with("sec-websocket-")
     {
         return false;
@@ -1756,6 +1760,55 @@ mod tests {
     use crate::runtime::{AcceptedJob, NodeBuilder};
 
     #[test]
+    fn provenance_is_local_without_tunnel_marker_even_with_attested_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert("boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
+        let provenance = caller_provenance(&Extensions::new(), &headers);
+        assert!(provenance.is_local());
+        assert!(provenance.peer().is_none());
+    }
+
+    #[test]
+    fn provenance_is_forwarded_with_tunnel_marker() {
+        let mut extensions = Extensions::new();
+        extensions.insert(TunnelLeg);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        let provenance = caller_provenance(&extensions, &headers);
+        assert_eq!(provenance.forwarded_by(), Some("cloud"));
+        assert!(provenance.peer().is_none()); // anonymous caller
+    }
+
+    #[test]
+    fn provenance_carries_attested_caller_over_tunnel_leg() {
+        let mut extensions = Extensions::new();
+        extensions.insert(TunnelLeg);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-boardwalk-forwarded-by", "cloud".parse().unwrap());
+        headers.insert(
+            "boardwalk-caller-peer-id",
+            "peer-reviewer-respond-rs-1".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-route",
+            "reviewer-respond".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-capabilities",
+            "resource.read,transition.invoke".parse().unwrap(),
+        );
+        headers.insert(
+            "boardwalk-caller-connection-id",
+            "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+        );
+        let provenance = caller_provenance(&extensions, &headers);
+        let peer = provenance.peer().expect("attested caller");
+        assert_eq!(peer.peer_id(), "peer-reviewer-respond-rs-1");
+        assert!(peer.has_capability(crate::peer::PeerCapability::TransitionInvoke));
+    }
+
+    #[test]
     fn forward_request_attaches_caller_headers_from_admission_state() {
         let caller = AdmittedPeerConnection::token_bound(
             "reviewer-respond",
@@ -1783,23 +1836,23 @@ mod tests {
         .unwrap();
         let h = req.headers();
         assert_eq!(
-            h.get("x-boardwalk-caller-peer-id").unwrap(),
+            h.get("boardwalk-caller-peer-id").unwrap(),
             "peer-reviewer-respond-rs-1"
         );
         assert_eq!(
-            h.get("x-boardwalk-caller-node-id").unwrap(),
+            h.get("boardwalk-caller-node-id").unwrap(),
             "node-reviewer-9"
         );
         assert_eq!(
-            h.get("x-boardwalk-caller-route").unwrap(),
+            h.get("boardwalk-caller-route").unwrap(),
             "reviewer-respond"
         );
-        assert_eq!(h.get("x-boardwalk-caller-token-id").unwrap(), "rs-1");
+        assert_eq!(h.get("boardwalk-caller-token-id").unwrap(), "rs-1");
         assert_eq!(
-            h.get("x-boardwalk-caller-capabilities").unwrap(),
+            h.get("boardwalk-caller-capabilities").unwrap(),
             "resource.read"
         );
-        assert!(h.get("x-boardwalk-caller-connection-id").is_some());
+        assert!(h.get("boardwalk-caller-connection-id").is_some());
     }
 
     #[test]
@@ -1819,17 +1872,17 @@ mod tests {
             Body::empty(),
         )
         .unwrap();
-        assert!(req.headers().get("x-boardwalk-caller-peer-id").is_none());
+        assert!(req.headers().get("boardwalk-caller-peer-id").is_none());
     }
 
     #[test]
     fn inbound_caller_headers_are_stripped_before_attestation() {
-        // A public caller trying to smuggle x-boardwalk-caller-* through
+        // A public caller trying to smuggle boardwalk-caller-* through
         // the gateway must be stripped by the existing sanitization, and
         // with an anonymous caller nothing is re-attached.
         let uri: Uri = "/servers/hub/resources".parse().unwrap();
         let mut headers = HeaderMap::new();
-        headers.insert("x-boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
+        headers.insert("boardwalk-caller-peer-id", "peer-fake".parse().unwrap());
         let req = build_peer_forward_request(
             ForwardAttestation {
                 gateway_name: "cloud",
@@ -1843,7 +1896,7 @@ mod tests {
             Body::empty(),
         )
         .unwrap();
-        assert!(req.headers().get("x-boardwalk-caller-peer-id").is_none());
+        assert!(req.headers().get("boardwalk-caller-peer-id").is_none());
     }
 
     #[tokio::test]
