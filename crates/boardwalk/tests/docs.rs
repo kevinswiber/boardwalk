@@ -532,6 +532,33 @@ fn peers_doc_documents_the_admission_tracing_contract() {
 }
 
 #[test]
+fn peers_doc_describes_caller_ingress() {
+    let s = read("docs/peers.md");
+    for required in [
+        "boardwalk-peer-token-id",
+        "PEER_TOKEN_ID_HEADER",
+        "Caller Ingress",
+        "live",
+        "401",
+        "caller capability denied",
+        "caller peer is not connected",
+        "`kind` (`admission` | `capability` | `ingress`)",
+    ] {
+        assert!(
+            s.contains(required),
+            "peers.md should document `{required}`"
+        );
+    }
+    // The pre-ingress honesty statements are now false:
+    for stale in ["the gateway has no admission state for", "anonymous today"] {
+        assert!(
+            !s.contains(stale),
+            "peers.md must not retain stale claim `{stale}`"
+        );
+    }
+}
+
+#[test]
 fn public_docs_do_not_overclaim_federation_or_enterprise_auth() {
     let s = public_docs(PUBLIC_DOCS);
     for forbidden in [

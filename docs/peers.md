@@ -209,21 +209,97 @@ where the invocation came from, as far as the serving node can verify:
 The trust rule: forwarded/attested caller headers are honored only when
 the request arrived over a tunnel this node itself dialed. Forged
 headers on a public listener are ignored. Public HTTP callers reaching
-a gateway are anonymous today — the gateway has no admission state for
-them, so downstream nodes see `peer() == None`. Resource reads
-(`ResourceCtx`) do not carry provenance in this release.
+a gateway are anonymous — downstream nodes see `peer() == None` —
+unless they present admission credentials per the Caller Ingress
+section below. Resource reads (`ResourceCtx`) do not carry provenance
+in this release.
+
+## Caller Ingress
+
+An admitted peer — one that dialed in under token-bound admission and
+holds a live tunnel — can place ordinary HTTP requests at the gateway
+that carry its admission context. The caller attaches the same
+credential pair the handshake uses, per request:
+
+```text
+boardwalk-peer-token-id: <token-id>
+Authorization: Bearer <secret>
+```
+
+The header name is exported as `boardwalk::PEER_TOKEN_ID_HEADER` so
+consumers never hardcode the string. The gateway verifies the
+credentials against its configured admissions, resolves the live
+admitted context for the verified route, and forwards the request with
+the attested caller identity; downstream transition handlers see it via
+`TransitionCtx::provenance().peer()`.
+
+Presenting `boardwalk-peer-token-id` opts the request into
+authentication, fail-closed:
+
+- Missing or unknown credentials → `401` (`missing bearer token`,
+  `unknown peer token id`, `invalid bearer token`).
+- Admission not configured → `403` (`peer admission is not configured`).
+- Valid credentials but no live tunnel under that token at the
+  configured route → `403` (`caller peer is not connected`).
+- One token id valid for more than one live route → `403`
+  (`ambiguous caller admission`) — refused rather than guessed.
+
+There is no anonymous fallback once the header is present. Requests
+without the header stay anonymous (`peer() == None` downstream) —
+unchanged behavior.
+
+The live-tunnel requirement is what keeps the attestation honest:
+negotiated capabilities are a handshake product (requested ∩ allowed)
+and the connection identity is real, so nothing is synthesized
+per-request. A configured-but-disconnected peer is refused.
+
+Capability composition: a forwarded request passes two ceilings — the
+caller's negotiated set and the target link's negotiated set — enforced
+as two sequential gates. A read-only caller cannot invoke transitions
+through the gateway (`403` with `caller capability denied`), no matter
+what the target link negotiated.
+
+Caller credentials never cross the forwarding hop: sanitization strips
+`Authorization` and all `boardwalk-*` headers before the gateway stamps
+its own attestation.
+
+Boundaries, stated plainly:
+
+- Ingress applies to the gateway *forwarding* path only. A credentialed
+  request whose target is the gateway node itself keeps local
+  provenance.
+- Streams and WebSocket subscriptions carry no caller attestation in
+  this release.
+- Unauthenticated opt-in peers (`allow_unauthenticated_local_peers`)
+  have no credential to present and cannot use caller ingress; the
+  mechanism requires token-bound admission.
+- Which actor identities a caller may write *as* is gateway-consumer
+  policy (for example a relay's peer-to-actor binding rules), not
+  boardwalk's.
 
 ## Observability
 
-Every admission and capability deny decision emits one structured
-`tracing` event at the stable target `boardwalk::admission` (level
-`warn`). Stable fields: `kind` (`admission` | `capability`), `route`,
-`reason`, `status`, plus `token_id`, `node_id`, `connection_id`,
-`intent`, and `negotiated` where known. The empty-intersection refusal
-also logs `requested` and `allowed` capability names — log-side only;
-the wire body stays generic. Alert on repeated `unknown peer token id`
-(credential guessing), `peer node id mismatch` (token-theft signal),
-and denied `transition.invoke` intents (probing the operative path).
+Every admission, capability, and caller ingress deny decision emits one
+structured `tracing` event at the stable target `boardwalk::admission`
+(level `warn`). Stable fields:
+`kind` (`admission` | `capability` | `ingress`), `route`, `reason`,
+`status`, plus `token_id`, `node_id`, `connection_id`, `intent`, and
+`negotiated` where known. The
+empty-intersection refusal also logs `requested` and `allowed`
+capability names — log-side only; the wire body stays generic.
+
+Ingress credential denials (`kind = "ingress"`) always carry `token_id`
+(the engagement signal) and carry `route` once a verified admission
+names one; they never enumerate capabilities. Caller-side capability
+denials reuse `kind = "capability"` with a `caller` field carrying the
+attested `peer_id`, distinguishing them from target-side denials.
+
+Alert on repeated `unknown peer token id` (credential guessing),
+`peer node id mismatch` (token-theft signal), and denied
+`transition.invoke` intents (probing the operative path). Repeated
+`kind = "ingress"` with `invalid bearer token` is credential guessing
+against a live route; `caller peer is not connected` churn flags a
+flapping reviewer link.
 
 ## Node Identity
 
