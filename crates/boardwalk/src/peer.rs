@@ -364,6 +364,22 @@ impl PeerAdmissionConfig {
     }
 }
 
+/// Explicit opt-in policy for admitting peers without token-bound
+/// admission. Local development only; the capability ceiling is the
+/// allowed and negotiated set for every unauthenticated peer.
+#[derive(Debug, Clone)]
+pub(crate) struct UnauthenticatedPeerPolicy {
+    pub allowed_capabilities: PeerCapabilities,
+}
+
+impl UnauthenticatedPeerPolicy {
+    pub(crate) fn local_development() -> Self {
+        Self {
+            allowed_capabilities: PeerCapabilities::all(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct PeerLinkConfig {
@@ -392,21 +408,6 @@ impl PeerLinkConfig {
             local_node_id: None,
             local_node_name: None,
             requested_capabilities: PeerCapabilities::resource_read(),
-        })
-    }
-
-    pub(crate) fn local_development(
-        gateway_url: Url,
-        route_name: impl Into<String>,
-    ) -> Result<Self, PeerModelError> {
-        Ok(Self {
-            gateway_url,
-            route_name: RouteName::new(route_name)?,
-            token_id: None,
-            token_secret: None,
-            local_node_id: None,
-            local_node_name: None,
-            requested_capabilities: PeerCapabilities::all(),
         })
     }
 
@@ -454,7 +455,11 @@ pub(crate) struct AdmittedPeerConnection {
 
 #[allow(dead_code)]
 impl AdmittedPeerConnection {
-    pub(crate) fn local_development(route_name: impl Into<String>, connection_id: Uuid) -> Self {
+    pub(crate) fn unauthenticated(
+        route_name: impl Into<String>,
+        connection_id: Uuid,
+        allowed_capabilities: PeerCapabilities,
+    ) -> Self {
         let route_name = route_name.into();
         Self {
             peer_id: format!("peer-{route_name}"),
@@ -463,8 +468,8 @@ impl AdmittedPeerConnection {
             connection_id,
             node_id: None,
             display_name: None,
-            allowed_capabilities: PeerCapabilities::all(),
-            negotiated_capabilities: PeerCapabilities::all(),
+            allowed_capabilities,
+            negotiated_capabilities: allowed_capabilities,
         }
     }
 
@@ -963,6 +968,12 @@ mod peer_model_tests {
                 "route name {name:?} should be accepted"
             );
         }
+    }
+
+    #[test]
+    fn unauthenticated_peer_policy_local_development_ceiling_is_explicit_full_set() {
+        let policy = UnauthenticatedPeerPolicy::local_development();
+        assert_eq!(policy.allowed_capabilities, PeerCapabilities::all());
     }
 
     #[test]

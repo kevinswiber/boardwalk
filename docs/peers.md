@@ -20,7 +20,17 @@ identity.
 ## How the Link Is Established
 
 1. For local development, the hub can do
-   `Boardwalk::new().link("https://cloud.example.com")`.
+   `Boardwalk::new().link("https://cloud.example.com")`, and the
+   accepting cloud must opt in to unauthenticated peers:
+
+   ```rust,ignore
+   // accepting side (cloud), local development only
+   Boardwalk::new()
+       .name("cloud")
+       .allow_unauthenticated_local_peers()
+       .listen("127.0.0.1:1337".parse()?)
+       .await?
+   ```
 2. The hub opens a WebSocket to `wss://cloud.example.com/peers/<route-name>`
    with the `boardwalk-peer/3` subprotocol token.
 3. Token-bound peer links send `Authorization: Bearer <token>`,
@@ -61,8 +71,18 @@ They are used for admission checks and are not persisted into peer
 records. A token is bound to a route name; an admission policy can also
 require the expected node id presented during the upgrade.
 
-The public `.link(...)` convenience remains a trusted local-development
-peer initiator. At present, public outbound token-bound links are not available yet;
+A cloud with no admission configuration refuses every peer upgrade with
+`403` and the body `peer admission is not configured`, before the
+WebSocket upgrade completes. `allow_unauthenticated_local_peers()` is
+the explicit local-development opt-in: every admitted unauthenticated
+peer receives the local-development capability ceiling (currently the
+full capability set) as both its allowed and negotiated capabilities.
+The opt-in applies only while no token admission is configured; once any
+`accept_peer_token` entry exists, token-bound admission is required for
+all peers.
+
+The public `.link(...)` convenience is a trusted local-development peer
+initiator and pairs with an opted-in cloud. At present, public outbound token-bound links are not available yet;
 a cloud exposed beyond a trusted development environment should use token admission
 and TLS, and should reject unknown peers before the WebSocket upgrade completes.
 
@@ -192,7 +212,8 @@ on forwarded calls until the hub reconnects.
 
 ## Graceful Shutdown
 
-For local-development peer shutdown wiring:
+For local-development peer shutdown wiring (the cloud at
+`127.0.0.1:1337` opts in with `allow_unauthenticated_local_peers()`):
 
 ```rust,ignore
 Boardwalk::new()

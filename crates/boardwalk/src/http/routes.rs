@@ -15,7 +15,9 @@ use uuid::Uuid;
 use super::core::{Core, ResourceReadError, ResourceTransitionError, now_ms};
 use super::render::{self, Hrefs};
 use crate::events::{NodeId, Segment, SlowConsumerPolicy, StreamId, SubscribeOpts, TopicPattern};
-use crate::peer::{AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities};
+use crate::peer::{
+    AdmittedPeerConnection, PeerAdmissionConfig, PeerCapabilities, UnauthenticatedPeerPolicy,
+};
 use crate::query::QueryScope;
 use crate::runtime::{RequestCtx, TransitionInput, TransitionOutcome};
 use crate::siren::SIREN_CONTENT_TYPE;
@@ -103,6 +105,7 @@ pub(crate) struct AppState {
     pub peer_senders: Option<Arc<dyn PeerSenders>>,
     pub peer_streams: super::peer_streams::PeerStreamHub,
     pub peer_admission: Arc<Vec<PeerAdmissionConfig>>,
+    pub unauthenticated_local_peers: Option<UnauthenticatedPeerPolicy>,
     pub resource_registrar: Option<ResourceRegistrar>,
 }
 
@@ -115,6 +118,7 @@ pub fn router(core: Arc<Core>) -> Router {
         peer_senders: None,
         peer_streams: super::peer_streams::PeerStreamHub::new(),
         peer_admission: Arc::new(Vec::new()),
+        unauthenticated_local_peers: None,
         resource_registrar: None,
     })
 }
@@ -1486,6 +1490,7 @@ async fn peers_upgrade(
         connection_id,
         req.headers(),
         &state.peer_admission,
+        state.unauthenticated_local_peers.as_ref(),
     ) {
         Ok(admitted) => admitted,
         Err(response) => return *response,
@@ -1525,11 +1530,19 @@ fn admit_peer_connection(
     connection_id: Uuid,
     headers: &HeaderMap,
     admissions: &[PeerAdmissionConfig],
+    unauthenticated: Option<&UnauthenticatedPeerPolicy>,
 ) -> Result<AdmittedPeerConnection, Box<Response>> {
     if admissions.is_empty() {
-        return Ok(AdmittedPeerConnection::local_development(
+        let Some(policy) = unauthenticated else {
+            return Err(admission_error(
+                StatusCode::FORBIDDEN,
+                "peer admission is not configured",
+            ));
+        };
+        return Ok(AdmittedPeerConnection::unauthenticated(
             peer_name.to_string(),
             connection_id,
+            policy.allowed_capabilities,
         ));
     }
 
@@ -2007,7 +2020,9 @@ mod tests {
         }
 
         async fn peer_context(&self, name: &str) -> Option<AdmittedPeerConnection> {
-            (name == "hub").then(|| AdmittedPeerConnection::local_development("hub", Uuid::nil()))
+            (name == "hub").then(|| {
+                AdmittedPeerConnection::unauthenticated("hub", Uuid::nil(), PeerCapabilities::all())
+            })
         }
     }
 
@@ -2065,6 +2080,7 @@ mod tests {
             peer_senders: Some(peer_senders),
             peer_streams: super::super::peer_streams::PeerStreamHub::new(),
             peer_admission: Arc::new(Vec::new()),
+            unauthenticated_local_peers: None,
             resource_registrar: None,
         }
     }

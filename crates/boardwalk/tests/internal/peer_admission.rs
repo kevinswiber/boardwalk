@@ -103,6 +103,131 @@ async fn peer_upgrade_without_admission_token_is_rejected_before_upgrade() {
 }
 
 #[tokio::test]
+async fn builder_opt_in_carries_unauthenticated_policy_into_built_state() {
+    let built = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
+
+    let policy = built
+        .unauthenticated_local_peers
+        .as_ref()
+        .expect("opt-in stores the unauthenticated peer policy");
+    assert_eq!(policy.allowed_capabilities, PeerCapabilities::all());
+
+    let default_built = Boardwalk::new().name("cloud").build().unwrap();
+    assert!(default_built.unauthenticated_local_peers.is_none());
+}
+
+#[tokio::test]
+async fn peer_upgrade_without_admission_config_is_refused_before_upgrade() {
+    // Cloud with no admission config and no unauthenticated opt-in:
+    // every peer upgrade must be refused before 101.
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .without_token(),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::FORBIDDEN);
+    assert_denied_without_websocket_upgrade_headers(&upgrade);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn linked_hub_is_not_confirmed_by_cloud_without_admission_config() {
+    let cloud = serve(Boardwalk::new().name("cloud")).await;
+
+    // End-to-end `.link()` flow: the hub dials, the cloud must refuse.
+    let _hub = Boardwalk::new()
+        .name("hub")
+        .link(format!("http://{}", cloud.addr))
+        .build()
+        .unwrap();
+
+    assert!(
+        !cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_millis(750))
+            .await,
+        "cloud must not confirm an unauthenticated peer without explicit opt-in"
+    );
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
+async fn opted_in_cloud_admits_linked_hub_with_local_development_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry_path = dir.path().join("boardwalk.redb");
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .persist(&registry_path)
+            .allow_unauthenticated_local_peers(),
+    )
+    .await;
+
+    let _hub = Boardwalk::new()
+        .name("hub")
+        .link(format!("http://{}", cloud.addr))
+        .build()
+        .unwrap();
+
+    assert!(
+        cloud
+            .built
+            .acceptors
+            .wait_for_first(Duration::from_secs(5))
+            .await,
+        "opted-in cloud should confirm the unauthenticated local peer"
+    );
+
+    // The grant comes from the policy's explicit ceiling, not an
+    // implicit constant: allowed and negotiated are the full set.
+    let connection = cloud
+        .built
+        .repositories()
+        .unwrap()
+        .peer_connection_status()
+        .latest_by_route("hub")
+        .unwrap()
+        .expect("peer connection");
+    assert_eq!(connection.negotiated_capabilities, PeerCapabilities::all());
+}
+
+#[tokio::test]
+async fn opt_in_does_not_bypass_configured_token_admission() {
+    // Both opt-in AND a token config: token admission must still be
+    // required; the opt-in only applies when no admission is configured.
+    let cloud = serve(
+        Boardwalk::new()
+            .name("cloud")
+            .allow_unauthenticated_local_peers()
+            .expect_peer_token("hub", "kid-1", "secret"),
+    )
+    .await;
+
+    let upgrade = raw_peer_upgrade(
+        cloud.addr,
+        PeerUpgradeAttempt::new("hub", Uuid::new_v4())
+            .node_id("node-hub-1")
+            .request_capabilities(["resource.read"])
+            .without_token(),
+    )
+    .await;
+
+    assert_eq!(upgrade.status, StatusCode::UNAUTHORIZED);
+    assert_no_peer_sender_registered(&cloud.built, "hub").await;
+}
+
+#[tokio::test]
 async fn peer_upgrade_with_wrong_bearer_token_is_rejected_before_upgrade() {
     let cloud = serve(
         Boardwalk::new()

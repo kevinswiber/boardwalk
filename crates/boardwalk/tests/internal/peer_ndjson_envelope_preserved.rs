@@ -19,7 +19,11 @@ struct Pair {
 }
 
 async fn boot_pair() -> Pair {
-    let cloud = Boardwalk::new().name("cloud").build().unwrap();
+    let cloud = Boardwalk::new()
+        .name("cloud")
+        .allow_unauthenticated_local_peers()
+        .build()
+        .unwrap();
     let cloud_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cloud_addr = cloud_listener.local_addr().unwrap();
     let cloud_acceptors = cloud.acceptors.clone();
