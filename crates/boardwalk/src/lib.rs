@@ -36,6 +36,7 @@ mod peer;
 mod persistence;
 pub mod query;
 pub mod runtime;
+mod secret;
 mod server;
 mod siren;
 mod tunnel;

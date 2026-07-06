@@ -17,8 +17,9 @@ use super::actor_led_fixture::ActorLed;
 use crate::Boardwalk;
 
 /// Stand up an HTTPS listener wrapping `router` with a self-signed cert
-/// for "localhost"/"127.0.0.1". Returns its address.
-async fn serve_tls(router: axum::Router) -> SocketAddr {
+/// for "localhost"/"127.0.0.1". Returns its address. Shared with the
+/// forward-proxy tests (`proxy.rs`) for their `wss`-through-CONNECT case.
+pub(super) async fn serve_tls(router: axum::Router) -> SocketAddr {
     // Install the rustls crypto provider once for the test process.
     let _ = rustls::crypto::CryptoProvider::install_default(
         rustls::crypto::aws_lc_rs::default_provider(),

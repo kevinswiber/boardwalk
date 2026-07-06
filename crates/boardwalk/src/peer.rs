@@ -22,6 +22,8 @@ use crate::persistence::{
     DefaultRepositories, PeerConfigRecord, PeerConnectionDirection, PeerConnectionStatusRecord,
     Repositories,
 };
+use crate::secret::RedactedSecret;
+use crate::tunnel::{ProxyAuth, ProxyConfig, ProxySelection};
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -367,6 +369,10 @@ pub enum PeerConfigError {
     /// The capability name is not one of the canonical dotted names.
     #[error("unknown peer capability: `{0}`")]
     UnknownCapability(String),
+    /// The forward-proxy URL did not parse or uses an unsupported
+    /// scheme (only `http://` CONNECT proxies are supported).
+    #[error("invalid proxy url: {0}")]
+    InvalidProxyUrl(String),
 }
 
 impl From<PeerModelError> for PeerConfigError {
@@ -485,6 +491,30 @@ impl PeerLink {
         capabilities: impl IntoIterator<Item = PeerCapability>,
     ) -> Self {
         self.inner.requested_capabilities = PeerCapabilities::from_capabilities(capabilities);
+        self
+    }
+
+    /// Dial the gateway through this HTTP CONNECT forward proxy
+    /// (e.g. `http://proxy.internal:3128`) instead of consulting the
+    /// `HTTPS_PROXY`/`HTTP_PROXY` env vars. Only `http://` proxy URLs
+    /// are supported. Credentials embedded as URL userinfo are
+    /// accepted but stripped at parse time and held redacted; prefer
+    /// [`PeerLink::proxy_auth`], which keeps them out of URL strings
+    /// entirely.
+    ///
+    /// Fails if the URL does not parse or uses another scheme.
+    pub fn proxy(mut self, url: impl AsRef<str>) -> Result<Self, PeerConfigError> {
+        self.inner = self.inner.proxy(url)?;
+        Ok(self)
+    }
+
+    /// Send these credentials as `Proxy-Authorization: Basic ...` on
+    /// the proxy CONNECT request. Applies to whichever proxy is
+    /// selected — [`PeerLink::proxy`] or the conventional env vars —
+    /// and overrides credentials embedded in a proxy URL.
+    #[must_use]
+    pub fn proxy_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.inner = self.inner.proxy_auth(username, password);
         self
     }
 
@@ -620,10 +650,11 @@ pub(crate) struct PeerLinkConfig {
     pub gateway_url: Url,
     pub route_name: RouteName,
     pub token_id: Option<String>,
-    pub token_secret: Option<String>,
+    pub token_secret: Option<RedactedSecret>,
     pub local_node_id: Option<crate::events::NodeId>,
     pub local_node_name: Option<String>,
     pub requested_capabilities: PeerCapabilities,
+    pub proxy: ProxySelection,
 }
 
 #[allow(dead_code)]
@@ -642,12 +673,32 @@ impl PeerLinkConfig {
             local_node_id: None,
             local_node_name: None,
             requested_capabilities: PeerCapabilities::resource_read(),
+            proxy: ProxySelection::default(),
         })
     }
 
     pub(crate) fn token(mut self, token_id: impl Into<String>, secret: impl Into<String>) -> Self {
         self.token_id = Some(token_id.into());
-        self.token_secret = Some(secret.into());
+        self.token_secret = Some(RedactedSecret::new(secret));
+        self
+    }
+
+    pub(crate) fn proxy(mut self, url: impl AsRef<str>) -> Result<Self, PeerConfigError> {
+        self.proxy.explicit = Some(
+            ProxyConfig::from_url_str(url.as_ref()).map_err(PeerConfigError::InvalidProxyUrl)?,
+        );
+        Ok(self)
+    }
+
+    pub(crate) fn proxy_auth(
+        mut self,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        self.proxy.auth = Some(ProxyAuth {
+            username: username.into(),
+            password: RedactedSecret::new(password),
+        });
         self
     }
 
@@ -767,6 +818,7 @@ pub(crate) struct PeerClient {
     pub router: Router,
     pub peer_init: PeerInitState,
     admission: Option<PeerLinkConfig>,
+    proxy: ProxySelection,
     pub shutdown: Arc<tokio::sync::Notify>,
 }
 
@@ -783,6 +835,7 @@ impl PeerClient {
             router,
             peer_init,
             admission: None,
+            proxy: ProxySelection::default(),
             shutdown: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -797,6 +850,7 @@ impl PeerClient {
             local_name: link.route_name.as_str().to_string(),
             router,
             peer_init,
+            proxy: link.proxy.clone(),
             admission: Some(link),
             shutdown: Arc::new(tokio::sync::Notify::new()),
         }
@@ -853,11 +907,11 @@ impl PeerClient {
             .map(|link| link.requested_capabilities.to_string());
         let admission = self.admission.as_ref().and_then(|link| {
             let token_id = link.token_id.as_deref()?;
-            let token_secret = link.token_secret.as_deref()?;
+            let token_secret = link.token_secret.as_ref()?;
             let node_id = link.local_node_id.as_ref()?;
             Some(crate::tunnel::InitiatorAdmission {
                 token_id,
-                token_secret,
+                token_secret: token_secret.expose(),
                 node_id: node_id.as_str(),
                 node_name: link.local_node_name.as_deref(),
                 requested_capabilities: requested_capabilities.as_deref().unwrap_or_default(),
@@ -868,6 +922,7 @@ impl PeerClient {
             &self.local_name,
             connection_id,
             admission,
+            &self.proxy,
         )
         .await?;
         let service = self.router.clone().into_service::<hyper::body::Incoming>();
@@ -1351,6 +1406,60 @@ mod peer_model_tests {
                 .requested_capabilities
                 .contains(PeerCapabilities::transition_invoke())
         );
+    }
+
+    #[test]
+    fn peer_link_debug_redacts_the_token_secret() {
+        let link = PeerLink::new("ws://127.0.0.1:4444", "hub")
+            .unwrap()
+            .token("kid-1", "s3cret-token");
+        let debug = format!("{link:?}");
+        assert!(!debug.contains("s3cret-token"), "leaked: {debug}");
+        assert!(debug.contains("redacted"), "not redacted: {debug}");
+    }
+
+    #[test]
+    fn peer_link_proxy_strips_and_redacts_url_credentials() {
+        let link = PeerLink::new("wss://cloud.example.com", "hub")
+            .unwrap()
+            .proxy("http://svc:hunter2@proxy.internal:3128")
+            .unwrap();
+        let debug = format!("{link:?}");
+        assert!(!debug.contains("hunter2"), "leaked: {debug}");
+        let proxy = link.into_inner().proxy;
+        let explicit = proxy.explicit.expect("explicit proxy");
+        assert_eq!(explicit.host, "proxy.internal");
+        assert_eq!(explicit.port, 3128);
+        assert_eq!(
+            explicit.auth.as_ref().map(|a| a.username.as_str()),
+            Some("svc")
+        );
+    }
+
+    #[test]
+    fn peer_link_proxy_auth_is_redacted_in_debug() {
+        let link = PeerLink::new("wss://cloud.example.com", "hub")
+            .unwrap()
+            .proxy("http://proxy.internal:3128")
+            .unwrap()
+            .proxy_auth("svc", "hunter2");
+        let debug = format!("{link:?}");
+        assert!(!debug.contains("hunter2"), "leaked: {debug}");
+        assert!(link.into_inner().proxy.auth.is_some());
+    }
+
+    #[test]
+    fn peer_link_rejects_non_http_proxy_urls() {
+        for url in ["https://proxy.internal:3128", "socks5://proxy:1080", "%%%"] {
+            let err = PeerLink::new("wss://cloud.example.com", "hub")
+                .unwrap()
+                .proxy(url)
+                .unwrap_err();
+            assert!(
+                matches!(err, PeerConfigError::InvalidProxyUrl(_)),
+                "{url} should be rejected, got: {err}"
+            );
+        }
     }
 
     #[test]

@@ -20,6 +20,8 @@ mod peer_event_wire_shape;
 mod peer_ndjson_envelope_preserved;
 #[path = "../tests/internal/peer_resources.rs"]
 mod peer_resources;
+#[path = "../tests/internal/proxy.rs"]
+mod proxy;
 #[path = "../tests/internal/resource_actor_http_core.rs"]
 mod resource_actor_http_core;
 #[path = "../tests/internal/resource_event_wire_shape.rs"]

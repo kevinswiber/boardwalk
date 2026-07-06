@@ -559,6 +559,28 @@ fn peers_doc_describes_caller_ingress() {
 }
 
 #[test]
+fn peers_doc_describes_forward_proxy_traversal() {
+    let s = read("docs/peers.md");
+    for required in [
+        "Forward Proxies",
+        "CONNECT",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "proxy_auth",
+        "Proxy-Authorization",
+        // The protocol note: raw HTTP/2 after the 101 survives a
+        // CONNECT tunnel but may not survive a WS-aware L7 proxy.
+        "RFC 6455 frames after the upgrade",
+    ] {
+        assert!(
+            s.contains(required),
+            "peers.md should document `{required}`"
+        );
+    }
+}
+
+#[test]
 fn public_docs_do_not_overclaim_federation_or_enterprise_auth() {
     let s = public_docs(PUBLIC_DOCS);
     for forbidden in [

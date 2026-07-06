@@ -403,6 +403,49 @@ For tests with self-signed certs, the `boardwalk-tunnel` crate has a
 `dangerous-test-tls` feature that disables verification. Never turn this
 on in production.
 
+## Forward Proxies
+
+Outbound peer dials can traverse an HTTP CONNECT forward proxy — the
+egress mode mandated by many sandboxed and corporate networks. The
+dialer opens a TCP connection to the proxy, issues
+`CONNECT host:port`, and on a `200` runs the usual TLS wrap and
+WebSocket upgrade over the tunneled stream.
+
+Configuration, in precedence order:
+
+1. Explicit: `.proxy("http://proxy.internal:3128")` on `PeerLink`.
+   Only `http://` proxy URLs are supported; the CONNECT leg is
+   plaintext to the proxy, the standard shape for egress proxies
+   inside a trusted network boundary.
+2. Conventional env vars: `HTTPS_PROXY` for `wss`/`https` gateway
+   URLs, `HTTP_PROXY` for `ws`/`http` (lowercase variants accepted).
+   `NO_PROXY` is a comma-separated bypass list — `*` bypasses
+   everything, and each entry matches its exact host plus any
+   subdomain (`example.com` covers both `example.com` and
+   `api.example.com`). Loopback gateways are never proxied via env
+   vars, so a globally exported proxy cannot capture local-development
+   dials; an explicit `.proxy(...)` is always honored as configured.
+
+Credentials are sent as `Proxy-Authorization: Basic ...` on the
+CONNECT request. Prefer `.proxy_auth(user, pass)` over embedding
+credentials in the proxy URL: URL userinfo (common in `HTTPS_PROXY`
+values) is accepted, but it is stripped at parse time and held
+redacted, so neither `Debug` output nor logs can emit it.
+
+```rust,ignore
+PeerLink::new("wss://cloud.example.com", "hub")?
+    .token("token-id", std::env::var("BOARDWALK_HUB_TOKEN")?)
+    .proxy("http://proxy.internal:3128")?
+    .proxy_auth("svc-hub", std::env::var("BOARDWALK_PROXY_PASSWORD")?)
+```
+
+A note on proxy compatibility: after the `101` upgrade, boardwalk
+drops WebSocket framing and speaks HTTP/2 directly over the stream.
+Inside a CONNECT (or TLS) tunnel those bytes are opaque, so this works
+unchanged. A WebSocket-aware or TLS-terminating L7 proxy that expects
+RFC 6455 frames after the upgrade may not pass the stream through —
+route peer dials through a plain CONNECT proxy.
+
 ## Reconnect Behavior
 
 The hub's peer client runs in a loop with backoff: connect, run until
