@@ -59,10 +59,10 @@ fn lookup<'a>(p: &FieldPath, t: &'a Json) -> Option<&'a Json> {
     let mut cur = t;
     for seg in p.segments() {
         match cur {
-            Json::Object(m) => match m.get(seg) {
-                Some(v) => cur = v,
-                None => return None,
-            },
+            Json::Object(m) => {
+                let v = m.get(seg)?;
+                cur = v
+            }
             _ => return None,
         }
     }

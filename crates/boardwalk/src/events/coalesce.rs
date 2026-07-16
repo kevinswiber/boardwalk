@@ -165,10 +165,10 @@ fn extract_key(env: &EventEnvelope, path: &FieldPath) -> Option<Json> {
         let mut cur = &env.data;
         for seg in &segs[1..] {
             match cur {
-                Json::Object(m) => match m.get(seg) {
-                    Some(v) => cur = v,
-                    None => return None,
-                },
+                Json::Object(m) => {
+                    let v = m.get(seg)?;
+                    cur = v
+                }
                 _ => return None,
             }
         }

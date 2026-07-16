@@ -117,10 +117,10 @@ impl FieldPath {
         let mut cur = target;
         for seg in &self.0 {
             match cur {
-                serde_json::Value::Object(m) => match m.get(seg) {
-                    Some(v) => cur = v,
-                    None => return None,
-                },
+                serde_json::Value::Object(m) => {
+                    let v = m.get(seg)?;
+                    cur = v
+                }
                 _ => return None,
             }
         }
